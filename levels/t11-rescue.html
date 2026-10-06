@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🆘</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第十一關 搜救任務｜newdrone T11</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE T11 RESCUE v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { Guide } from '../core/guide.js';
+import { buildBasicField } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { BatterySystem } from '../core/systems/battery.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t11');
+progress.migrateLegacy();
+
+/* ── 搜救任務：Phase 3 最後一關，跟 t05/t07/t08/t09/t10 一樣沿用 sandbox
+   的「連續課程」結構。跟前面幾關不同的是：這關的核心教學重點是「沒有
+   地圖、沒有方向指引，系統性地搜索」，所以刻意不像其他關卡一樣把所有
+   目標一次列在小地圖／方向指示器上——見下方 HUD 相關註解。 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'t11',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(24,10,14), new THREE.Vector3(-24,10,14), new THREE.Vector3(0,10,26)]});
+/* 最遠信標 z=-50，留 8 裕度 → BOUND=58（沿用 t04-t10 教訓）。 */
+const BOUND=58, HOVER_Y=4.5;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19});
+
+/* ── 機體（樣式可在開場畫面切換，見 showIntro 的 b-style 按鈕）── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const SPAWN=new THREE.Vector3(0,1.5,5);   // 地面出生，同 t04/t05/t08/t09/t10
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:20},spawn:SPAWN});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 基地（返航點，忠實移植自基本版座標） ── */
+const BASE_POS=new THREE.Vector3(0,HOVER_Y,5);
+const baseMesh=new THREE.Mesh(new THREE.CylinderGeometry(2.5,2.8,0.3,20),
+  new THREE.MeshStandardMaterial({color:0x0f172a,emissive:0x22c55e,emissiveIntensity:.8}));
+baseMesh.position.set(0,0.2,5); engine.scene.add(baseMesh);
+const baseLight=new THREE.PointLight(0x22c55e,.8,6);
+baseLight.position.set(0,1,5); engine.scene.add(baseLight);
+
+/* ── 6 名倖存者信標（忠實移植自基本版座標，分散在 ±20 x 5~-50 的大地圖）。
+   每個信標有兩層視覺：①常駐光柱＋頂環——永遠可見，是「遠處望見求救光束」
+   的合理搜索輔助（基本版原意，不是導航作弊）；②信標本體球＋點光源，只有
+   進入 DETECTION_RADIUS 才會淡入閃爍——這才是「偵測到訊號」的判定依據。 ── */
+const BEACON_POSITIONS=[
+  new THREE.Vector3(-18,HOVER_Y, -8),
+  new THREE.Vector3( 20,HOVER_Y,-14),
+  new THREE.Vector3(-12,HOVER_Y,-24),
+  new THREE.Vector3( 15,HOVER_Y,-32),
+  new THREE.Vector3(-20,HOVER_Y,-44),
+  new THREE.Vector3( 10,HOVER_Y,-50),
+];
+const DETECTION_RADIUS=16, CAPTURE_RADIUS=2;
+const beacons=BEACON_POSITIONS.map(p=>{
+  const pillar=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.18,55,6),
+    new THREE.MeshBasicMaterial({color:0xff2222,transparent:true,opacity:.18,depthWrite:false}));
+  pillar.position.set(p.x,27.5,p.z);
+  engine.scene.add(pillar);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(1.2,.12,6,18),
+    new THREE.MeshBasicMaterial({color:0xff4444,transparent:true,opacity:.5}));
+  ring.rotation.x=Math.PI/2; ring.position.set(p.x,p.y+.5,p.z);
+  engine.scene.add(ring);
+  const mat=new THREE.MeshStandardMaterial({color:0xef4444,emissive:0xef4444,
+    emissiveIntensity:2.0,transparent:true,opacity:0});
+  const bmesh=new THREE.Mesh(new THREE.SphereGeometry(.6,12,12),mat);
+  bmesh.position.copy(p); engine.scene.add(bmesh);
+  const light=new THREE.PointLight(0xef4444,0,5); light.position.copy(p); engine.scene.add(light);
+  return {pos:p,mesh:bmesh,light,captured:false,alerted:false};
+});
+let foundCount=0, allFound=false;
+
+/* ── 充電站（沿用 t08 驗證過的 onceOnly 語意，這關不加 maxPct，充到 100%
+   斷電才鎖定——跟基本版「if(battery>=99.9){c.used=true}」行為一致） ── */
+const CHARGER_DEFS=[
+  new THREE.Vector3(-8,0.3,-18),
+  new THREE.Vector3(10,0.3,-38),
+];
+const chargerMeshes=CHARGER_DEFS.map(pos=>{
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.4,0.4,20),
+    new THREE.MeshStandardMaterial({color:0x1e293b,emissive:0xeab308,emissiveIntensity:.6,metalness:.7}));
+  m.position.copy(pos); engine.scene.add(m); return m;
+});
+const battery=new BatterySystem({start:100,drainPerSec:1.1,
+  chargers:CHARGER_DEFS.map(pos=>({pos,radius:2.6,rate:25,onceOnly:true}))});
+let chargerUsedFlags=[false,false];
+
+/* ── 引導（兩步驟，HUD 文字用） ── */
+const guide=new Guide([
+  { text:'系統性搜索地圖，找到全部 6 名倖存者', done:s=>s.foundCount>=beacons.length },
+  { text:'全員尋獲！返回出發點（綠色基地）', done:s=>s.finished },
+],hud,engine.scene);
+
+let flightTime=0, totalDist=0, finished=false;
+
+/* ── 視角／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'搜救任務',
+    html:`<p>🆘 緊急任務！有 6 名倖存者分散在廣大地區，需要你用無人機找到他們。</p>
+      <p><b>你沒有地圖，也沒有方向指引</b>——靠近 16m 內才會偵測到 SOS 信標。</p>
+      <p>🔴 到達 2m 內即確認找到，信標會熄滅<br>
+      ✅ 找到所有 6 名後，返回綠色<b>出發點</b>完成任務<br>
+      🔋 電量持續消耗，地圖中有 2 座充電站（各限用一次，可充到 100%）</p>
+      <p>💡 訣竅：把地圖分成區塊，有系統地搜索——天空中的紅色光柱是遠處可見的求救訊號</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-go',label:'🆘 開始搜救任務',onClick:startGame}].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  guide.start();
+  hud.toast('起飛！記得把地圖分區搜索','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>已尋獲 ${foundCount}/${beacons.length}・已飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null);
+  const finalBattery=Math.round(battery.pct);
+  const distRounded=Math.round(totalDist);
+  /* 搜索效率分數：newdrone 新增（基本版沒有統一分數，只記錄原始數據）。
+     以總飛行距離衡量搜索效率——距離越短代表搜索路線規劃越有效率，
+     160m 約為 6 個信標＋返航的最短路徑估算值，之後每多 4m 扣 1 分。 */
+  const score=Math.round(THREE.MathUtils.clamp(100-Math.max(0,distRounded-160)/4,0,100));
+  progress.record('t11',{completed:true,score,
+    metrics:{flightTime:Math.round(flightTime),foundCount,totalDist:distRounded,
+      finalBattery,searchScore:score},...ch.recordFields()});
+  ui.showModal({title:'🆘 搜救任務 完成！',
+    html:`<p>⏱ 任務時間：${flightTime.toFixed(1)} 秒　🆘 尋獲倖存者：${foundCount}/${beacons.length}</p>
+      <p>📏 飛行總距離：${distRounded} m　📊 搜索效率：${score}/100　🔋 完賽電量：${finalBattery}%</p>
+      <p>🎉 這是整個訓練課程的最終關卡，你已完成所有訓練！成績已記錄（nd.progress.t11）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('搜救任務：無地圖／無方向指引・系統性搜索');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 測試/除錯 hook ── */
+window.ndDebug=()=>({foundCount,total:beacons.length,allFound,
+  batteryPct:battery.pct,dronePos:drone.pos.clone(),totalDist,flightTime,finished});
+window.ndTest={
+  forceFinish:()=>{ beacons.forEach(b=>b.captured=true); foundCount=beacons.length; allFound=true;
+    drone.pos.copy(BASE_POS); finishLevel(); },
+  /* warp 到「信標前方一小段」而非直接判定成功，讓接下來一小段真實飛行
+     仍要真的觸發距離判定——同系列 warp 慣例的用意 */
+  warpNearBeacon:(i)=>{
+    const b=beacons[i]; if(!b)return false;
+    drone.pos.set(b.pos.x,b.pos.y,b.pos.z+3); drone.vel.set(0,0,0); return true;
+  },
+  warpNearBase:()=>{ drone.pos.set(BASE_POS.x,BASE_POS.y,BASE_POS.z+3); drone.vel.set(0,0,0); return true; }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished){
+    flightTime+=dt;
+    prevPos.copy(drone.pos);
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    totalDist+=drone.pos.distanceTo(prevPos);
+    battery.update(dt,drone.pos,true);
+    if(battery.empty) drone.vel.y-=5.9*dt;   // 電量耗盡：緩緩下沉但不強制中斷（承基本版）
+    battery.chargers.forEach((c,i)=>{
+      if(c.used&&!chargerUsedFlags[i]){
+        chargerUsedFlags[i]=true;
+        chargerMeshes[i].material.emissiveIntensity=0.1;
+        chargerMeshes[i].material.emissive.setHex(0x4b5563);
+        hud.toast(`🔌 充電站 ${i+1} 已用完（充到 100%）`,'ok');
+      }
+    });
+
+    if(!allFound){
+      /* 找最近的未尋獲信標：只有進入 DETECTION_RADIUS 才淡入視覺、觸發
+         方向指示器（hud.setOffscreenTarget）；跟基本版的 nav-compass「無論
+         距離都常駐顯示」刻意不同——見交付說明中的設計取捨。 */
+      let nearest=null, nearestD=Infinity;
+      beacons.forEach(b=>{
+        if(b.captured)return;
+        const d=drone.pos.distanceTo(b.mesh.position);
+        if(d<DETECTION_RADIUS){
+          const pulse=.5+.5*Math.sin(flightTime*4);
+          b.mesh.material.opacity=.6+.4*pulse; b.light.intensity=.5+.8*pulse;
+        } else { b.mesh.material.opacity=0; b.light.intensity=0; }
+        if(d<nearestD){ nearestD=d; nearest=b; }
+      });
+      if(nearest&&nearestD<DETECTION_RADIUS){
+        hud.setOffscreenTarget(nearest.mesh.position);
+        if(!nearest.alerted){ nearest.alerted=true; hud.toast('🆘 偵測到信號！','warn'); }
+        if(nearestD<CAPTURE_RADIUS){
+          nearest.captured=true; nearest.mesh.material.opacity=0; nearest.light.intensity=0;
+          foundCount++; sfx.play('ring');
+          hud.toast(`找到倖存者！剩餘 ${beacons.length-foundCount} 名`,'ok');
+          if(foundCount>=beacons.length){
+            allFound=true; hud.toast('✅ 全員找到！返回出發點完成任務','ok');
+            hud.setOffscreenTarget(BASE_POS);
+          }
+        }
+      } else {
+        hud.setOffscreenTarget(null);
+      }
+    } else {
+      hud.setOffscreenTarget(BASE_POS);
+      if(drone.pos.distanceTo(BASE_POS)<3.0) finishLevel();
+    }
+    guide.update(dt,{foundCount,finished});
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setBattery(battery.pct);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(engine.simStarted?`尋獲 ${foundCount}/${beacons.length}`:'');
+  /* 小地圖只列出「已尋獲」的信標＋（全員尋獲後）基地——刻意不像其他關卡
+     一樣把所有目標一次列出，避免洩漏還沒找到的信標座標，呼應這關「無
+     地圖、系統性搜索」的核心教學重點。 */
+  const mapTargets=beacons.filter(b=>b.captured).map(b=>({pos:b.pos,done:true,color:0x4ade80}));
+  if(allFound)mapTargets.push({pos:BASE_POS,done:false,color:0x22c55e});
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets);
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🛫</text></svg>">
+<title>第一關 地面安全教育｜newdrone T01</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  :root{--nd-cyan:#00eeff;--nd-green:#4ade80;--nd-yellow:#facc15;--nd-red:#f87171;--nd-magenta:#d946ef;}
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    min-height:100vh;padding:24px 16px 60px;box-sizing:border-box;}
+  .wrap{max-width:640px;margin:0 auto;}
+  .topline{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px;}
+  .toplabel{font-size:10px;color:#7aa3b8;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;}
+  h1{font-size:20px;color:var(--nd-cyan);letter-spacing:2px;margin:0;}
+  a.btn{background:#0b1626;color:#9fc3d8;border:1px solid rgba(0,238,255,.35);border-radius:8px;
+    font-size:12px;padding:9px 15px;font-family:inherit;cursor:pointer;text-decoration:none;display:inline-block;}
+  a.btn:hover{background:#153a5e;color:#cfefff;}
+
+  .ptrack{background:rgba(15,23,42,.8);border:1px solid rgba(148,163,184,.25);border-radius:999px;
+    height:6px;overflow:hidden;margin-bottom:18px;}
+  .pfill{height:100%;background:linear-gradient(90deg,var(--nd-cyan),var(--nd-green));
+    transition:width .4s ease;width:0%;}
+  .ptext{text-align:right;font-size:10px;color:#7aa3b8;margin:-14px 2px 16px;text-transform:uppercase;letter-spacing:1px;}
+
+  .sect{background:#0b1626;border-radius:14px;padding:20px 22px;margin-bottom:16px;
+    box-shadow:0 0 24px rgba(0,0,0,.25);}
+  .sect.cyan{border:1px solid rgba(0,238,255,.5);}
+  .sect.magenta{border:1px solid rgba(217,70,239,.5);}
+  .sect.amber{border:1px solid rgba(250,204,21,.45);}
+  .sect h2{font-size:13px;letter-spacing:1px;margin:0 0 4px;text-transform:uppercase;}
+  .sect.cyan h2{color:var(--nd-cyan);}
+  .sect.magenta h2{color:var(--nd-magenta);}
+  .sect.amber h2{color:var(--nd-yellow);}
+  .sect .cnt{float:right;font-size:11px;color:#7aa3b8;font-weight:normal;}
+  .hint{font-size:11px;color:#7aa3b8;line-height:1.7;margin:6px 0 14px;}
+
+  .item{display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;
+    border:1px solid rgba(148,163,184,.25);background:rgba(15,23,42,.5);
+    cursor:pointer;transition:all .15s ease;margin-bottom:8px;}
+  .item:hover{border-color:rgba(0,238,255,.5);}
+  .item.done{background:rgba(0,238,255,.08);border-color:rgba(0,238,255,.55);}
+  .box{width:24px;height:24px;min-width:24px;border:2px solid rgba(148,163,184,.5);border-radius:6px;
+    display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px;transition:all .15s ease;}
+  .item.done .box{background:var(--nd-cyan);border-color:var(--nd-cyan);color:#04121f;}
+  .icon{font-size:19px;}
+  .txt{display:flex;flex-direction:column;gap:2px;}
+  .txt b{font-size:12px;color:#eaf6ff;}
+  .txt span{font-size:10px;color:#7aa3b8;line-height:1.5;}
+  .item.gp-focus{outline:2px solid rgba(0,238,255,.9);outline-offset:2px;}
+
+  .opt{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:10px;
+    border:1px solid rgba(148,163,184,.25);background:rgba(15,23,42,.5);
+    cursor:pointer;font-size:12px;color:#eaf6ff;margin-bottom:8px;transition:all .15s ease;}
+  .opt:hover:not(.locked){border-color:rgba(217,70,239,.6);background:rgba(217,70,239,.08);}
+  .opt.locked{cursor:default;}
+  .opt.correct{border-color:var(--nd-green);background:rgba(74,222,128,.12);}
+  .opt.wrong{border-color:var(--nd-red);background:rgba(248,113,113,.12);}
+  .opt.gp-focus{outline:2px solid rgba(217,70,239,.9);outline-offset:2px;}
+  .letter{width:20px;height:20px;min-width:20px;border-radius:50%;border:1px solid rgba(148,163,184,.6);
+    display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;}
+  .explain{font-size:11px;line-height:1.7;padding:10px 12px;border-radius:8px;margin-top:4px;display:none;}
+  .explain.ok{background:rgba(74,222,128,.1);color:#a3e8bf;border:1px solid rgba(74,222,128,.35);}
+  .explain.bad{background:rgba(248,113,113,.1);color:#f6b7b7;border:1px solid rgba(248,113,113,.35);}
+
+  button{width:100%;background:#16324f;color:#5c7c93;border:none;border-radius:10px;
+    font-family:inherit;font-size:12px;letter-spacing:1px;text-transform:uppercase;
+    padding:13px;cursor:not-allowed;margin-top:6px;transition:all .15s ease;}
+  button.ready{background:#0e2238;color:var(--nd-cyan);cursor:pointer;border:1px solid rgba(0,238,255,.5);}
+  button.ready:hover{background:#153a5e;}
+  button.ready.magenta{color:var(--nd-magenta);border-color:rgba(217,70,239,.5);}
+  button.ready.magenta:hover{background:#3a1550;}
+  button.ready.amber{color:var(--nd-yellow);border-color:rgba(250,204,21,.5);background:#241a05;}
+  button.gp-focus{outline:2px solid rgba(255,255,255,.85);outline-offset:2px;}
+
+  .resultbox{text-align:center;}
+  .resultbox .big{font-size:34px;margin-bottom:6px;}
+  .resultbox p{font-size:12px;color:#9fc3d8;line-height:1.8;}
+  .navrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;}
+  .navrow>*{flex:1;min-width:140px;}
+
+  #gp-bar{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);display:none;
+    align-items:center;gap:14px;background:rgba(8,18,36,.92);border:1px solid rgba(0,238,255,.35);
+    border-radius:999px;padding:7px 16px;font-size:10px;color:#94a3b8;white-space:nowrap;z-index:50;}
+  #gp-bar.show{display:flex;}
+  #gp-bar kbd{color:var(--nd-cyan);font-weight:700;}
+
+  footer{text-align:center;font-size:10px;color:#3b5c7a;margin-top:26px;}
+  [hidden]{display:none!important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline">
+    <div>
+      <div class="toplabel">newdrone · Pilot Training T01</div>
+      <h1>🛫 第一關 地面安全教育</h1>
+    </div>
+    <a class="btn" href="../index.html">← 返回入口</a>
+  </div>
+  <div class="ptrack"><div class="pfill" id="ov-fill"></div></div>
+  <div class="ptext" id="ov-text">總進度 0 / 2</div>
+
+  <!-- 檢查清單 -->
+  <div id="screen-checklist" class="sect cyan">
+    <h2>① 飛行前檢查清單<span class="cnt" id="chk-count">0 / 6</span></h2>
+    <p class="hint">每次飛行前，真正的飛手都會逐項確認以下狀態。請點擊每一項，確認你已經檢查過，才能進入下一階段。</p>
+    <div id="chk-list"></div>
+    <button id="btn-chk-next">完成全部檢查後解鎖測驗</button>
+  </div>
+
+  <!-- 測驗 -->
+  <div id="screen-quiz" class="sect magenta" hidden>
+    <h2>② 安全知識測驗<span class="cnt" id="quiz-cnt">第 1 / 5 題</span></h2>
+    <div class="hint" id="quiz-cat">分類</div>
+    <p id="quiz-q" style="font-size:13px;font-weight:700;color:#eaf6ff;margin:-6px 0 12px;line-height:1.7;"></p>
+    <div id="quiz-opts"></div>
+    <div id="quiz-explain" class="explain"></div>
+    <button id="btn-quiz-next" class="ready-target">請先作答</button>
+  </div>
+
+  <!-- 未達標 -->
+  <div id="screen-fail" class="sect amber resultbox" hidden>
+    <div class="big">⚠️</div>
+    <h2 style="text-align:center;">尚未達到及格標準</h2>
+    <p id="fail-score"></p>
+    <p>真正的飛手在正式起飛前，必須完全掌握這些安全知識。題目會重新隨機出題，再挑戰一次！</p>
+    <button id="btn-retry" class="ready amber">🔄 重新測驗</button>
+  </div>
+
+  <!-- 通過 -->
+  <div id="screen-pass" class="sect cyan resultbox" hidden>
+    <div class="big">✅</div>
+    <h2 style="text-align:center;">地面安全教育 完成！</h2>
+    <p id="pass-score"></p>
+    <p>你已具備飛行前的基本安全觀念。回到入口即可挑選下一關繼續訓練。</p>
+    <div class="navrow">
+      <button id="btn-restart" class="ready">重新練習本階段</button>
+      <a href="../index.html" class="btn" style="text-align:center;">🏠 返回入口</a>
+    </div>
+  </div>
+
+  <footer>NEWDRONE T01 CHECKLIST v1.0</footer>
+</div>
+
+<div id="gp-bar">
+  <span>🎮</span>
+  <span><kbd>↑↓</kbd> 移動</span>
+  <span><kbd>A</kbd> 確認</span>
+  <button onclick="document.getElementById('gp-bar').classList.remove('show')" style="background:none;border:none;color:#475569;cursor:pointer;font-size:13px;">✕</button>
+</div>
+
+<script type="module">
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { InputManager } from '../core/input.js';
+import { UI } from '../core/ui.js';
+import { sfx } from '../core/audio.js';
+
+const LEVEL = getLevel('t01');
+progress.migrateLegacy();
+
+/* ── 內容（承基本版 training-stage1，內容不變，只換資料層與外觀） ── */
+const checklistItems = [
+  { id:'battery', icon:'🔋', title:'電池電量檢查', desc:'確認電池電量充足，且電池外觀無膨脹或破損。' },
+  { id:'props',   icon:'🌀', title:'螺旋槳檢查',   desc:'確認四支螺旋槳都已鎖緊，葉片無裂痕或缺角。' },
+  { id:'signal',  icon:'📡', title:'訊號連接檢查', desc:'確認遙控器已與無人機成功配對，訊號強度正常。' },
+  { id:'area',    icon:'🚧', title:'飛行區域淨空', desc:'確認飛行範圍內無圍觀人員、寵物或障礙物。' },
+  { id:'sensor',  icon:'🧭', title:'感測器校正',   desc:'確認起飛前已完成水平校正，無人機能穩定懸停。' },
+  { id:'weather', icon:'🌬️', title:'風速與天氣',   desc:'確認現場風速在安全範圍內，且無降雨或雷擊風險。' },
+];
+const quizPool = [
+  { category:'緊急處置', q:'飛行中如果遙控器突然完全失去訊號，下列哪一個做法最正確？',
+    options:['立刻上下搖動遙控器天線','保持冷靜，等待無人機依照失控保護（Failsafe）自動懸停或返航','馬上關閉遙控器電源重新開機','朝無人機的方向跑過去'],
+    correct:1, explain:'正確答案：多數無人機在訊號中斷時會自動觸發「失控保護」機制，原地懸停或自動返航。飛手應保持冷靜、留在原地觀察，而不是做出可能加重狀況的動作。' },
+  { category:'飛行前準備', q:'起飛前發現螺旋槳邊緣有一個小缺角，應該怎麼處理？',
+    options:['缺角很小，直接起飛沒關係','換一個角度裝上去就好','更換整支螺旋槳後才能起飛','用透明膠帶貼起來繼續用'],
+    correct:2, explain:'正確答案：螺旋槳是高速旋轉的部件，即使是小缺角也會造成震動與不平衡，飛行中可能斷裂。任何損傷都必須更換整支螺旋槳，不能勉強使用。' },
+  { category:'緊急處置', q:'「緊急停止（Kill Switch）」最主要的作用是什麼？',
+    options:['讓無人機自動降落','瞬間切斷馬達動力，讓螺旋槳立刻停止轉動','讓無人機返回起飛點','讓遙控器重新連線'],
+    correct:1, explain:'正確答案：緊急停止會直接切斷馬達動力，是避免無人機傷人或造成更大損害的最後手段。因為切斷後無人機會直接墜落，所以只在真正危急、其他方式都無法排除風險時才使用。' },
+  { category:'環境判斷', q:'飛行時遇到突然一陣強側風，機身被吹歪，下列哪個反應最恰當？',
+    options:['立刻大幅度反方向打滿油門修正','緩和、小幅度地反向修正姿態，並降低飛行高度或速度','完全不理它，等風停','立刻切換到緊急停止'],
+    correct:1, explain:'正確答案：面對強風應以緩和、漸進的修正動作應對，過度反應容易造成姿態失控或反向超修。若風力持續過大，應考慮盡快、平穩地降落。' },
+  { category:'飛行前準備', q:'為什麼起飛前要確認飛行區域「淨空」（無人員、寵物、障礙物）？',
+    options:['只是為了畫面好看','因為初學者操作不穩定，意外碰撞風險較高，淨空能降低傷害發生的機會','淨空跟安全沒有直接關係','只有比賽場地才需要淨空'],
+    correct:1, explain:'正確答案：初學者操作不熟練，碰撞、失控時有所難免。確保周圍淨空是最基本、最有效降低意外傷害風險的方法，任何等級的飛手都應該遵守。' },
+  { category:'電池管理', q:'無人機電池電量剩下 15% 時，最適當的處置方式是？',
+    options:['繼續飛到完全沒電為止，反正會自動降落','盡快、平穩地找安全地點降落或返回充電','把速度開到最快，趕快飛完剩下的行程','電量顯示不準，可以不用理它'],
+    correct:1, explain:'正確答案：電池電量過低時動力會下降，容易導致失控墜機。看到低電量警示應立刻規劃就近、平穩地降落或返航，而不是硬撐到完全耗盡。' },
+  { category:'環境判斷', q:'下列哪一種天氣狀況最不適合飛行無人機？',
+    options:['微風、晴朗無雲','陰天但無降雨無強風','雷雨將至、風速明顯增強','氣溫稍低但風平浪靜'],
+    correct:2, explain:'正確答案：雷雨天氣不僅風速不穩定，還有雷擊與能見度不佳的風險，是最不適合飛行的狀況。飛行前一定要確認天氣預報與現場狀況。' },
+  { category:'緊急處置', q:'如果飛行中被另一台無人機意外擦撞，導致自己的機身姿態不穩，第一步應該做什麼？',
+    options:['立刻加速逃離現場','先冷靜觀察姿態與高度是否仍可控制，優先讓機身穩定或緩降','假裝沒事繼續原本的飛行路線','立刻切換攝影機視角看碰撞畫面'],
+    correct:1, explain:'正確答案：碰撞後最重要的是先判斷機身是否還能穩定飛行，優先讓姿態穩定下來或安全降落，而不是繼續原計畫或做出無關安全的動作。' },
+  { category:'飛行前準備', q:'「水平校正 / 感測器校正」沒有做好，飛行時最常出現什麼現象？',
+    options:['顏色顯示不正確','電池電量下降變快','無人機懸停時會自動往某個方向偏移，難以定點','螺旋槳轉速會變慢'],
+    correct:2, explain:'正確答案：感測器（如陀螺儀、加速度計）沒有正確校正，會導致無人機無法準確判斷「水平」的基準，懸停時容易不自主地朝某方向漂移。' },
+  { category:'電池管理', q:'關於無人機電池的保養，下列說法哪一項正確？',
+    options:['電池外觀膨脹是正常現象，可以繼續使用','電池膨脹、破損或有異味時，應立即停止使用並妥善處理','電池越舊，飛行越穩定','電池可以隨意從高處摔落測試耐用度'],
+    correct:1, explain:'正確答案：電池膨脹或破損代表內部已經產生化學變化，有起火或爆裂的風險，必須立即停止使用，並依照正確方式回收處理，絕不能勉強使用。' },
+  { category:'環境判斷', q:'在室內狹小空間第一次練習飛行，需要特別注意什麼？',
+    options:['空間小操作反而比較安全，不需要特別注意','天花板、燈具、玻璃等障礙物容易被忽略，且反彈空間小，風險較高','室內沒有風，所以完全不會有意外','室內光線昏暗最適合練習'],
+    correct:1, explain:'正確答案：室內空間雖然沒有自然風，但障礙物密集、可反應與迴避的距離短，一旦失控很容易撞到天花板、燈具或人員，初學者更需要謹慎。' },
+  { category:'緊急處置', q:'無人機飛行時忽然開始不明原因地劇烈晃動、無法穩定，最優先的處理原則是什麼？',
+    options:['持續嘗試各種操作直到它自己穩定下來','優先考慮讓它平穩下降或降落，避免情況惡化到不可控','立刻拉到最高高度躲避風險','轉頭問旁邊的人怎麼辦，先不管無人機'],
+    correct:1, explain:'正確答案：面對不明原因的失控晃動，最優先原則是盡快、平穩地降低高度或降落，把風險控制在最小範圍，而不是持續嘗試冒險的操作或拖延處理。' },
+];
+const QUIZ_SIZE = 5, PASS_THRESHOLD = 4;
+const SETTING_CHECKLIST = 't01.checklistDone';
+
+let checkedSet = new Set();
+let currentQuiz = [], quizIndex = 0, quizAnswers = [], quizLocked = false;
+
+/* ── 輸入（三裝置：滑鼠/觸控原生 click；鍵盤 tabindex+Enter；搖桿 InputManager.pollMenu） ── */
+const input = new InputManager();
+const ui = new UI(input);
+let gpScreen = 'checklist';  // 'checklist' | 'quiz'
+let gpIds = [];
+
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ── 檢查清單 ── */
+function renderChecklist(){
+  const list = document.getElementById('chk-list');
+  list.innerHTML = checklistItems.map((it,i) => {
+    const done = checkedSet.has(it.id);
+    return `<div class="item ${done?'done':''}" id="chk-${i}" tabindex="0" role="checkbox" aria-checked="${done}">
+      <div class="box">${done?'✓':''}</div>
+      <div class="icon">${it.icon}</div>
+      <div class="txt"><b>${esc(it.title)}</b><span>${esc(it.desc)}</span></div>
+    </div>`;
+  }).join('');
+  checklistItems.forEach((it,i) => {
+    const el = document.getElementById('chk-'+i);
+    el.addEventListener('click', () => toggleCheck(it.id));
+    el.addEventListener('keydown', e => { if(e.code==='Enter'||e.code==='Space'){ e.preventDefault(); toggleCheck(it.id); } });
+  });
+  document.getElementById('chk-count').textContent = checkedSet.size+' / '+checklistItems.length;
+  refreshGpFocus();
+}
+function toggleCheck(id){
+  checkedSet.has(id) ? checkedSet.delete(id) : checkedSet.add(id);
+  sfx.play('click');
+  renderChecklist();
+  const btn = document.getElementById('btn-chk-next');
+  const done = checkedSet.size===checklistItems.length;
+  btn.classList.toggle('ready', done);
+  btn.textContent = done ? '已完成 · 繼續前往測驗 →' : '完成全部檢查後解鎖測驗';
+  if(done) progress.setSetting(SETTING_CHECKLIST, true);
+  updateOverall();
+}
+document.getElementById('btn-chk-next').addEventListener('click', () => {
+  if(checkedSet.size===checklistItems.length) startQuiz();
+});
+
+/* ── 測驗 ── */
+function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function startQuiz(){
+  currentQuiz = shuffle(quizPool).slice(0,QUIZ_SIZE).map(q => {
+    const order = shuffle(q.options.map((_,i)=>i));
+    return { category:q.category, q:q.q, options:order.map(i=>q.options[i]), correct:order.indexOf(q.correct), explain:q.explain };
+  });
+  quizIndex = 0; quizAnswers = [];
+  document.getElementById('screen-checklist').hidden = true;
+  document.getElementById('screen-fail').hidden = true;
+  document.getElementById('screen-pass').hidden = true;
+  document.getElementById('screen-quiz').hidden = false;
+  gpScreen = 'quiz';
+  renderQuizQuestion();
+  sfx.play('click');
+}
+function renderQuizQuestion(){
+  quizLocked = false;
+  const q = currentQuiz[quizIndex];
+  document.getElementById('quiz-cnt').textContent = '第 '+(quizIndex+1)+' / '+currentQuiz.length+' 題';
+  document.getElementById('quiz-cat').textContent = q.category;
+  document.getElementById('quiz-q').textContent = q.q;
+  const optsEl = document.getElementById('quiz-opts');
+  optsEl.innerHTML = q.options.map((opt,i) =>
+    `<div class="opt" id="opt-${i}" tabindex="0" role="button">
+      <span class="letter">${String.fromCharCode(65+i)}</span><span>${esc(opt)}</span>
+    </div>`).join('');
+  q.options.forEach((_,i) => {
+    const el = document.getElementById('opt-'+i);
+    el.addEventListener('click', () => selectAnswer(i));
+    el.addEventListener('keydown', e => { if(e.code==='Enter'||e.code==='Space'){ e.preventDefault(); selectAnswer(i); } });
+  });
+  const ex = document.getElementById('quiz-explain');
+  ex.style.display = 'none'; ex.className = 'explain';
+  const btn = document.getElementById('btn-quiz-next');
+  btn.classList.remove('ready','magenta'); btn.textContent = '請先作答';
+  refreshGpFocus();
+}
+function selectAnswer(idx){
+  if(quizLocked) return;
+  quizLocked = true;
+  const q = currentQuiz[quizIndex];
+  const isCorrect = idx===q.correct;
+  quizAnswers.push(isCorrect);
+  sfx.play(isCorrect?'ok':'fail');
+  document.querySelectorAll('#quiz-opts .opt').forEach((el,i) => {
+    el.classList.add('locked');
+    if(i===q.correct) el.classList.add('correct');
+    if(i===idx && !isCorrect) el.classList.add('wrong');
+  });
+  const ex = document.getElementById('quiz-explain');
+  ex.style.display = 'block';
+  ex.className = 'explain '+(isCorrect?'ok':'bad');
+  ex.textContent = (isCorrect?'✓ 答對了！':'✕ 答錯了。')+'　'+q.explain;
+  const btn = document.getElementById('btn-quiz-next');
+  btn.classList.add('ready','magenta');
+  btn.textContent = quizIndex===currentQuiz.length-1 ? '查看測驗結果' : '下一題 →';
+  refreshGpFocus();
+}
+document.getElementById('btn-quiz-next').addEventListener('click', () => {
+  if(!quizLocked) return;
+  if(quizIndex<currentQuiz.length-1){ quizIndex++; renderQuizQuestion(); }
+  else finishQuiz();
+});
+function finishQuiz(){
+  const correctCount = quizAnswers.filter(Boolean).length;
+  const passed = correctCount>=PASS_THRESHOLD;
+  document.getElementById('screen-quiz').hidden = true;
+  progress.record('t01', { completed:passed, score:correctCount,
+    metrics:{ correctCount, totalQuestions:currentQuiz.length, checklistDone:true } });
+  if(passed){
+    document.getElementById('pass-score').textContent = '本次成績：'+correctCount+' / '+currentQuiz.length+' 題正確';
+    document.getElementById('screen-pass').hidden = false;
+    gpScreen = 'pass'; sfx.play('finish');
+  } else {
+    document.getElementById('fail-score').textContent = '本次成績：'+correctCount+' / '+currentQuiz.length+' 題正確（需達 '+PASS_THRESHOLD+' 題以上才算及格）';
+    document.getElementById('screen-fail').hidden = false;
+    gpScreen = 'fail';
+  }
+  updateOverall();
+  refreshGpFocus();
+}
+document.getElementById('btn-retry').addEventListener('click', () => { document.getElementById('screen-fail').hidden = true; startQuiz(); });
+document.getElementById('btn-restart').addEventListener('click', () => { document.getElementById('screen-pass').hidden = true; startQuiz(); });
+
+/* ── 總進度 ── */
+function updateOverall(){
+  const rec = progress.get('t01');
+  const checklistDone = checkedSet.size===checklistItems.length || !!progress.setting(SETTING_CHECKLIST,false);
+  const quizDone = !!(rec && rec.completed);
+  const count = (checklistDone?1:0)+(quizDone?1:0);
+  document.getElementById('ov-text').textContent = '總進度 '+count+' / 2';
+  document.getElementById('ov-fill').style.width = ((count/2)*100)+'%';
+}
+
+/* ── 搖桿選單導航（沿用 core/ui.js 的 gpSetFocus/gpNav/gpConfirm，不寫第二套邏輯） ── */
+function refreshGpFocus(){
+  if(gpScreen==='checklist'){
+    gpIds = checklistItems.map((_,i)=>'chk-'+i).concat(document.getElementById('btn-chk-next').classList.contains('ready')?['btn-chk-next']:[]);
+  } else if(gpScreen==='quiz'){
+    gpIds = quizLocked ? ['btn-quiz-next'] : currentQuiz[quizIndex].options.map((_,i)=>'opt-'+i);
+  } else if(gpScreen==='pass'){
+    gpIds = ['btn-restart'];
+  } else if(gpScreen==='fail'){
+    gpIds = ['btn-retry'];
+  } else gpIds = [];
+  ui.gpSetFocus(gpIds,0);
+}
+let lastT = performance.now();
+function loop(t){
+  const dt = Math.min((t-lastT)/1000,0.1); lastT = t;
+  input.update(dt);
+  const gp = input.gamepads()[0];
+  document.getElementById('gp-bar').classList.toggle('show', !!gp);
+  if(gp){
+    const m = input.pollMenu(dt);
+    if(m.y>0||m.x>0) ui.gpNav(1);
+    if(m.y<0||m.x<0) ui.gpNav(-1);
+    if(m.confirm) ui.gpConfirm();
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ── 測試/除錯 hook（承專案慣例 window.nd*Debug，不影響正常執行） ── */
+window.ndT01Debug = () => ({ checkedSet:[...checkedSet], currentQuiz, quizIndex, quizAnswers, gpScreen, gpIds:[...gpIds] });
+
+/* ── 啟動 ── */
+(function init(){
+  const rec = progress.get('t01');
+  if(progress.setting(SETTING_CHECKLIST,false)) checkedSet = new Set(checklistItems.map(i=>i.id));
+  renderChecklist();
+  const btn = document.getElementById('btn-chk-next');
+  const done = checkedSet.size===checklistItems.length;
+  btn.classList.toggle('ready', done);
+  btn.textContent = done ? '已完成 · 繼續前往測驗 →' : '完成全部檢查後解鎖測驗';
+  updateOverall();
+})();
+</script>
+</body>
+</html>

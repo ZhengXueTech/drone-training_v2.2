@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🌀</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>newdrone 自由飛行練習場（Acro）v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1a2e;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  /* ── 一鍵回正安全鍵（觸控）──
+     2026-08-02 新增：acro／速率模式沒有自動回正，鍵盤 Space／手把 R1(button 5)
+     以外，手機使用者也要有辦法隨時暫時「自穩」，所以在畫面右下角加一顆
+     常駐的圓形按鈕，用 pointerdown/up/cancel 追蹤（跟 core 慣例一致：
+     平時半透明、按著時加深），放開立刻恢復原本選的模式。 */
+  /* 2026-09-30：原本 right:18px;bottom:18px 疊在小地圖上 → 移到小地圖左側 */
+  #self-level-btn{position:fixed;right:150px;bottom:60px;z-index:22;
+    width:84px;height:84px;border-radius:50%;
+    background:rgba(0,60,90,.45);border:2px solid rgba(0,238,255,.55);
+    color:#cfefff;font-size:13px;line-height:1.3;text-align:center;
+    display:flex;align-items:center;justify-content:center;
+    user-select:none;-webkit-user-select:none;touch-action:none;}
+  /* 2026-09-30 新增：模式切換鈕（觸控/滑鼠用；鍵盤 M、手把 X 同功能（2026-10-01 由 Y 改 X：Y 全站統一為檔位）），顯示目前模式 */
+  #mode-btn{position:fixed;right:150px;bottom:156px;z-index:22;width:88px;padding:6px 0;
+    border-radius:10px;background:rgba(0,60,90,.55);border:2px solid rgba(0,238,255,.55);
+    color:#cfefff;font-size:12px;line-height:1.35;text-align:center;cursor:pointer;
+    user-select:none;-webkit-user-select:none;touch-action:none;}
+  #mode-btn b{display:block;font-size:14px;color:#fff;}
+  #mode-btn.acro{border-color:rgba(248,113,113,.9);background:rgba(127,29,29,.55);}
+  #self-level-btn.active{background:rgba(0,238,255,.55);color:#04202c;
+    box-shadow:0 0 22px rgba(0,238,255,.6);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="mode-btn">模式<b id="mode-cur">角度</b>點我切換</div>
+<div id="self-level-btn">自穩<br>按住</div>
+<div id="ver">NEWDRONE ACRO FREEFLIGHT v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { buildBasicField, makeRing, makeHeadingBeacon } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { checkRingPass, ScoreKeeper } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 檔位（G／手把 Y）
+
+const LEVEL=getLevel('acro-freeflight');
+progress.migrateLegacy();
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'acro-freeflight',input});
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera);
+const score=new ScoreKeeper();
+
+const BOUND=15;
+buildBasicField(engine.scene,{size:BOUND});
+
+/* ── 機體 ── */
+let teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let beaconOn=progress.setting('headingBeacon',true);
+let mesh=null, beacon=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+/* 這個練習場預設就是 pro（acro／速率）模式——跟其他關卡「預設 arcade」
+   刻意不同，因為這裡的存在目的就是讓學生練「放手不會自動回正」的手感。 */
+const drone=new Drone({mode:'angle',bounds:{x:BOUND,z:BOUND,y:12},
+  spawn:new THREE.Vector3(0,1.5,6)});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 圓環：這裡只是給學生練習穿越的趣味目標，不是任務門檻（判定寬鬆守則）——
+   穿不穿、穿幾個都不影響完成紀錄。 */
+const rings=[
+  makeRing(new THREE.Vector3(-6,3,-2)),
+  makeRing(new THREE.Vector3(3,4.5,-7),{color:0xffcc00}),
+  makeRing(new THREE.Vector3(8,2.5,4),{color:0xff66cc}),
+];
+rings.forEach((r,i)=>{r.rotation.y=[0.4,-0.8,1.2][i];engine.scene.add(r);});
+let ringCount=0, flightTime=0;
+
+/* ── 模式：baseMode 是玩家自己選的持續狀態（M 鍵切換，跟其他訓練場慣例相同）；
+   selfLevelHeld 是「按著才生效」的安全網——放開立刻回到 baseMode，
+   不需要新寫物理，直接借用已經驗證過的 arcade 定高輔助當回正邏輯
+   （等同真實遙控器上的 Angle/Acro 撥段開關，教學上也是真實對應）。 */
+/* 2026-09-30：預設改 'angle'（角度／自穩模式，放開回平、不會翻）；
+   M 依序切換 角度 → Acro(pro) → 街機。使用者回報原本預設 Acro「推住會整台翻過去」。 */
+const MODE_ORDER=['angle','pro','arcade'];
+const MODE_LABEL={angle:'角度',pro:'Acro',arcade:'街機'};
+const MODE_GUIDE={
+  angle:'角度模式：搖桿＝傾斜角度，放開自動回平、不會翻｜油門要自己推住才不會掉',
+  pro:'⚠ Acro 模式：推住搖桿會一直轉、會翻過去！輕推就放｜按住 空白鍵／手把 RB／自穩鈕 救援',
+  arcade:'街機模式：放開自動煞停、自動定高（熱身用）'};
+let baseMode='angle';
+let flipWarnT=0;
+let selfLevelHeld=false, selfLevelKey=false, selfLevelGp=false, selfLevelTouch=false;
+let selfLevelUses=0, proSeconds=0, angleSeconds=0;
+function toggleBaseMode(){
+  baseMode=MODE_ORDER[(MODE_ORDER.indexOf(baseMode)+1)%MODE_ORDER.length];
+  hud.toast(baseMode==='pro'?'⚠ Acro 模式：推住搖桿會翻過去，輕推就放！'
+    :baseMode==='angle'?'角度模式：放開自動回平，不會翻':'街機模式（定高輔助，熱身用）',
+    baseMode==='pro'?'warn':'ok');
+  if(engine.simStarted)hud.setGuide(MODE_GUIDE[baseMode]);
+  refreshModeBtn();
+}
+function refreshModeBtn(){
+  document.getElementById('mode-cur').textContent=MODE_LABEL[baseMode];
+  document.getElementById('mode-btn').classList.toggle('acro',baseMode==='pro');
+}
+function syncModes(){
+  const label=selfLevelHeld?MODE_LABEL[baseMode]+'→自穩中':MODE_LABEL[baseMode];
+  hud.setModes(label,CAM_LABELS[rig.mode]);
+  hud.showAttitude(drone.mode==='pro'||drone.mode==='angle');
+}
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='KeyM')toggleBaseMode();
+  if(e.code==='Space')selfLevelKey=true;
+  /* 2026-10-01：原本 R 鍵開關風場（只有鍵盤能用、成績不標示）→ 改由「⚙ 挑戰條件」的環境風統一處理，跟其他關卡一致 */
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{
+  if(e.code==='KeyZ')rig.crouch=false;
+  if(e.code==='Space')selfLevelKey=false;
+});
+/* 觸控自穩鍵：pointerdown/up/cancel 都要處理歸零，不然手指滑出按鈕範圍會卡住 */
+const selfBtn=document.getElementById('self-level-btn');
+selfBtn.addEventListener('pointerdown',e=>{
+  e.preventDefault(); selfBtn.setPointerCapture(e.pointerId);
+  selfLevelTouch=true; selfBtn.classList.add('active');
+});
+function releaseTouchSelfLevel(){ selfLevelTouch=false; selfBtn.classList.remove('active'); }
+selfBtn.addEventListener('pointerup',releaseTouchSelfLevel);
+selfBtn.addEventListener('pointercancel',releaseTouchSelfLevel);
+document.getElementById('mode-btn').addEventListener('pointerdown',e=>{
+  e.preventDefault(); if(engine.simStarted&&!engine.paused)toggleBaseMode(); });
+let prevGpX=false, prevGpB=false;   // 手把 X（b2）切模式、B（b1）暫停：邊緣偵測（Y 檔位由 Challenge 處理）
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro / 暫停 ── */
+function showIntro(focusIdx=2){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'自由飛行練習場（角度／Acro 模式）',
+    html:`<p>這裡有三種飛行模式，按 <b>M</b> 依序切換：</p>
+      <p>🟢 <b>角度模式（預設）</b>：搖桿控制「傾斜角度」，最多約 35 度，<b>放開自動回平、不會翻</b>。
+      新手和多數比賽機常用這種。<br>
+      🔴 <b>Acro 模式</b>：搖桿控制「旋轉速度」，<b>推住不放會一直轉、整台翻過去</b>，放開也不會回正。
+      是高手做翻滾特技用的，請先熟練角度模式再挑戰。<br>
+      🔵 <b>街機模式</b>：自動定高、放開自動煞停，熱身用。</p>
+      <p>⚠ 角度與 Acro 模式的油門都要自己抓：<b>放開油門＝沒有推力，會往下掉</b>，要把油門推住在適當位置才能維持高度。</p>
+      <p>安全網：按住 <b>空白鍵／手把 RB／畫面上的「自穩」按鈕</b>，隨時暫時切成街機定高，鬆開恢復。
+      圓環只是練習用，這裡沒有任務門檻。</p>
+      <p>🎮 切換模式：鍵盤 <b>M</b>／手把 <b>X</b>／畫面「模式」按鈕。⚙ 檔位：鍵盤 <b>G</b>／手把 <b>Y</b>。
+      🏁 飛夠了：鍵盤 <b>Esc</b>／手把 <b>B</b>／畫面 ⏸ → 「結束飛行」看成績。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-start',label:'開始飛行',onClick:startGame},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style','b-challenge','b-start'],focusIdx);
+}
+function startGame(){
+  rebuildMesh();
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  ch.apply(drone); syncModes();
+  hud.toast('角度模式：放開自動回平｜按 M 切換模式','ok');
+  hud.setGuide(MODE_GUIDE[baseMode]);
+}
+function togglePause(){
+  if(!engine.simStarted)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>飛行 ${flightTime.toFixed(0)} 秒・自穩次數 ${selfLevelUses}</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-finish',label:'🏁 結束飛行（看成績）',onClick:finishFlight},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+/* 2026-09-30 新增（使用者回報：自由模式無法結束）：結束飛行＝寫入成績＋結算畫面 */
+let finished=false;
+function finishFlight(){
+  if(finished)return; finished=true;
+  engine.paused=false; engine.simStarted=false;
+  const r=progress.record('acro-freeflight',{completed:true,score:score.score,
+    flightTime:Math.round(flightTime),selfLevelUses,rings:ringCount,acroSeconds:Math.round(proSeconds),
+    angleSeconds:Math.round(angleSeconds),...ch.recordFields()});
+  sfx.play('finish');
+  ui.showModal({title:'🏁 自由飛行結束',
+    html:`<p>⏱ 飛行時間：<b>${flightTime.toFixed(0)}</b> 秒　⭕ 穿環：<b>${ringCount}</b> 次　🏆 分數：<b>${score.score}</b></p>
+      <p>🟢 角度模式 ${angleSeconds.toFixed(0)} 秒　🔴 Acro 模式 ${proSeconds.toFixed(0)} 秒　🛟 自穩救援 ${selfLevelUses} 次</p>
+      <p style="color:#9fc3d8">${proSeconds<10?'下次可以按 M／手把 LT 挑戰 Acro 模式！':selfLevelUses===0?'Acro 飛行完全沒用自穩，很穩！':'Acro 還在練習中，自穩用越少代表越熟練。'}
+      成績已記錄（第 ${r.attempts} 次）。</p>`,
+    buttons:[
+      {id:'b-again',label:'再飛一次',onClick:()=>location.reload()},
+      {id:'b-menu',label:'回訓練選單',onClick:()=>{location.href='../pages/levels-basic.html';}},
+    ]});
+  ui.gpSetFocus(['b-again','b-menu'],0);
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('自由飛行練習（無任務門檻）');
+hud.showAttitude(true);
+syncModes();
+const ringTargets=rings.map(r=>({pos:r.position,done:false}));
+const _e=new THREE.Euler();
+const _up=new THREE.Vector3();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device,{keyboard:'<kbd>G</kbd>檔位 <kbd>Space</kbd>自穩',
+    gamepad:'<kbd>{mode}</kbd>切模式 <kbd>{selfLevel}</kbd>自穩 <kbd>{back}</kbd>暫停/結束',touch:'👆模式鈕・自穩鈕'});
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    // 手把 R1（button 5）＝自穩，跟鍵盤 Space／觸控按鈕同一組安全網
+    const gps=input.gamepads();
+    selfLevelGp=input.anyBtn('selfLevel');          // 具名按鍵（預設 R1）
+    const xNow=input.anyBtn('mode'), bNow=input.anyBtn('back');   // 具名按鍵（預設 X／B）
+    if(simStarted&&!ui.modalOpen&&xNow&&!prevGpX)toggleBaseMode();
+    // 2026-10-07：返回鍵＝暫停改由 input.js 統一送 Esc（全站都有），這裡不再自己處理，免得暫停又馬上繼續
+    prevGpX=xNow; prevGpB=bNow;
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }else{
+    selfLevelGp=false;
+  }
+  const wasHeld=selfLevelHeld;
+  selfLevelHeld=selfLevelKey||selfLevelGp||selfLevelTouch;
+  if(selfLevelHeld&&!wasHeld)selfLevelUses++;
+  drone.mode=selfLevelHeld?'arcade':baseMode;
+  if(simStarted){
+    flightTime+=dt;
+    if(drone.mode==='pro')proSeconds+=dt;
+    if(drone.mode==='angle')angleSeconds+=dt;
+    prevPos.copy(drone.pos);
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    for(let i=0;i<rings.length;i++){
+      const r=rings[i];
+      if(checkRingPass(r,drone.pos,prevPos)){
+        ringCount++; score.add(100,'ring'); sfx.play('ring');
+        ringTargets[i].done=true;
+        hud.toast(`穿環！(${ringCount})`,'ok');
+        r.children.forEach(m=>m.material.color.setHex(0x66ff99));
+      }
+    }
+    const next=rings.find(r=>!r.userData.passed);
+    hud.setOffscreenTarget(next?next.position:null);
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(drone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(`穿環 ${ringCount}・自穩 ${selfLevelUses} 次`);
+  hud.setScore(score.score);
+  syncModes();
+  if(drone.mode==='pro'||drone.mode==='angle'){
+    _e.setFromQuaternion(drone.q,'YXZ');
+    hud.setAttitude(_e.x,-_e.z);
+  }
+  // 翻覆提醒：Acro 模式機身倒過來（機體上方朝下）時提示救援方法，3 秒內不重複
+  flipWarnT=Math.max(0,flipWarnT-dt);
+  if(simStarted&&drone.mode==='pro'&&flipWarnT===0){
+    _up.set(0,1,0).applyQuaternion(drone.q);
+    if(_up.y<0){ hud.toast('機身翻過去了！按住 空白鍵／手把 RB／自穩鈕 救援','warn'); flipWarnT=3; }
+  }
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,ringTargets);
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🌀</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：懸停挑戰｜newdrone X-Hover v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#060d14;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE X-HOVER v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { buildBasicField, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   情境體驗：懸停挑戰（移植自基本版 exp/exp-hover.html）
+   ------------------------------------------------------------
+   移植決策：
+   - 物理沿用 core/physics.js 既有 Drone(arcade) 模式——比對後確認
+     基本版 exp-hover 的 updatePhysics()（yaw 旋轉＋視覺傾斜 lerp＋
+     朝向水平推力＋PD 定高）跟 physics.js 的 _arcade() 是同一設計脈絡，
+     直接共用即符合「共用引擎」原則，不需要為這關另開一份物理。
+   - 風場沿用 core/systems/wind.js 的 WindSystem 容器（hudInfo 公式／
+     drone.wind 注入介面不變），但「每 3~8 秒隨機換一次目標風向、
+     期間平滑 lerp 過去」這個節奏是這關獨有的（跟 t04 的離散陣風、
+     t06 的連續正弦擾動都不同），比照 t09 的慣例：只有這關會用到的
+     節奏公式留在關卡本地，透過 wind.setScripted() 餵給共用容器。
+   - 縮小懸停圈視覺（disc/ring/cylinder）是這關獨有的裝飾物，沒有
+     其他關卡會重用，比照 t04 障礙柱／t09 動態障礙的慣例留在本檔。
+   ============================================================ */
+
+const LEVEL=getLevel('x-hover');
+progress.migrateLegacy();
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-hover',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(8,4,12), new THREE.Vector3(-8,4,12),
+  new THREE.Vector3(0,6,16), new THREE.Vector3(14,4,0)]});
+const wind=new WindSystem();
+const BOUND=20, HOVER_Y=3.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x060d14,skipCompassMark:true});
+/* 四方位地標（2026-07-23 使用者回饋：學生分不清小地圖北朝上跟跟機鏡頭
+   實際朝南的關係，希望場地放實體地標＋小地圖同步顯示）——
+   skipCompassMark:true 讓 buildBasicField 不要再畫它自己那顆北方錐體，
+   改用這裡的完整四方位版本，避免北方地標重複。 */
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+
+/* ── 常數（沿用基本版數值） ── */
+const GAME_TIME=60.0, PTS_IN=10, PTS_OUT=20;
+const DIFF_CFG={
+  easy:{ label:'初級', startR:5.0, endR:2.0, windMax:2.0 },
+  med: { label:'中級', startR:4.0, endR:1.2, windMax:4.0 },
+  hard:{ label:'高級', startR:3.0, endR:0.5, windMax:7.0 },
+};
+
+/* ── 席位與機體（樣式可選——nd.settings.droneStyle 全關卡通用） ── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='trainer-orb')); // 情境體驗關卡固定用自己的主題機體，不吃全域裝備設定（t02-t11／template／showroom 才共用 droneStyleGet）
+let beaconOn=progress.setting('headingBeacon',true);
+let mesh=null, beacon=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:14},
+  spawn:new THREE.Vector3(0,HOVER_Y,0)});
+
+/* ── 懸停圈視覺（unit-radius 物件＋scale 控制大小，沿用基本版手法） ── */
+const zoneDiscMat=new THREE.MeshBasicMaterial({color:0x22c55e,transparent:true,opacity:.10,side:THREE.DoubleSide});
+const zoneDisc=new THREE.Mesh(new THREE.CircleGeometry(1,72),zoneDiscMat);
+zoneDisc.rotation.x=-Math.PI/2; zoneDisc.position.y=0.02; engine.scene.add(zoneDisc);
+function makeGroundRing(color){
+  const pts=[]; for(let i=0;i<=80;i++){const a=(i/80)*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(a),0,Math.sin(a)));}
+  return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color}));
+}
+const groundRing=makeGroundRing(0x22c55e); groundRing.position.y=0.04; engine.scene.add(groundRing);
+const hoverRing=makeGroundRing(0x22c55e); hoverRing.position.y=HOVER_Y; engine.scene.add(hoverRing);
+const zoneCylMat=new THREE.MeshBasicMaterial({color:0x22c55e,transparent:true,opacity:.06,side:THREE.DoubleSide});
+const zoneCyl=new THREE.Mesh(new THREE.CylinderGeometry(1,1,HOVER_Y+1,48,1,true),zoneCylMat);
+zoneCyl.position.y=(HOVER_Y+1)/2; engine.scene.add(zoneCyl);
+const centerPost=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,HOVER_Y,8),
+  new THREE.MeshBasicMaterial({color:0x00ccaa,transparent:true,opacity:.4}));
+centerPost.position.y=HOVER_Y/2; engine.scene.add(centerPost);
+const centerDot=new THREE.Mesh(new THREE.CircleGeometry(.15,16),new THREE.MeshBasicMaterial({color:0x00ccaa}));
+centerDot.rotation.x=-Math.PI/2; centerDot.position.y=0.03; engine.scene.add(centerDot);
+function setZoneScale(r){
+  zoneDisc.scale.set(r,r,r); groundRing.scale.set(r,1,r);
+  hoverRing.scale.set(r,1,r); zoneCyl.scale.set(r,1,r);
+}
+function setZoneColor(inside){
+  const col=inside?0x22c55e:0xef4444, op=inside?0.10:0.08;
+  zoneDiscMat.color.setHex(col); zoneDiscMat.opacity=op;
+  groundRing.material.color.setHex(col); hoverRing.material.color.setHex(col);
+  zoneCylMat.color.setHex(col); centerPost.material.color.setHex(inside?0x00ccaa:0xef4444);
+}
+
+/* ── 遊戲狀態 ── */
+let pDiff='med', timer=GAME_TIME, score=0, timeIn=0, timeOut=0;
+let zoneR=4.0, insideZone=true, lastInside=true, finished=false, playing=false;
+
+/* ── 風（沿用基本版節奏：每 3~8 秒隨機換目標風向，平滑 lerp 過去） ── */
+const windVec=new THREE.Vector3(), windTarget=new THREE.Vector3();
+let windTimer=0;
+function updateHoverWind(dt){
+  windTimer-=dt;
+  if(windTimer<=0){
+    const wMax=DIFF_CFG[pDiff].windMax;
+    const ang=Math.random()*Math.PI*2, str=(0.3+Math.random()*0.7)*wMax;
+    windTarget.set(Math.cos(ang)*str,0,Math.sin(ang)*str);
+    windTimer=3+Math.random()*5;
+  }
+  windVec.lerp(windTarget,Math.min(1,dt*0.6));
+  wind.setScripted(windVec.x,windVec.z,windVec.length());
+}
+
+/* ── 視角／模式／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function toggleMode(){
+  // 挑戰條件「定高關」時，M 在 角度↔專業 之間切；否則維持原本 街機↔專業
+  const base=ch.hold?'arcade':'angle';
+  drone.mode=drone.mode==='pro'?base:'pro';
+  hud.showAttitude(drone.mode!=='arcade');
+  hud.toast(drone.mode==='arcade'?'街機模式（定高輔助）':drone.mode==='angle'?'角度模式（放開回平、無定高）':'專業模式（全姿態）','ok');
+  syncModes();
+}
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='KeyM')toggleMode();
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?3:2)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 懸停挑戰',
+    html:`<p>操控無人機停在地面圓圈正上方。風會從隨機方向吹來，讓你偏移；圓圈也會逐漸縮小。</p>
+      <p>✅ <b>在圈內</b>：+10 分/秒　❌ <b>出圈外</b>：-20 分/秒（最低 0 分）<br>
+      ⏱ 挑戰時間 <b>60 秒</b>，看最後能拿幾分！</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-easy',label:'初級（弱風・5m→2m）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'中級（中風・4m→1.2m）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'高級（強風・3m→0.5m）',onClick:()=>startGame('hard')},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff;
+  timer=GAME_TIME; score=0; timeIn=0; timeOut=0;
+  zoneR=DIFF_CFG[diff].startR; insideZone=true; lastInside=true;
+  windVec.set(0,0,0); windTarget.set(0,0,0); windTimer=3+Math.random()*2;
+  drone.reset(new THREE.Vector3(0,HOVER_Y,0));
+  setZoneScale(zoneR); setZoneColor(true);
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  drone.mode='arcade'; ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  hud.setMission('停在圓圈正上方');
+  hud.toast('開始懸停！注意風向','ok');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>目前得分 ${Math.floor(score)}・剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-beacon',label:'機頭指示：'+(beaconOn?'開':'關'),
+        onClick:()=>{beaconOn=!beaconOn;progress.setSetting('headingBeacon',beaconOn);
+          beacon.visible=beaconOn;showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const stability=Math.round((timeIn/GAME_TIME)*100);
+  const grade=stability>=90?'S':stability>=75?'A':stability>=50?'B':'C';
+  const emoji={S:'🥇',A:'🥈',B:'🥉',C:'💪'}[grade];
+  progress.record('x-hover',{completed:true,score:Math.floor(score),
+    metrics:{stabilityScore:stability,timeIn:+timeIn.toFixed(1),timeOut:+timeOut.toFixed(1),
+      finalRadius:+zoneR.toFixed(1)},...ch.recordFields()});
+  ui.showModal({title:'挑戰結束 · '+emoji+' '+grade,
+    html:`<p>🏆 總得分：<b>${Math.floor(score)} 分</b><br>
+      ✅ 在圈時間：${timeIn.toFixed(1)} 秒　❌ 出圈時間：${timeOut.toFixed(1)} 秒<br>
+      📊 穩定度：<b>${stability}%</b>　🎯 最終圓圈：${zoneR.toFixed(1)} m</p>
+      <p>成績已記錄（nd.progress.x-hover）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再試一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(ch.any?3:2)},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇難度後開始懸停');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    updateHoverWind(dt);
+    drone.wind=wind.vec;
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+
+    const t=1-(timer/GAME_TIME);
+    zoneR=DIFF_CFG[pDiff].startR-(DIFF_CFG[pDiff].startR-DIFF_CFG[pDiff].endR)*t;
+    setZoneScale(zoneR);
+
+    const dist=Math.hypot(drone.pos.x,drone.pos.z);
+    lastInside=insideZone; insideZone=dist<=zoneR;
+    setZoneColor(insideZone);
+    if(insideZone){ score+=PTS_IN*dt; timeIn+=dt; }
+    else{ score=Math.max(0,score-PTS_OUT*dt); timeOut+=dt; }
+    if(!insideZone&&lastInside){ hud.toast('⚠ 出圈 -20分/秒','warn'); sfx.play('warn'); }
+    if(insideZone&&!lastInside){ hud.toast('✅ 回圈 +10分/秒','ok'); sfx.play('ok'); }
+
+    timer-=dt;
+    hud.setTimer(Math.max(0,timer));
+    hud.setScore(Math.floor(score));
+    hud.setProgress(`圓圈 ${zoneR.toFixed(1)}m・${insideZone?'圈內':'圈外'}`);
+    if(timer<=0)finishGame();
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(drone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  wind.update(dt);
+  hud.setWind(playing?wind.hudInfo():null,playing?wind.screenArrowDeg(drone.pos,engine.camera):null);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,[{pos:new THREE.Vector3(0,0,0),color:0x22c55e}],
+    {landmarks:compassLandmarks});
+  if(drone.mode!=='arcade'){
+    const _e=new THREE.Euler().setFromQuaternion(drone.q,'YXZ');
+    hud.setAttitude(_e.x,-_e.z);
+  }
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

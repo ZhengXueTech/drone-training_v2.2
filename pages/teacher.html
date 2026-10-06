@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🧑‍🏫</text></svg>">
+<title>newdrone｜教師端 DPT 解碼器</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    min-height:100vh;padding:28px 16px 60px;box-sizing:border-box;}
+  .wrap{max-width:960px;margin:0 auto;}
+  h1{font-size:22px;color:#00eeff;letter-spacing:2px;margin:0;}
+  .topline{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:18px;}
+  .toplabel{font-size:10px;color:#7aa3b8;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;}
+  button,a.btn{background:#0b1626;color:#9fc3d8;border:1px solid rgba(0,238,255,.35);border-radius:8px;
+    font-size:11px;padding:8px 14px;font-family:inherit;cursor:pointer;text-decoration:none;display:inline-block;}
+  button:hover,a.btn:hover{background:#153a5e;color:#cfefff;}
+  button.primary{background:#0e2238;color:#00eeff;border-color:rgba(0,238,255,.6);}
+
+  .sect{background:#0b1626;border:1px solid rgba(0,238,255,.35);border-radius:14px;padding:18px 20px;margin-bottom:20px;}
+  .sect h2{font-size:13px;color:#00eeff;margin:0 0 4px;letter-spacing:1px;}
+  .sect .sub{font-size:11px;color:#7aa3b8;margin:0 0 14px;line-height:1.7;}
+
+  input,textarea{width:100%;box-sizing:border-box;background:#050a12;border:1px solid rgba(0,238,255,.35);
+    border-radius:7px;padding:9px 11px;color:#cfefff;font-family:inherit;font-size:13px;}
+  input:focus,textarea:focus{outline:none;border-color:#00eeff;}
+  .row{display:flex;gap:8px;margin-bottom:10px;}
+  .row input{flex:1;}
+
+  #single-result{margin-top:14px;font-size:12px;}
+  .err{color:#ff8a8a;font-weight:700;}
+  .taglist{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:10px;}
+  .tagitem{display:flex;gap:8px;align-items:center;padding:5px 8px;background:#050a12;border-radius:6px;font-size:11px;}
+  .dot-done{color:#4ade80;} .dot-part{color:#facc15;} .dot-none{color:#3b5c7a;}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;}
+  .card{background:#050a12;border:1px solid rgba(0,238,255,.25);border-radius:10px;padding:10px 12px;text-align:center;}
+  .card .lbl{font-size:9px;color:#7aa3b8;text-transform:uppercase;}
+  .card .val{font-size:20px;font-weight:900;color:#fff;margin-top:2px;}
+  .card.warn .val{color:#facc15;}
+
+  table{width:100%;border-collapse:collapse;font-size:11px;}
+  th{background:rgba(0,238,255,.08);color:#7aa3b8;font-size:9px;text-transform:uppercase;
+    padding:7px 8px;text-align:left;position:sticky;top:0;}
+  td{padding:6px 8px;border-top:1px solid rgba(0,238,255,.12);}
+  tr.flag td{background:rgba(250,204,21,.06);}
+  .tblwrap{overflow-x:auto;max-height:480px;overflow-y:auto;border:1px solid rgba(0,238,255,.2);border-radius:10px;}
+  .status-ok{color:#4ade80;} .status-flag{color:#facc15;} .status-err{color:#ff8a8a;}
+  .dot{font-size:13px;}
+
+  details{background:#050a12;border:1px solid rgba(100,116,139,.25);border-radius:10px;}
+  summary{padding:12px 16px;font-size:11px;color:#7aa3b8;cursor:pointer;}
+  pre{margin:0;padding:0 16px 14px;font-size:10px;color:#9fc3d8;overflow-x:auto;line-height:1.6;}
+  code.inline{color:#facc15;}
+  .compat-note{margin-top:10px;font-size:10.5px;color:#7aa3b8;line-height:1.7;background:rgba(0,238,255,.05);
+    border:1px solid rgba(0,238,255,.2);border-radius:8px;padding:10px 12px;}
+
+  footer{text-align:center;font-size:10px;color:#3b5c7a;margin-top:30px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline">
+    <div>
+      <div class="toplabel">newdrone · Teacher Tool</div>
+      <h1>🧑‍🏫 DPT 代碼解析器</h1>
+    </div>
+    <a class="btn" href="../index.html">← 返回入口</a>
+  </div>
+
+  <div class="sect">
+    <h2>單一代碼查詢</h2>
+    <p class="sub">相容 v1（基本版舊代碼，8 碼英數字）與 v2（newdrone 新代碼，開頭 <code class="inline">N2</code>）。</p>
+    <div class="row">
+      <input id="inp-single" placeholder="貼上代碼，例如 N25L691OGN2KV9J0OT 或 HNT5SGAE" maxlength="40">
+      <button class="primary" id="btn-single">解析</button>
+    </div>
+    <div id="single-result"></div>
+  </div>
+
+  <div class="sect">
+    <h2>批次解析（從 Google Sheets 貼上）</h2>
+    <p class="sub">每行格式：<code class="inline">姓名,代碼</code> 或 Tab 分隔，一行一位學生。v1／v2 代碼可以混貼。</p>
+    <textarea id="inp-batch" rows="6" placeholder="王小明,N25L691OGN2KV9J0OT&#10;李大華,HNT5SGAE&#10;..."></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button class="primary" id="btn-batch">批次解析</button>
+      <button id="btn-csv">匯出 CSV</button>
+      <button id="btn-print">🖨️ 列印</button>
+    </div>
+  </div>
+
+  <div class="sect" id="summary-sect" style="display:none;">
+    <h2>班級總覽</h2>
+    <div class="cards" id="summary-cards"></div>
+    <p class="sub" style="margin:0;">完成率＝各代碼「完成關卡數 / 該代碼記錄的總關卡數」平均——v1／v2 記錄的關卡數不同，用百分比才能放在一起比。「需關注」＝完成率低於 50%。</p>
+  </div>
+
+  <div class="sect" id="batch-sect" style="display:none;">
+    <h2>解析結果</h2>
+    <div class="tblwrap"><table>
+      <thead><tr id="batch-thead"></tr></thead>
+      <tbody id="batch-tbody"></tbody>
+    </table></div>
+    <div class="compat-note">
+      v2 代碼的每關明細會依目前 <code class="inline">levels-manifest.js</code> 的順序標名稱；v1 舊代碼記錄的是基本版
+      training-stage1-11＋足球賽（跟目前 newdrone 的關卡不是同一批內容，無法對應到同一組欄位），
+      這裡只顯示完成數/總數，完整明細可用單一代碼查詢那格看，或到基本版原本的 <code class="inline">decode.html</code> 查。
+    </div>
+  </div>
+
+  <div class="sect">
+    <h2>Google Apps Script 自動解碼</h2>
+    <p class="sub">在 Google Sheets 選「擴充功能 → Apps Script」貼上以下腳本存檔（需 V8 執行階段，新腳本預設就是）。
+      既有已經在用 <code class="inline">=DPT_DECODE(A2)</code> 的表不受影響（舊函式原封不動保留）；
+      新的一律建議改用 <code class="inline">=DPT_DECODE_ANY(A2)</code>，v1／v2 代碼都認得。</p>
+    <div style="position:relative;">
+      <pre id="gas-code"></pre>
+      <button id="btn-copy-gas" style="position:absolute;top:8px;right:8px;">複製</button>
+    </div>
+  </div>
+
+  <details>
+    <summary>🔍 原始批次解析資料（JSON）</summary>
+    <pre id="raw-json"></pre>
+  </details>
+
+  <footer>NEWDRONE TEACHER v1.0（DPT v1/v2 相容）</footer>
+</div>
+
+<script type="module">
+import { LEVELS } from '../data/levels-manifest.js';
+import { decodeAny, TIER_LABELS } from '../data/dpt.js';
+
+const V1_STAGE_NAMES=[
+  'S1 安全概念','S2 搖桿對應','S3 緊急停止','S4 障礙迴避',
+  'S5 自主飛行','S6 風場干擾','S7 精準降落','S8 限電計畫',
+  'S9 動態追蹤','S10 城市飛行','S11 搜救任務','⚽ 足球賽'
+];
+
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const dotChar=t=>t>=2?'●':t===1?'◐':'○';
+const dotCls=t=>t>=2?'dot-done':t===1?'dot-part':'dot-none';
+
+function renderSingle(res){
+  const el=document.getElementById('single-result');
+  if(!res.valid){ el.innerHTML=`<div class="err">${esc(res.error)}</div>`; return; }
+  if(res.version===2){
+    const items=res.tiers.map((t,i)=>{
+      const label=LEVELS[i]?`${LEVELS[i].emoji||''} ${LEVELS[i].title}`:`第 ${i+1} 關`;
+      return `<div class="tagitem"><span class="${dotCls(t)} dot">${dotChar(t)}</span><span>${esc(label)}</span>
+        <span style="color:#7aa3b8;margin-left:auto;">${TIER_LABELS[t]}</span></div>`;
+    }).join('');
+    el.innerHTML=`<div style="margin-bottom:8px;">
+      <span style="font-size:20px;font-weight:900;color:#fff;">${res.completed} / ${res.N}</span>
+      <span style="color:#7aa3b8;margin-left:10px;">v2 代碼・產生日期 ${res.date}</span></div>
+      <div class="taglist">${items}</div>`;
+  }else{
+    const items=res.bits.map((b,i)=>`<div class="tagitem"><span class="${b?'dot-done':'dot-none'} dot">${b?'●':'○'}</span>
+      <span>${esc(V1_STAGE_NAMES[i]||('S'+(i+1)))}</span></div>`).join('');
+    el.innerHTML=`<div style="margin-bottom:8px;">
+      <span style="font-size:20px;font-weight:900;color:#fff;">${res.completed} / 12</span>
+      <span style="color:#7aa3b8;margin-left:10px;">v1 舊代碼（基本版）・產生日期 ${res.date}</span></div>
+      <div class="taglist">${items}</div>`;
+  }
+}
+
+document.getElementById('btn-single').onclick=()=>{
+  renderSingle(decodeAny(document.getElementById('inp-single').value));
+};
+document.getElementById('inp-single').addEventListener('keydown',e=>{ if(e.key==='Enter')document.getElementById('btn-single').click(); });
+
+let batchResults=[];
+function decodeBatch(){
+  const lines=document.getElementById('inp-batch').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  batchResults=lines.map(line=>{
+    const parts=line.split(/[,\t]/).map(s=>s.trim());
+    const name=parts[0]||'（未填）';
+    const code=(parts[1]||'').trim();
+    const res=decodeAny(code);
+    const totalForPct=res.valid?(res.version===2?res.N:12):null;
+    const pct=res.valid&&totalForPct?Math.round(res.completed/totalForPct*100):null;
+    return { name, code, ...res, pct };
+  });
+
+  const thead=document.getElementById('batch-thead');
+  const maxN=Math.max(0,...batchResults.filter(r=>r.valid&&r.version===2).map(r=>r.N));
+  const dynCols=Array.from({length:maxN},(_,i)=>LEVELS[i]?.title||`第${i+1}關`);
+  thead.innerHTML=`<th>姓名</th><th>格式</th><th>日期</th><th>完成率</th>`+
+    dynCols.map(c=>`<th>${esc(c)}</th>`).join('')+`<th>狀態</th>`;
+
+  const tbody=document.getElementById('batch-tbody');
+  tbody.innerHTML=batchResults.map(r=>{
+    if(!r.valid){
+      return `<tr class="flag"><td>${esc(r.name)}</td><td colspan="${3+maxN}" class="status-err">⚠ ${esc(r.error)}</td>
+        <td class="status-err">代碼錯誤</td></tr>`;
+    }
+    const isFlag=r.pct!=null&&r.pct<50;
+    const dots=r.version===2
+      ? Array.from({length:maxN},(_,i)=> i<r.N ? `<td><span class="dot ${dotCls(r.tiers[i])}">${dotChar(r.tiers[i])}</span></td>` : `<td>—</td>`).join('')
+      : `<td colspan="${maxN}" style="color:#7aa3b8;">v1 舊代碼（不對應目前關卡，見下方單一查詢或基本版 decode.html）</td>`;
+    const statusTxt=isFlag?'⚠ 需關注':'✅ 正常';
+    const statusCls=isFlag?'status-flag':'status-ok';
+    return `<tr class="${isFlag?'flag':''}">
+      <td>${esc(r.name)}</td><td>${r.version===2?'v2':'v1'}</td><td>${r.date}</td>
+      <td>${r.completed}/${r.version===2?r.N:12}（${r.pct}%）</td>
+      ${dots}
+      <td class="${statusCls}">${statusTxt}</td></tr>`;
+  }).join('');
+
+  document.getElementById('batch-sect').style.display='block';
+  renderSummary();
+  document.getElementById('raw-json').textContent=JSON.stringify(batchResults,null,2);
+}
+
+function renderSummary(){
+  const valid=batchResults.filter(r=>r.valid);
+  const invalid=batchResults.length-valid.length;
+  const avgPct=valid.length?Math.round(valid.reduce((s,r)=>s+(r.pct||0),0)/valid.length):0;
+  const flagged=valid.filter(r=>r.pct!=null&&r.pct<50).length;
+  const cards=document.getElementById('summary-cards');
+  cards.innerHTML=`
+    <div class="card"><div class="lbl">有效代碼</div><div class="val">${valid.length}</div></div>
+    <div class="card"><div class="lbl">代碼錯誤</div><div class="val" style="${invalid?'color:#ff8a8a':''}">${invalid}</div></div>
+    <div class="card"><div class="lbl">平均完成率</div><div class="val">${avgPct}%</div></div>
+    <div class="card warn"><div class="lbl">需關注</div><div class="val">${flagged}</div></div>`;
+  document.getElementById('summary-sect').style.display='block';
+}
+
+document.getElementById('btn-batch').onclick=decodeBatch;
+
+document.getElementById('btn-csv').onclick=()=>{
+  if(!batchResults.length){ alert('請先按「批次解析」'); return; }
+  const maxN=Math.max(0,...batchResults.filter(r=>r.valid&&r.version===2).map(r=>r.N));
+  const dynCols=Array.from({length:maxN},(_,i)=>LEVELS[i]?.title||`第${i+1}關`);
+  const header=['姓名','格式','日期','完成','總關卡','完成率(%)','狀態',...dynCols,'備註'];
+  const rows=batchResults.map(r=>{
+    if(!r.valid)return[r.name,'','','','','','代碼錯誤',...dynCols.map(()=>''),r.error];
+    const flag=r.pct!=null&&r.pct<50;
+    const dots=r.version===2
+      ? Array.from({length:maxN},(_,i)=>i<r.N?r.tiers[i]:'')
+      : dynCols.map(()=>'');
+    return[r.name,r.version===2?'v2':'v1',r.date,r.completed,r.version===2?r.N:12,r.pct,
+      flag?'需關注':'正常',...dots,r.version===1?'v1 舊代碼不對應目前關卡':''];
+  });
+  const csv=[header,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`newdrone_DPT_解析_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+};
+
+document.getElementById('btn-print').onclick=()=>window.print();
+
+/* ═══════════════════════════════════════════════
+   GAS 腳本：DPT_DECODE（v1，逐字保留原樣，既有表不受影響）
+   ＋ DPT_DECODE_ANY（新，v1/v2 都認得）
+   v2 演算法已對照 data/dpt.js 的 encodeV2/decodeV2 逐行實作，
+   並且用 500 組隨機案例交叉驗證過兩邊輸出逐位元一致（node 測試，
+   不在 GAS 環境內執行——GAS 沒有現成的單元測試環境，這是可行範圍內
+   最嚴謹的驗證方式：確保貼進 Apps Script 的邏輯跟這個頁面用的
+   decodeAny() 是同一套演算法，不是憑印象重寫的另一份）。
+   ═══════════════════════════════════════════════ */
+const GAS_CODE = `// DPT Decoder v1+v2 — 貼入 Google Apps Script 後儲存（需 V8 執行階段）
+// 用法：
+//   既有表：=DPT_DECODE(A2)      舊版，只認 v1，原封不動保留
+//   新表：  =DPT_DECODE_ANY(A2)  新版，v1/v2 都認得，回傳格式見下方註解
+
+// ── v1（基本版舊格式，原封不動）──
+const DPT_W = [3,7,11,13,17,19,23,29,31,37,41,43];
+function DPT_DECODE(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!/^[0-9A-Z]{8}$/.test(c)) return [["格式錯誤"]];
+  const packed = parseInt(c.slice(0,6), 36);
+  const encoded = packed % 4096;
+  const dateKey = Math.floor(packed / 4096);
+  if (dateKey < 10101 || dateKey > 991231) return [["日期異常"]];
+  const xorKey = ((dateKey * 31) ^ (dateKey >>> 7)) & 0xFFF;
+  const comp = encoded ^ xorKey;
+  const bits = Array.from({length:12}, (_,i) => (comp >>> i) & 1);
+  let chk = DPT_W.reduce((s,w,i) => s + bits[i]*w, 0);
+  chk = (chk + dateKey) % 1296;
+  const expChk = chk.toString(36).toUpperCase().padStart(2,'0');
+  if (expChk !== c.slice(6,8)) return [["⚠️ 代碼疑似竄改"]];
+  const yy = Math.floor(dateKey/10000);
+  const mm = Math.floor((dateKey%10000)/100);
+  const dd = dateKey % 100;
+  const date = \`20\${String(yy).padStart(2,'0')}-\${String(mm).padStart(2,'0')}-\${String(dd).padStart(2,'0')}\`;
+  return [[date, bits.reduce((a,b)=>a+b,0), ...bits]];
+}
+function DPT_HEADER() {
+  return [["日期","完成數","S1","S2","S3","S4","S5","S6","S7","S8","S9","S10","S11","⚽足球"]];
+}
+
+// ── v2（newdrone 新格式，自描述、關卡數可變）──
+const B36 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function bigFromBase36_(str) {
+  let v = 0n;
+  for (const ch of String(str).toUpperCase()) {
+    const d = B36.indexOf(ch);
+    if (d < 0) throw new Error('bad char');
+    v = v * 36n + BigInt(d);
+  }
+  return v;
+}
+const MASK48_ = (1n << 48n) - 1n;
+function keystream48_(dateKey) {
+  let x = BigInt(dateKey) * 2654435761n;
+  x ^= x >> 15n;
+  x = (x * 0x2545F4914F6CDD1Dn) & MASK48_;
+  x ^= x >> 17n;
+  return x & MASK48_;
+}
+function checksumV2_(dateStr, dataStr) {
+  let v = 0;
+  for (const ch of dateStr + dataStr) v = ((v * 131) + ch.charCodeAt(0)) >>> 0;
+  return v % 1296;
+}
+// 目前 newdrone 關卡順序（要跟 data/levels-manifest.js 保持一致；
+// 之後新增關卡記得回來這裡也加一筆，順序要一樣，不然標籤會對不上）
+const ND_LEVEL_NAMES = ['沙盒訓練場','第一關 地面安全教育','第二關 搖桿位置對應教學','第三關 緊急處置教學','第四關 飛行風險與環境應對','第五關 綜合障礙賽（單飛考核）','第六關 逆風飛行','第七關 精準降落','第八關 限電規劃','第九關 動態障礙','第十關 城市峽谷','第十一關 搜救任務','無人機足球 3v3','無人機足球 PVP（1v1～3v3）','情境體驗：懸停挑戰','情境體驗：投遞任務','情境體驗：追蹤訓練','情境體驗：動態變形挑戰','情境體驗：守門挑戰','情境體驗：橋梁/電塔巡檢','情境體驗：山區搜救','情境體驗：建築外牆巡檢','情境體驗：農業精準噴藥','情境體驗：懸停對戰（PK）','情境體驗：守門對戰（PK）','情境體驗：追逐對戰（PK）','情境體驗：投遞對戰（PK）','情境體驗：農噴對戰（PK）','情境體驗：搜救對戰（PK）','情境體驗：無限穿環對戰（PK）','情境體驗：橋梁/電塔巡檢對戰（PK）','情境體驗：建築外牆巡檢對戰（PK）',
+  '無人機足球 擬真賽規版'];
+// ⚠️ 這份陣列用「索引」對應 data/levels-manifest.js 的 LEVELS 順序（report.html 的
+// encodeV2(LEVELS,...) 也是照 LEVELS 原始順序打包，DPT 代碼本身不存 id）——
+// 新增關卡務必附加在跟 manifest 完全一致的位置，插錯位置全部標籤會錯位。
+function decodeV2_(code) {
+  const body = code.slice(2);
+  if (body.length < 7) return { valid:false, error:'長度太短' };
+  const dateStr = body.slice(0,4), chkStr = body.slice(-2), dataStr = body.slice(4,-2);
+  let dateKey, enc;
+  try { dateKey = Number(bigFromBase36_(dateStr)); enc = bigFromBase36_(dataStr); }
+  catch(e) { return { valid:false, error:'非法字元' }; }
+  if (dateKey < 10101 || dateKey > 991231) return { valid:false, error:'日期範圍異常' };
+  const payload = enc ^ keystream48_(dateKey);
+  const N = Number(payload & 0b11111n);
+  if (N < 0 || N > 200) return { valid:false, error:'關卡數量異常' };
+  const tiers = [];
+  for (let i=0;i<N;i++) tiers.push(Number((payload >> BigInt(5+2*i)) & 0b11n));
+  const expectChk = checksumV2_(dateStr, dataStr);
+  const gotChk = Number(bigFromBase36_(chkStr));
+  if (expectChk !== gotChk) return { valid:false, error:'⚠️ Checksum 不符，代碼可能已竄改' };
+  const yy = Math.floor(dateKey/10000), mm = Math.floor((dateKey%10000)/100), dd = dateKey % 100;
+  const date = \`20\${String(yy).padStart(2,'0')}-\${String(mm).padStart(2,'0')}-\${String(dd).padStart(2,'0')}\`;
+  return { valid:true, version:2, date, N, tiers, completed: tiers.filter(t=>t>=2).length };
+}
+
+// 統一入口：=DPT_DECODE_ANY(A2)
+// 回傳一列：[版本, 日期, 完成數, 總關卡數, 完成率(%), 每關狀態...]
+// 每關狀態：0=未開始 1=進行中 2=已完成 3=已完成(多次挑戰)；v1 代碼會回傳 0/1（沒有中間級別）
+function DPT_DECODE_ANY(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (c.startsWith('N2')) {
+    const r = decodeV2_(c);
+    if (!r.valid) return [[r.error]];
+    const names = r.tiers.map((_,i) => ND_LEVEL_NAMES[i] || ('第'+(i+1)+'關'));
+    return [['v2', r.date, r.completed, r.N, Math.round(r.completed/r.N*100), ...r.tiers]];
+  }
+  // 否則當 v1 解
+  const v1 = DPT_DECODE(c);
+  if (v1[0].length === 1) return v1; // 錯誤訊息原樣傳回
+  const [date, completed, ...bits] = v1[0];
+  return [['v1', date, completed, 12, Math.round(completed/12*100), ...bits]];
+}`;
+
+document.getElementById('gas-code').textContent=GAS_CODE;
+document.getElementById('btn-copy-gas').onclick=()=>{
+  navigator.clipboard.writeText(GAS_CODE)
+    .then(()=>{ const b=document.getElementById('btn-copy-gas'); const old=b.textContent;
+      b.textContent='✅ 已複製'; setTimeout(()=>b.textContent=old,1600); });
+};
+</script>
+</body>
+</html>

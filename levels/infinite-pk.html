@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🧬</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：無限穿環對戰｜newdrone Infinite-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(100,200,255,.4) 15%,rgba(100,200,255,.55) 50%,rgba(100,200,255,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(100,200,255,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(11,15,25,.8);border:1px solid rgba(100,200,255,.35);border-radius:6px;
+    padding:4px 10px;color:#dbeeff;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(11,15,25,.85);border:1px solid rgba(100,200,255,.4);border-radius:10px;
+    padding:8px 22px;color:#dbeeff;font-size:12.5px;text-align:center;box-shadow:0 0 16px rgba(100,200,255,.12);
+    display:flex;gap:16px;align-items:center;}
+  #topbar b{font-size:15px;}
+  #topbar .p1{color:#38bdf8;} #topbar .p2{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(11,15,25,.85);
+    border:1px solid rgba(100,200,255,.4);color:#dbeeff;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE INFINITE-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { renderSplit } from '../core/camera.js';
+import { buildBasicField, makeRing } from '../core/world.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：無限穿環對戰（x-infinite 的 pk-live 版本，規劃書 §9 成本表
+   中成本第四例／最後一例：「同場同環序競速｜中」）
+   ------------------------------------------------------------
+   跟 cargo-pk（共用同一組取貨點/落點）／agri-pk／rescue-pk（共用同一
+   份場地、同田同信標搶）都不同：這關採用 x-hover-pk 的「並排各自一份」
+   模式——兩人在同一個場景裡各自擁有一份完全獨立、各自程序化生成的
+   6 環賽道（P1 賽道中心 x=-16、P2 賽道中心 x=+16，跟 x-hover-pk 的
+   CENTERS=[-6,6] 並排手法同一精神，只是這關賽道的環/障礙物橫向散佈
+   範圍比懸停圈大很多，offset 拉開到 ±16 才夠安全距離不互相干擾）。
+   「同環序」指兩人各自遵循同一套規則生成的環序（同一份難度曲線／
+   同一套生成公式），不是指兩人搶同一個實體環——單人版 x-infinite
+   本來就是「無限重生的單人穿環過關」玩法，若硬做成兩人搶同一組環，
+   會把中成本關卡拉高成高成本（需要處理「兩人同時衝向同一個環該算
+   誰的」這種新爭奪邏輯），選擇沿用 x-hover-pk 已驗證的並排獨立模式，
+   維持中成本，也完全不需要發明新的爭奪判定。
+
+   ⚠️ 跟其他三個中成本關卡不同的地方——沒有整場難度選單可以沿用：
+   單人版 x-infinite.html 從頭到尾只有一顆「🚀 挑戰未知賽道」按鈕，
+   完全沒有 easy/med/hard 選單（難度靠「圈數越高障礙/AI 越多、第 3 圈
+   起漂移」這條程序化曲線自然遞增，不是玩家選出來的）。既然沒有現成
+   的整場難度選單可以「兩人共用同一套規則」，這裡改成沿用
+   goalkeeper-pk／chase-pk（天生不對稱型）的「賽局時間」選項
+   （60/90/120 秒）——**這不代表這關被重新分類成天生不對稱型**，
+   分類上仍然是對稱同任務型（兩人做的事完全一樣），只是在「難度選單
+   要沿用哪一種既有機制」這個子決策上，因為單人版沒有可沿用的難度
+   選單，退而借用天生不對稱型關卡的時間選單機制，這是「沒有更好選項
+   時的務實借用」，不是分類判斷本身錯了。
+
+   ⚠️ 計分機制的必要調整：單人版是「穿環加秒、撞到扣秒」的存活制
+   （時間歸零才結束，靠加秒续命）。PK 版改成「全場固定倒數時間」
+   （上面的賽局時間選項），兩人共用同一個全場時鐘比賽——如果照搬
+   單人版的「加秒/扣秒」機制，會變成每個人的個人時鐘各自增減，
+   但賽局時鐘是全場共用的，個人化的時間增減在這裡沒有意義（一個人
+   穿環加的秒數不能延長「全場」的比賽時間，也不合理去改變對方的
+   時間）。因此把「加秒／扣秒」全部改成「加分／扣分」：穿環維持
+   單人版一模一樣的加分公式（100×combo×currentLoop），撞障礙柱／
+   擦身 AI 巡邏機原本扣 3 秒／1 秒的懲罰，改成固定扣分（-30／-15），
+   combo 疊加機制原封不動保留（連續穿環 5 秒內疊加，最高 5.0x）。
+   時間到比總分高下，比分數，不比「誰撐得比較久」（因為全場時間本來
+   就是共用的固定值，兩人的比賽時間本來就一樣長)。
+
+   物理／AI：C2 家族（core/physics.js 的 Drone，arcade 模式），沿用
+   x-hover-pk／cargo-pk／chase-pk 已驗證的 +sinθ,+cosθ 分割鏡頭公式。
+   單人版沒有「玩家 AI 對手」角色（只有環境巡邏機當障礙，不是可操控
+   競爭者），新寫一個自動穿環 AI，沿用 chase-pk／cargo-pk 的
+   droneSteerToward()（C2 家族安全轉向函式，本檔獨立複製一份），
+   依序導航向自己賽道的當前目標環。
+
+   機體樣式改用可染色的 trainer-orb（單人版固定用「穿環霓虹版」
+   infinite-neon，但其建構函式 m_infinite() 沒有吃 tc/color 參數，
+   青色寫死，沿用 cargo-pk／agri-pk／rescue-pk 的做法：捨棄情境造型、
+   改用泛用可染色機體）。
+
+   這關沒有電量/藥水等資源系統（單人版本來就沒有），不需要「停飛不
+   停賽」處理；也沒有補給站佈局公平性問題（兩人賽道完全對稱鏡射）。
+   環穿越判定沿用既有 core/systems/scoring.js 的 checkRingPass()——
+   每位玩家各自擁有獨立的環物件（不是同一顆物件），這個工具原本就是
+   物件內部用 userData.passed 做一次性鎖定，不同玩家各自的環物件互不
+   干擾，可以直接安全重用，不需要额外處理。
+   ============================================================ */
+
+const ACT='infinite-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const PLABEL=['P1','P2'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 場地常數（沿單人版 x-infinite.html 原值：環半徑、障礙柱/AI 生成
+   公式、漂移節奏全部一字不改，只把每個座標加上各自的 OFFSET_X 橫向
+   位移，讓兩條賽道並排不互相干擾） ── */
+const BOUND=64, HOVER_Y=4.0;
+const OFFSET_X=[-16,16];
+const PLAYER_SPAWNS=[new THREE.Vector3(OFFSET_X[0],1.5,5), new THREE.Vector3(OFFSET_X[1],1.5,5)];
+const GAME_TIME_OPTS={short:60,normal:90,long:120};
+const HIT_PENALTY_OBSTACLE=30, HIT_PENALTY_AI=15;
+const AI_AGGR={easy:0.7,med:1.0,hard:1.4};
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19,skipCompassMark:true});
+
+/* ── 兩台真機體（都是 C2 家族 Drone(arcade)；機體樣式改用可染色的
+   trainer-orb——理由見檔頭決策說明） ── */
+const drones=[0,1].map(i=>new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:PLAYER_SPAWNS[i].clone()}));
+const prevPos=[0,1].map(i=>new THREE.Vector3().copy(drones[i].pos));
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('trainer-orb',{tint:TINTS[i],scale:1});
+  m.castShadow=true; engine.scene.add(m); return m;
+});
+function flashDrone(i,hex){
+  const glow=meshes[i]&&meshes[i].userData.spin;
+  if(!glow||!glow.material||!glow.material.color)return;
+  const orig=glow.material.color.getHex();
+  glow.material.color.setHex(hex);
+  setTimeout(()=>{ if(glow.material)glow.material.color.setHex(orig); },200);
+}
+
+/* ── 程序化賽道（每位玩家各自一份，沿單人版 generateProceduralCourse
+   公式，只加上 OFFSET_X[i] 橫向位移） ── */
+const courses=[{checkpoints:[],obstacles:[],aiHaz:[]},{checkpoints:[],obstacles:[],aiHaz:[]}];
+function paintRing(r,hex,opacity){
+  r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex);
+  r.children[0].material.opacity=opacity??0.75;
+}
+function generateCourse(i){
+  const c=courses[i], ox0=OFFSET_X[i];
+  c.checkpoints.forEach(o=>engine.scene.remove(o));
+  c.obstacles.forEach(o=>engine.scene.remove(o));
+  c.aiHaz.forEach(a=>engine.scene.remove(a.mesh));
+  c.checkpoints=[]; c.obstacles=[]; c.aiHaz=[];
+  const loop=P[i].currentLoop;
+  const obstacleCount=Math.min(4,1+loop), aiCount=Math.min(4,1+loop);
+  const speedBoost=1.0+(loop-1)*0.25;
+  for(let k=0;k<6;k++){
+    const rx=ox0+(Math.random()-0.5)*11, ry=3.0+Math.random()*2.5, rz=-7-(k*7.5)+(Math.random()-0.5)*2;
+    const ring=makeRing(new THREE.Vector3(rx,ry,rz),{radius:1.7,color:k===0?TINTS[i]:0x64748b});
+    paintRing(ring,k===0?TINTS[i]:0x64748b,k===0?0.75:0.35);
+    ring.userData.baseUnitY=ry; ring.userData.seed=Math.random()*10;
+    engine.scene.add(ring); c.checkpoints.push(ring);
+  }
+  for(let k=0;k<obstacleCount;k++){
+    const ox=ox0+(Math.random()-0.5)*10, oz=-10-(k*10)-Math.random()*5;
+    const pillar=new THREE.Mesh(new THREE.CylinderGeometry(0.8,0.8,8,12),
+      new THREE.MeshStandardMaterial({color:0x475569,roughness:0.6,emissive:0x1e293b}));
+    pillar.position.set(ox,HOVER_Y,oz);
+    pillar.userData={baseUnitY:HOVER_Y,seed:Math.random()*10};
+    engine.scene.add(pillar); c.obstacles.push(pillar);
+  }
+  for(let k=0;k<aiCount;k++){
+    const az=-8-(k*11);
+    const sx=ox0+(Math.random()>0.5?-6:k), ex=sx===ox0-6?ox0+6:ox0-6;
+    const group=new THREE.Group();
+    group.add(new THREE.Mesh(new THREE.SphereGeometry(0.45,12,12),
+      new THREE.MeshStandardMaterial({color:0xf97316,emissive:0xf97316,emissiveIntensity:0.9,wireframe:true})));
+    engine.scene.add(group);
+    c.aiHaz.push({mesh:group,
+      waypoints:[new THREE.Vector3(sx,HOVER_Y+(Math.random()-0.5)*2,az),
+                 new THREE.Vector3(ex,HOVER_Y+(Math.random()-0.5)*2,az)],
+      segIndex:0, segT:0, speed:0.22*speedBoost});
+  }
+}
+function tickCourseHazards(i,dt){
+  const c=courses[i];
+  c.aiHaz.forEach(ai=>{
+    const from=ai.waypoints[ai.segIndex], to=ai.waypoints[(ai.segIndex+1)%ai.waypoints.length];
+    const dist=from.distanceTo(to);
+    ai.segT+=(ai.speed*dt)/Math.max(dist,0.01);
+    if(ai.segT>=1){ ai.segT=0; ai.segIndex=(ai.segIndex+1)%ai.waypoints.length; }
+    ai.mesh.position.lerpVectors(ai.waypoints[ai.segIndex],ai.waypoints[(ai.segIndex+1)%ai.waypoints.length],ai.segT);
+  });
+  if(P[i].currentLoop>=3){
+    c.checkpoints.forEach(cp=>{ cp.position.y=cp.userData.baseUnitY+Math.sin(flightTime*2+cp.userData.seed)*0.6; });
+    c.obstacles.forEach(o=>{ o.position.y=o.userData.baseUnitY+Math.cos(flightTime*1.5+o.userData.seed)*0.8; });
+  }
+}
+
+/* ── droneSteerToward()：跟 cargo-pk／chase-pk 同一個從 core/physics.js
+   的 _arcade() 公式反推的安全轉向函式（本檔獨立複製一份，維持每個
+   pk-live 檔案自包含） ── */
+function droneSteerToward(dr,targetPos,dt,aggr){
+  const dx=targetPos.x-dr.pos.x, dy=targetPos.y-dr.pos.y, dz=targetPos.z-dr.pos.z;
+  const distXZ=Math.hypot(dx,dz);
+  const ndx=distXZ>0.05?dx/distXZ:0, ndz=distXZ>0.05?dz/distXZ:0;
+  const desYaw=distXZ>0.05?Math.atan2(-ndx,-ndz):dr.yaw;
+  let yawErr=desYaw-dr.yaw; yawErr=Math.atan2(Math.sin(yawErr),Math.cos(yawErr));
+  const inpYaw=THREE.MathUtils.clamp(yawErr*2.2,-1,1);
+  const sy=Math.sin(dr.yaw), cy=Math.cos(dr.yaw);
+  const inpPitch=THREE.MathUtils.clamp((-sy*ndx-cy*ndz)*aggr,-1,1);
+  const inpRoll =THREE.MathUtils.clamp(( cy*ndx-sy*ndz)*aggr,-1,1);
+  const inpThrottle=THREE.MathUtils.clamp(dy*0.8,-1,1);
+  dr.update(dt,{throttle:inpThrottle,yaw:inpYaw,pitch:inpPitch,roll:inpRoll});
+}
+function updateInfiniteAI(i,dt,diff){
+  const c=courses[i], p=P[i], d=drones[i];
+  const tgt=c.checkpoints[p.checkpointIndex];
+  if(!tgt)return;
+  droneSteerToward(d,tgt.position,dt,AI_AGGR[diff]??AI_AGGR.med);
+}
+
+/* ── 分割畫面：C2 家族，沿用 x-hover-pk／cargo-pk／chase-pk 已驗證的
+   +sinθ,+cosθ 公式，偏移距離放大到適合高速穿環賽道的量級。仍會用
+   __ndDebug 獨立驗算一次。 ── */
+const cams=[new THREE.PerspectiveCamera(66,1,0.05,120),new THREE.PerspectiveCamera(66,1,0.05,120)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x+sy*5.5,y+2.6,z+cy*5.5),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 賽局狀態：P[0]/P[1] 各自獨立的賽道進度／分數（各自一份 course，
+   互不干涉，見檔頭決策說明） ── */
+let pDur='normal', timer=90, flightTime=0, playing=false, finished=false;
+function freshP(){ return {score:0,checkpointIndex:0,currentLoop:1,comboMultiplier:1.0,comboTimer:0,
+  invulnObstacle:0,invulnAI:0,totalPassed:0,obstacleHits:0,aiHits:0}; }
+const P=[freshP(),freshP()];
+
+function checkCourseHits(i,dt){
+  const c=courses[i], p=P[i], d=drones[i];
+  if(p.invulnObstacle>0)p.invulnObstacle-=dt;
+  else for(const pillar of c.obstacles){
+    const dx=d.pos.x-pillar.position.x, dz=d.pos.z-pillar.position.z;
+    const horizDist=Math.hypot(dx,dz);
+    const verticalOk=Math.abs(d.pos.y-pillar.position.y)<4.0;
+    if(horizDist<1.4&&verticalOk){
+      p.obstacleHits++; p.invulnObstacle=1.0;
+      p.score=Math.max(0,p.score-HIT_PENALTY_OBSTACLE);
+      toast(`💥 ${PLABEL[i]} 撞到障礙柱！-${HIT_PENALTY_OBSTACLE}分`); flashDrone(i,0xff0000); sfx.play('fail');
+      break;
+    }
+  }
+  if(p.invulnAI>0)p.invulnAI-=dt;
+  else for(const ai of c.aiHaz){
+    if(d.pos.distanceTo(ai.mesh.position)<1.3){
+      p.aiHits++; p.invulnAI=1.2;
+      p.score=Math.max(0,p.score-HIT_PENALTY_AI);
+      toast(`🚨 ${PLABEL[i]} 擦身 AI 巡邏機！-${HIT_PENALTY_AI}分`); flashDrone(i,0xff8800); sfx.play('warn');
+      break;
+    }
+  }
+}
+function checkCoursePass(i){
+  const c=courses[i], p=P[i], d=drones[i];
+  const target=c.checkpoints[p.checkpointIndex];
+  if(!target||!checkRingPass(target,d.pos,prevPos[i]))return;
+  paintRing(target,0x64748b,0.3);
+  p.comboMultiplier=Math.min(5.0,p.comboMultiplier+0.5); p.comboTimer=5.0;
+  const addedScore=Math.round(100*p.comboMultiplier*p.currentLoop);
+  p.score+=addedScore; p.totalPassed++;
+  toast(`${PLABEL[i]} 穿環！+${addedScore}分`); flashDrone(i,0x22c55e); sfx.play('ring');
+  p.checkpointIndex++;
+  if(p.checkpointIndex>=c.checkpoints.length){
+    p.checkpointIndex=0; p.currentLoop++;
+    d.reset(PLAYER_SPAWNS[i].clone());
+    generateCourse(i);
+  }else{
+    paintRing(c.checkpoints[p.checkpointIndex],TINTS[i],0.75);
+  }
+}
+
+/* ── Intro／暫停／結算 ── */
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showModal({title,html,buttons}){
+  closeModal();
+  const wrap=document.createElement('div');
+  wrap.className='nd-modal';
+  wrap.style.cssText='position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(4,6,10,.55);';
+  wrap.innerHTML=`<div style="background:rgba(11,15,25,.95);border:1px solid rgba(100,200,255,.4);
+    border-radius:14px;padding:22px 26px;max-width:520px;color:#dbeeff;font-size:13px;line-height:1.6;">
+    <h2 style="margin:0 0 10px;font-size:18px;color:#60c8ff;">${title}</h2>
+    ${html}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;"></div></div>`;
+  const btnWrap=wrap.querySelector('div > div:last-child');
+  buttons.forEach(b=>{
+    const el=document.createElement('button');
+    el.id=b.id; el.textContent=b.label;
+    el.style.cssText='background:rgba(96,200,255,.15);border:1px solid rgba(96,200,255,.5);color:#60c8ff;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;font-family:inherit;';
+    el.onclick=b.onClick;
+    btnWrap.appendChild(el);
+  });
+  document.body.appendChild(wrap);
+}
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+
+function showIntro(){
+  engine.simStarted=false; playing=false;
+  showModal({title:'情境體驗 · 無限穿環對戰',
+    html:`<p>P1／P2 各自擁有一條獨立的無限賽道（並排放置，互不干擾），
+      依序穿環得分，每過 6 環地圖<b>全面重組</b>：圈數越高障礙/AI 越多、
+      越快，第 3 圈起還會上下漂移！</p>
+      <p>🟢 穿環：+100×連擊×圈數分，連續穿越疊加 Combo 倍率<br>
+      💥 撞障礙柱：-30 分　🚨 擦身 AI 巡邏機：-15 分<br>
+      時間到比總分，看誰能在固定時間內衝更高分！</p>
+      <p style="font-size:11px;color:#9fc3d8">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-short', label:'⏱ 60 秒（快速）',onClick:()=>startGame('short')},
+      {id:'b-normal',label:'⏱ 90 秒（標準）',onClick:()=>startGame('normal')},
+      {id:'b-long',  label:'⏱ 120 秒（長場）',onClick:()=>startGame('long')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+}
+function startGame(dur){
+  pDur=dur;
+  timer=GAME_TIME_OPTS[dur]; flightTime=0;
+  P[0]=freshP(); P[1]=freshP();
+  drones.forEach((d,i)=>{ d.reset(PLAYER_SPAWNS[i].clone()); prevPos[i].copy(d.pos); });
+  generateCourse(0); generateCourse(1);
+  closeModal(); sfx.play('click');
+  pkc.apply(drones,seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始無限穿環對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else closeModal();
+}
+function showPauseModal(){
+  showModal({title:'暫停',
+    html:`<p>賽制：${GAME_TIME_OPTS[pDur]} 秒　剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>
+      <p>P1 ${Math.floor(P[0].score)} 分（第${P[0].currentLoop}圈）　P2 ${Math.floor(P[1].score)} 分（第${P[1].currentLoop}圈）</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const s0=Math.floor(P[0].score), s1=Math.floor(P[1].score);
+  const winner=s0>s1?'P1':s1>s0?'P2':'tie';
+  progress.record(ACT,{completed:true,score:Math.max(s0,s1),
+    ...pkc.recordFields(),metrics:{p1Score:s0,p2Score:s1,p1Loop:P[0].currentLoop,p2Loop:P[1].currentLoop,
+      p1Passed:P[0].totalPassed,p2Passed:P[1].totalPassed,winner,humanCount,matchTime:GAME_TIME_OPTS[pDur]}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner} 獲勝！`;
+  showModal({title:'挑戰結束 · '+resText,
+    html:`<p>P1：<b>${s0} 分</b>（第 ${P[0].currentLoop} 圈・穿環 ${P[0].totalPassed}・撞障礙 ${P[0].obstacleHits}・擦身AI ${P[0].aiHits}）<br>
+      P2：<b>${s1} 分</b>（第 ${P[1].currentLoop} 圈・穿環 ${P[1].totalPassed}・撞障礙 ${P[1].obstacleHits}・擦身AI ${P[1].aiHits}）</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDur)},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    flightTime+=dt;
+    [0,1].forEach(i=>{
+      const d=drones[i], p=P[i];
+      prevPos[i].copy(d.pos);
+      if(seatList[i].controller?.type==='ai'){
+        updateInfiniteAI(i,dt,seatList[i].controller.diff||'med');
+      }else{
+        const ip=input.playerFor(seatList[i].controller);
+        d.update(dt,ip);
+      }
+      tickCourseHazards(i,dt);
+      if(p.comboMultiplier>1.0){
+        p.comboTimer-=dt;
+        if(p.comboTimer<=0)p.comboMultiplier=1.0;
+      }
+      checkCourseHits(i,dt);
+      checkCoursePass(i);
+    });
+
+    timer-=dt;
+    if(timer<=0){timer=0;finishGame();}
+  }
+
+  drones.forEach((d,i)=>{
+    meshes[i].position.copy(d.pos);
+    meshes[i].quaternion.copy(d.q);
+    if(meshes[i].userData.spin)meshes[i].userData.spin.rotation.y+=dt*3.2;
+  });
+  cams.forEach((cam,i)=>updatePaneCam(cam,drones[i]));
+
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="p1">P1 <b>${Math.floor(P[0].score)}</b> 第${P[0].currentLoop}圈</span>`+
+    `<span>${pkc.topTag()}${GAME_TIME_OPTS[pDur]}秒賽制　剩 ${Math.max(0,Math.ceil(timer))}秒</span>`+
+    `<span class="p2">P2 <b>${Math.floor(P[1].score)}</b> 第${P[1].currentLoop}圈</span>`;
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

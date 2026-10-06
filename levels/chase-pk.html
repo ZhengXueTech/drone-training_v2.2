@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🏷️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：追逐對戰｜newdrone Chase-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d0806;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#7a5c3b;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(251,191,36,.4) 15%,rgba(251,191,36,.55) 50%,rgba(251,191,36,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(251,191,36,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(20,16,10,.8);border:1px solid rgba(251,191,36,.35);border-radius:6px;
+    padding:4px 10px;color:#f0e0c3;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(20,16,10,.85);border:1px solid rgba(251,191,36,.4);border-radius:10px;
+    padding:8px 22px;color:#f0e8d8;font-size:13px;text-align:center;box-shadow:0 0 16px rgba(251,191,36,.12);
+    display:flex;gap:18px;align-items:center;}
+  #topbar b{font-size:17px;}
+  #topbar .ch{color:#38bdf8;} #topbar .ev{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(20,16,10,.85);
+    border:1px solid rgba(251,191,36,.4);color:#f0e8d8;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE CHASE-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { renderSplit } from '../core/camera.js';
+import { buildBasicField, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：追逐對戰（x-chase 的 pk-live 版本，規劃書 §9 成本表低成本
+   第三例：「你追我逃（AI 目標機換成玩家機）｜低｜同上（天生 PvP）」）
+   ------------------------------------------------------------
+   跟 goalkeeper-pk 一樣天生不對稱：席 0＝追蹤者（沿用單人版 drone
+   角色，全姿態搖桿操控），席 1＝逃跑者（取代單人版原本蛇形閃避的
+   粉紅 AI，改由真人操控）。兩人共用同一個開放場地（比照單人版
+   BOUND=12 對稱場地＋四方位地標），不是各自一半場地。
+
+   設計決策：
+   - 不修改 levels/x-chase.html 本身，另開專屬檔案。
+   - **這關是 C2 家族**（core/physics.js 的 Drone，arcade 模式，
+     yaw=0 機頭朝 -Z）——分割相機沿用 x-hover-pk 修正後驗證過的
+     `+sinθ,+cosθ` 公式（同一物理家族），不是 goalkeeper-pk／pvp.html
+     的 C1 家族公式。即便是「已知同慣例」，仍照專案教訓用 __ndDebug
+     數學驗算過一次才交付，不是憑印象套用。
+   - **逃跑者現在是一台真正可操控的 core/physics.js Drone**（跟單人版
+     那個「非 Drone、獨立蛇形邏輯物件」的粉紅 AI 不同）——這是刻意的
+     設計選擇：真人逃跑者需要完整的搖桿飛行手感（油門/偏航/俯仰/橫移），
+     不能只給它單人版那種「plain pos/vel/yaw 物件」的簡化移動邏輯。
+   - **AI 席位處理（兩邊都可能是 AI，教訓：不可零輸入）**：
+     * 逃跑者席若為 AI：沿用單人版 updateAI() 的巡遊/閃避決策邏輯
+       （選擇瞄準點、逼近時逃逸轉向、巡遊時蛇形擺動），但執行方式改成
+       透過 droneSteerToward()（下方新寫的安全轉換函式）把「目標點」
+       轉成搖桿指令餵給 Drone.update()——不直接竄改 pos/vel/yaw，
+       全部走跟真人一模一樣的物理管線，這樣就不會有跨家族 yaw 慣例
+       混用的風險（見下方 droneSteerToward 註解）。
+     * 追蹤者席若為 AI：單人版沒有這個角色（玩家原本恆為真人），
+       新寫一個純追擊 AI——瞄準點是「逃跑者目前位置＋速度領先量」
+       （簡單的預判攔截，呼應規劃書提到的 GK_PRED 精神），一樣透過
+       droneSteerToward() 執行。
+     * 兩個 AI 的積極度都吃各自席位在 pairing 大廳選的 controller.diff。
+   - **droneSteerToward()：從 core/physics.js 的 _arcade() 公式反推、
+     自己重新推導的安全轉向函式**，不是照抄 core/systems/ai.js 的
+     moveTo()（那個函式是為 YawDrone/C1 家族寫的，yaw 慣例不同，
+     直接拿來用會重蹈 x-hover-pk 教訓的覆轍——見下方函式內註解的
+     完整推導）。這個函式讓 AI 全程只透過標準搖桿輸入介面操控 Drone，
+     不繞過 update()，也不直接寫 pos/vel/yaw，從根本避免混用兩套
+     機頭慣例的風險。
+   - 標記（tag）判定用固定接觸半徑（不吃席位 diff——攔截寬容度是
+     「追蹤者的抓取判定」，跟守門版 goalkeeper-pk 的攔截半徑固定
+     邏輯同一個道理，不應該因為對手是 AI 還是真人而改變）。被標記後
+     短暫鎖定（不可操控／AI 不執行移動指令），逃跑者若是 AI 才會在
+     鎖定結束後重新部署到新位置（比照單人版 respawnAI()）；若逃跑者
+     是真人，鎖定結束後就地恢復操控，不強制傳送（尊重真人的操控權，
+     跟 AI 沒有「被迫傳送很不爽」這種顧慮不同）。
+   - 沒有套用 core/hud.js（分割畫面，比照 pvp.html／x-hover-pk／
+     goalkeeper-pk 用輕量頂部列＋自訂分割線／格標籤）。
+   - 用「賽局時間」三選項（30/60/90 秒）取代單人版的難度選單，
+     理由同 goalkeeper-pk：真人对局無所謂 AI 難度，AI 難度已由
+     pairing 逐席設定決定。比賽結束用「標記次數是否達標」判定勝負
+     （達標視為追蹤者獲勝，反之逃跑者判定「成功逃脫」獲勝）。
+   ============================================================ */
+
+const ACT='chase-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const SEAT_CH=0, SEAT_EV=1;
+const PLABEL=['追蹤者','逃跑者'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 場地（沿單人版 x-chase.html 數值：對稱 BOUND=12＋四方位地標） ── */
+const BOUND=12;
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+buildBasicField(engine.scene,{size:BOUND,sky:0x0d0806,skipCompassMark:true});
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+const ARENA={minX:-(BOUND-1),maxX:BOUND-1,minY:0.5,maxY:8,minZ:-(BOUND-1),maxZ:BOUND-1};
+function clampToArena(v){
+  v.x=THREE.MathUtils.clamp(v.x,ARENA.minX+1,ARENA.maxX-1);
+  v.y=THREE.MathUtils.clamp(v.y,1.2,ARENA.maxY-0.5);
+  v.z=THREE.MathUtils.clamp(v.z,ARENA.minZ+1,ARENA.maxZ-1);
+}
+
+const GAME_TIME_OPTS={short:30,normal:60,long:90};
+const WIN_TAGS={short:2,normal:3,long:5}; // 追蹤者達到這個標記次數即視為獲勝，反之逃跑者判定成功逃脫
+const CATCH_R=0.9, CATCH_CD=1.3; // 固定接觸半徑／鎖定秒數，不吃席位 diff（攔截寬容度是追蹤者的抓取判定，跟對手是 AI/真人無關）
+const COMBO_WINDOW=5.0;
+const CH_AI_CFG={easy:{aggr:0.55,lead:0.3},med:{aggr:0.85,lead:0.55},hard:{aggr:1.2,lead:0.9}};
+const EV_AI_CFG={easy:{aggr:0.5,evadeR:5.0},med:{aggr:0.78,evadeR:3.5},hard:{aggr:1.1,evadeR:2.5}};
+
+/* ── 兩台真機體（都是 core/physics.js 的 Drone，arcade 模式，
+   跟單人版玩家機同一套物理——逃跑者不再是單人版那個 plain 物件） ── */
+const CHASER_SPAWN=new THREE.Vector3(0,3,3);
+const EVADER_SPAWN=new THREE.Vector3(0,3.5,-5);
+const chaserDrone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:10},spawn:CHASER_SPAWN.clone()});
+const evaderDrone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:10},spawn:EVADER_SPAWN.clone()});
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('trainer-orb',{tint:TINTS[i],scale:1});
+  m.castShadow=true; engine.scene.add(m); return m;
+});
+
+/* ── 標記爆炸特效（真物件池：常駐一顆，只切換 visible/scale/opacity，
+   沿單人版 tagFX 手法逐字搬過來） ── */
+const tagFX=new THREE.Mesh(new THREE.SphereGeometry(0.5,10,8),
+  new THREE.MeshBasicMaterial({color:0xfbbf24,transparent:true,opacity:0,wireframe:true}));
+tagFX.visible=false; tagFX.userData.age=99; engine.scene.add(tagFX);
+function spawnTagFX(pos){
+  tagFX.position.copy(pos); tagFX.userData.age=0; tagFX.visible=true;
+  tagFX.scale.setScalar(1); tagFX.material.opacity=0.9;
+}
+
+/* ── droneSteerToward()：把「世界座標目標點」安全轉成 core/physics.js
+   Drone 的搖桿指令（throttle/yaw/pitch/roll），讓 AI 全程走跟真人
+   一模一樣的 update() 物理管線，不繞過、不竄改 pos/vel/yaw。
+   ------------------------------------------------------------
+   推導（直接對照 core/physics.js 的 _arcade() 原始碼，不是照抄
+   ai.js 的 moveTo()——那個是為 YawDrone/C1 家族寫的，機頭 +Z，
+   直接套用到 C2 家族會導致 AI 的視覺朝向跟移動方向相反，重蹈
+   x-hover-pk 那次「相機/朝向照抄錯家族公式」的教訓）：
+
+   _arcade() 原始碼：this.yaw-=inp.yaw*RATE*dt；然後
+     fx=-sinθ, fz=-cosθ（機頭水平投影）；rx=cosθ, rz=-sinθ（右舷）；
+     世界加速度 = pitch*(fx,fz) + roll*(rx,rz)。
+   要讓世界加速度方向等於「歸一化的目標方向 (ndx,ndz)」，解這個
+   2×2 線性系統（矩陣 [[-sy,cy],[-cy,-sy]] 是正交矩陣，逆矩陣＝
+   轉置矩陣，手算可得）：
+     pitch = -sinθ·ndx − cosθ·ndz
+     roll  =  cosθ·ndx − sinθ·ndz
+   （yaw=0 時代入驗算：pitch=-ndz、roll=ndx，直接對應「推前=-Z、
+   右移=+X」的直覺，跟 drone-styles 機頭-Z 慣例一致，數學自洽。）
+
+   機頭朝向（視覺用）：drone-styles 機頭在本機局部 -Z，經過 yaw
+   旋轉後世界方向＝(-sinθ,-cosθ)。要讓機頭指向目標方向 (ndx,ndz)，
+   解 -sinθ=ndx, -cosθ=ndz，得 desYaw=atan2(-ndx,-ndz)——這也是
+   直接對照 drone-styles 的 -Z 機頭規範反推，不是借用其他關卡的
+   yaw 公式。 ── */
+function droneSteerToward(dr,targetPos,dt,aggr){
+  const dx=targetPos.x-dr.pos.x, dy=targetPos.y-dr.pos.y, dz=targetPos.z-dr.pos.z;
+  const distXZ=Math.hypot(dx,dz);
+  const ndx=distXZ>0.05?dx/distXZ:0, ndz=distXZ>0.05?dz/distXZ:0;
+  const desYaw=distXZ>0.05?Math.atan2(-ndx,-ndz):dr.yaw;
+  let yawErr=desYaw-dr.yaw; yawErr=Math.atan2(Math.sin(yawErr),Math.cos(yawErr));
+  const inpYaw=THREE.MathUtils.clamp(yawErr*2.2,-1,1);
+  const sy=Math.sin(dr.yaw), cy=Math.cos(dr.yaw);
+  const inpPitch=THREE.MathUtils.clamp((-sy*ndx-cy*ndz)*aggr,-1,1);
+  const inpRoll =THREE.MathUtils.clamp(( cy*ndx-sy*ndz)*aggr,-1,1);
+  const inpThrottle=THREE.MathUtils.clamp(dy*0.8,-1,1);
+  dr.update(dt,{throttle:inpThrottle,yaw:inpYaw,pitch:inpPitch,roll:inpRoll});
+}
+
+/* ── 逃跑者 AI（沿用單人版 updateAI 的巡遊/閃避決策邏輯，執行方式
+   改走 droneSteerToward，不直接竄改 pos/vel） ── */
+let evState='cruise', evTarget=new THREE.Vector3(2,4,-8), evChangeTimer=0, evTagCooldown=0, evWaveSeed=Math.random()*Math.PI*2;
+function pickCruiseTarget(){
+  let best=evaderDrone.pos.clone(), bestD=-1;
+  for(let i=0;i<6;i++){
+    const t=new THREE.Vector3((Math.random()-0.5)*18,1.5+Math.random()*5.5,
+      ARENA.minZ+1+Math.random()*(ARENA.maxZ-ARENA.minZ-2));
+    clampToArena(t);
+    const d=t.distanceTo(chaserDrone.pos);
+    if(d>bestD){bestD=d;best=t;}
+  }
+  evTarget.copy(best);
+}
+function respawnEvaderAI(){
+  let pos;
+  for(let i=0;i<10;i++){
+    pos=new THREE.Vector3((Math.random()-0.5)*16,2+Math.random()*4,
+      ARENA.minZ+1+Math.random()*(ARENA.maxZ-ARENA.minZ-2));
+    clampToArena(pos);
+    if(pos.distanceTo(chaserDrone.pos)>7)break;
+  }
+  evaderDrone.reset(pos);
+  pickCruiseTarget(); evChangeTimer=0.4;
+}
+function updateEvaderAI(dt,diff){
+  const cfg=EV_AI_CFG[diff]??EV_AI_CFG.med;
+  if(evTagCooldown>0){
+    evTagCooldown-=dt;
+    evaderDrone.update(dt,{throttle:0,yaw:0,pitch:0,roll:0}); // 短暫鎖定期間定高懸停，不主動移動
+    if(evTagCooldown<=0){ evState='cruise'; respawnEvaderAI(); }
+    return;
+  }
+  const toChaser=chaserDrone.pos.clone().sub(evaderDrone.pos);
+  const dist=toChaser.length();
+  evChangeTimer-=dt;
+  if(dist<cfg.evadeR){
+    if(evState!=='evade'||evChangeTimer<=0){
+      evState='evade';
+      const away=toChaser.clone().negate().normalize();
+      const perp=new THREE.Vector3(-away.z,0,away.x);
+      const side=(Math.random()-0.5)*(cfg.evadeR>3?1.5:2.5);
+      const dodgeDir=away.clone().addScaledVector(perp,side);
+      dodgeDir.y+=(Math.random()-0.5)*0.6; dodgeDir.normalize();
+      const escDist=cfg.evadeR*1.8+Math.random()*3;
+      evTarget.copy(evaderDrone.pos).addScaledVector(dodgeDir,escDist);
+      clampToArena(evTarget);
+      evChangeTimer=0.6+Math.random()*0.5;
+    }
+  }else{
+    if(evState==='evade'||evChangeTimer<=0||evaderDrone.pos.distanceTo(evTarget)<1.8){
+      evState='cruise'; pickCruiseTarget(); evChangeTimer=1.2+Math.random()*2.0;
+    }
+  }
+  const aim=evTarget.clone();
+  if(evState==='cruise'){
+    const weave=Math.sin(simTime*1.6+evWaveSeed)*(diff==='hard'?3.5:diff==='med'?2.5:1.5);
+    aim.x+=weave*0.3;
+  }
+  droneSteerToward(evaderDrone,aim,dt,cfg.aggr);
+}
+
+/* ── 追蹤者 AI（單人版沒有這個角色，新寫的純追擊＋簡單預判攔截） ── */
+function updateChaserAI(dt,diff){
+  const cfg=CH_AI_CFG[diff]??CH_AI_CFG.med;
+  const lead=evaderDrone.pos.clone().addScaledVector(evaderDrone.vel,cfg.lead);
+  clampToArena(lead);
+  droneSteerToward(chaserDrone,lead,dt,cfg.aggr);
+}
+
+/* ── 標記判定（固定接觸半徑，不吃席位 diff） ── */
+let tagCount=0, combo=1, bestCombo=1, lastTagTime=-99, simTime=0;
+function checkTag(){
+  if(evTagCooldown>0)return;
+  const dist=chaserDrone.pos.distanceTo(evaderDrone.pos);
+  if(dist>CATCH_R)return;
+  tagCount++;
+  if(simTime-lastTagTime<=COMBO_WINDOW) combo=Math.min(combo+1,8); else combo=1;
+  if(combo>bestCombo)bestCombo=combo;
+  lastTagTime=simTime;
+  evTagCooldown=CATCH_CD;
+  spawnTagFX(evaderDrone.pos.clone());
+  toast(combo>1?`🔥 ×${combo} 連續標記！`:'🏷 標記！');
+  sfx.play('ok');
+}
+
+/* ── 分割畫面：跟 x-hover-pk 同一個 C2 家族相機公式（+sinθ,+cosθ），
+   不是 goalkeeper-pk／pvp.html 的 C1 公式——即便已知同慣例，仍照
+   教訓要求用 __ndDebug 獨立驗算過一次才交付。 ── */
+const cams=[new THREE.PerspectiveCamera(66,1,0.05,80),new THREE.PerspectiveCamera(66,1,0.05,80)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x+sy*4.5,y+2.2,z+cy*4.5),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 賽局狀態 ── */
+let pDur='normal', timeLeft=GAME_TIME_OPTS.normal;
+let playing=false, finished=false;
+
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showIntro(focusIdx=0){
+  engine.simStarted=false; playing=false;
+  ui_closeGuard();
+  showModal({title:'情境體驗 · 追逐對戰',
+    html:`<p>席 0＝<strong>追蹤者</strong>，席 1＝<strong>逃跑者</strong>——你追我逃的天生對戰結構，
+      追蹤者要碰到逃跑者才算標記成功！</p>
+      <p>🏷 標記到即 +1 次，5 秒內連續標記可疊加 Combo。<br>
+      追蹤者標記次數達標即獲勝，時間到還沒達標則逃跑者判定成功逃脫。</p>
+      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-short', label:'⏱ 30 秒（快速）',onClick:()=>startGame('short')},
+      {id:'b-normal',label:'⏱ 60 秒（標準）',onClick:()=>startGame('normal')},
+      {id:'b-long',  label:'⏱ 90 秒（長場）',onClick:()=>startGame('long')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+}
+function startGame(dur){
+  pDur=dur;
+  timeLeft=GAME_TIME_OPTS[dur]; simTime=0;
+  tagCount=0; combo=1; bestCombo=1; lastTagTime=-99;
+  chaserDrone.reset(CHASER_SPAWN.clone());
+  evaderDrone.reset(EVADER_SPAWN.clone());
+  evState='cruise'; evChangeTimer=0; evTagCooldown=0; evWaveSeed=Math.random()*Math.PI*2;
+  pickCruiseTarget();
+  closeModal(); sfx.play('click');
+  pkc.apply((()=>{const a=[];a[SEAT_CH]=chaserDrone;a[SEAT_EV]=evaderDrone;return a;})(),seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始追逐對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else closeModal();
+}
+function showPauseModal(){
+  showModal({title:'暫停',
+    html:`<p>賽制：${GAME_TIME_OPTS[pDur]} 秒　剩餘 ${Math.max(0,timeLeft).toFixed(0)} 秒</p>
+      <p>🏷 標記次數 ${tagCount}（最高連擊 ×${bestCombo}）</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const winner=tagCount>=WIN_TAGS[pDur]?'追蹤者':'逃跑者';
+  progress.record(ACT,{completed:true,score:tagCount,
+    ...pkc.recordFields(),metrics:{tagCount,bestCombo,winner,humanCount,matchTime:GAME_TIME_OPTS[pDur]}});
+  const resText=winner==='追蹤者'?`🏆 追蹤者達標獲勝！`:`🏆 逃跑者成功逃脫！`;
+  showModal({title:'比賽結束 · '+resText,
+    html:`<p>🏷 標記次數：<b>${tagCount}</b> 次（達標門檻 ${WIN_TAGS[pDur]} 次）<br>
+      🔥 最高連擊：×${bestCombo}</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDur)},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 極簡 modal（不用 core/ui.js 的 UI 類別——跟前兩關 pk-live 一致，
+   分割畫面沒有單一「玩家視角」，UI.js 的 gamepad focus 導覽對兩人
+   分割沒有意義，改用最小 DOM modal，跟 x-hover-pk/goalkeeper-pk
+   一致的極簡風格） ── */
+function showModal({title,html,buttons}){
+  closeModal();
+  const wrap=document.createElement('div');
+  wrap.className='nd-modal';
+  wrap.style.cssText='position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(6,4,2,.55);';
+  wrap.innerHTML=`<div style="background:rgba(20,16,10,.95);border:1px solid rgba(251,191,36,.4);
+    border-radius:14px;padding:22px 26px;max-width:520px;color:#f0e8d8;font-size:13px;line-height:1.6;">
+    <h2 style="margin:0 0 10px;font-size:18px;color:#fbbf24;">${title}</h2>
+    ${html}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;"></div></div>`;
+  const btnWrap=wrap.querySelector('div > div:last-child');
+  buttons.forEach(b=>{
+    const el=document.createElement('button');
+    el.id=b.id; el.textContent=b.label;
+    el.style.cssText='background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.5);color:#fbbf24;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;font-family:inherit;';
+    el.onclick=b.onClick;
+    btnWrap.appendChild(el);
+  });
+  document.body.appendChild(wrap);
+}
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function ui_closeGuard(){} // 保留擴充空間（目前不需要 gamepad 導覽）
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    simTime+=dt;
+
+    // 逃跑者（席 1）
+    if(seatList[SEAT_EV].controller?.type==='ai'){
+      updateEvaderAI(dt,seatList[SEAT_EV].controller.diff||'med');
+    }else if(evTagCooldown>0){
+      evTagCooldown-=dt;
+      // 2026-10-04：挑戰條件「無定高」時，鎖定這一小段改成自動懸停（老師決定），不然放開油門會直接掉下去
+      const _m=evaderDrone.mode; if(_m==='angle')evaderDrone.mode='arcade';
+      evaderDrone.update(dt,{throttle:0,yaw:0,pitch:0,roll:0}); // 真人被標記後短暫鎖定，結束後就地恢復操控（不強制傳送）
+      evaderDrone.mode=_m;
+    }else{
+      const p=input.playerFor(seatList[SEAT_EV].controller);
+      evaderDrone.update(dt,p);
+    }
+
+    // 追蹤者（席 0）
+    if(seatList[SEAT_CH].controller?.type==='ai'){
+      updateChaserAI(dt,seatList[SEAT_CH].controller.diff||'med');
+    }else{
+      const p=input.playerFor(seatList[SEAT_CH].controller);
+      chaserDrone.update(dt,p);
+    }
+
+    checkTag();
+
+    if(tagFX.visible){
+      tagFX.userData.age+=dt;
+      const a=tagFX.userData.age;
+      tagFX.scale.setScalar(1+a*6);
+      tagFX.material.opacity=Math.max(0,0.85-a*2.2);
+      if(a>0.4)tagFX.visible=false;
+    }
+
+    timeLeft-=dt;
+    if(timeLeft<=0){timeLeft=0;finishGame();}
+  }
+
+  meshes[0].position.copy(chaserDrone.pos);
+  meshes[0].quaternion.copy(chaserDrone.q);
+  meshes[1].position.copy(evaderDrone.pos);
+  meshes[1].quaternion.copy(evaderDrone.q);
+  if(meshes[0].userData.spin)meshes[0].userData.spin.rotation.y+=dt*3.2;
+  if(meshes[1].userData.spin)meshes[1].userData.spin.rotation.y+=dt*3.2;
+
+  cams.forEach((cam,i)=>updatePaneCam(cam,i===0?chaserDrone:evaderDrone));
+
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="ch">追蹤 <b>${tagCount}</b></span>`+
+    `<span>${pkc.topTag()}${GAME_TIME_OPTS[pDur]}秒賽制　剩 ${Math.max(0,Math.ceil(timeLeft))}秒　達標 ${WIN_TAGS[pDur]}</span>`+
+    `<span class="ev">連擊 <b>×${combo}</b></span>`;
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

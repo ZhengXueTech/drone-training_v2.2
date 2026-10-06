@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🧬</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：動態變形挑戰｜newdrone X-Infinite v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE X-INFINITE v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { buildBasicField, makeRing, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   情境體驗：動態變形挑戰（移植自基本版 exp/exp-infinite.html）
+   ------------------------------------------------------------
+   移植決策：
+   - 玩家物理沿用 core/physics.js 既有 Drone(arcade) 模式——C2 家族
+     最後一關，跟 x-hover/x-cargo/x-chase 同一套判斷（基本版原本另一套
+     手寫定高＋水平推力公式，設計脈絡跟 physics.js 的 _arcade() 相同）。
+   - 檢查點穿環判定改用既有 core/world.js `makeRing()` ＋
+     core/systems/scoring.js `checkRingPass()`（已在 t02~t09、template
+     等十關驗證過的共用元件），取代基本版自己手刻的法向量判定——邏輯
+     等價（跨越環面且距環心 < 半徑才算數），不用重新發明。
+   - 場地邊界：基本版沒有任何邊界限制（無人機可無限亂飛），但 core
+     Drone 類別需要一組 bounds 當安全網。比照 t09（同樣是「檢查點沿 -Z
+     延伸到很遠」的關卡）的做法，取一個遠大於實際航道範圍的對稱
+     BOUND=48，正常遊玩幾乎不會撞到，純粹當安全網、不影響原本「感覺
+     無邊無際」的設計。
+   - 動態障礙柱／AI 巡邏機是這關獨有的程序化生成物件，維持關卡本地
+     維護（跟基本版一樣用 sin/cos 節奏與 lerp 巡邏，只是套用同一套
+     邊界/物理慣例）；每整圈（6 個檢查點）過完才整批 scene.remove／
+     重新生成一次——這是「關卡難度升級」的離散事件，不是逐幀物件
+     生滅，不違反 skill 的物件池守則。
+   - 玩家機體樣式預設 `infinite-neon`（drone-styles.js 既有樣式，青色
+     線框球＋黃鼻錐，就是照這關基本版原始外觀做的），而非其他關卡
+     慣用的 trainer-orb，讓預設外觀跟原版一致。
+   - 畫面提示（過關/撞障礙/擦身 AI 扣秒）改用既有 `hud.toast()`，
+     方向指引改用 `hud.setOffscreenTarget()`，取代基本版的浮動文字
+     ＋(這關基本版本來就沒有 3D 方向箭頭，此為新增的導航輔助)。
+   - 結算報告額外補上「擦身 AI 次數」（基本版有即時 HUD 顯示
+     `hud-ai-hits`，但最終戰報 `report-modal` 漏掉沒放，這裡順手補上，
+     不算邏輯變動，只是報告更完整）。
+   ============================================================ */
+
+const LEVEL=getLevel('x-infinite');
+progress.migrateLegacy();
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-infinite',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(16,7,14), new THREE.Vector3(-16,7,14), new THREE.Vector3(0,7,20)]});
+
+const BOUND=48, HOVER_Y=4.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19,skipCompassMark:true});
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+const PLAYER_SPAWN=new THREE.Vector3(0,1.5,5);
+
+/* ── 席位與機體（樣式可選——nd.settings.droneStyle 全關卡通用；預設 infinite-neon） ── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='infinite-neon')); // 情境體驗關卡固定用自己的主題機體，不吃全域裝備設定（t02-t11／template／showroom 才共用 droneStyleGet）
+let beaconOn=progress.setting('headingBeacon',true);
+let mesh=null, beacon=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:PLAYER_SPAWN.clone()});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+/* 撞擊/擦身閃光：直接改動機體樣式的 glow 子物件顏色（drone-styles.js 的
+   userData.spin 慣例——不是每個樣式都保證有，沒有就靜默跳過）。 */
+function flashDrone(hex){
+  const glow=mesh&&mesh.userData.spin;
+  if(!glow||!glow.material||!glow.material.color)return;
+  const orig=glow.material.color.getHex();
+  glow.material.color.setHex(hex);
+  setTimeout(()=>{ if(glow.material)glow.material.color.setHex(orig); },200);
+}
+
+/* ── 程序化賽道生成（忠實移植基本版公式：圈數越高，障礙/AI 數量越多、
+   AI 越快，第 3 圈起檢查點與障礙柱會上下漂移） ── */
+let checkpoints=[], obstacles=[], aiDrones=[];
+/* makeRing() 的環面/光暈都是 MeshBasicMaterial（沒有 emissive 頻道，跟基本版
+   原本用 MeshStandardMaterial 不同）——比照 t09 既有的 paintRing() 寫法，
+   只調 color／opacity，不摸 emissive。 */
+function paintRing(r,hex,opacity){
+  r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex);
+  r.children[0].material.opacity=opacity??0.75;
+}
+function generateProceduralCourse(){
+  checkpoints.forEach(c=>engine.scene.remove(c));
+  obstacles.forEach(o=>engine.scene.remove(o));
+  aiDrones.forEach(a=>engine.scene.remove(a.mesh));
+  checkpoints=[]; obstacles=[]; aiDrones=[];
+  const obstacleCount=Math.min(4,1+currentLoop);
+  const aiCount=Math.min(4,1+currentLoop);
+  const speedBoost=1.0+(currentLoop-1)*0.25;
+  for(let i=0;i<6;i++){
+    const rx=(Math.random()-0.5)*11, ry=3.0+Math.random()*2.5, rz=-7-(i*7.5)+(Math.random()-0.5)*2;
+    const ring=makeRing(new THREE.Vector3(rx,ry,rz),{radius:1.7,
+      color:i===0?0x22c55e:0x64748b});
+    paintRing(ring,i===0?0x22c55e:0x64748b,i===0?0.75:0.35);
+    ring.userData.baseUnitY=ry; ring.userData.seed=Math.random()*10;
+    engine.scene.add(ring); checkpoints.push(ring);
+  }
+  for(let i=0;i<obstacleCount;i++){
+    const ox=(Math.random()-0.5)*10, oz=-10-(i*10)-Math.random()*5;
+    const pillar=new THREE.Mesh(new THREE.CylinderGeometry(0.8,0.8,8,12),
+      new THREE.MeshStandardMaterial({color:0x475569,roughness:0.6,emissive:0x1e293b}));
+    pillar.position.set(ox,HOVER_Y,oz);
+    pillar.userData={baseUnitY:HOVER_Y,seed:Math.random()*10};
+    engine.scene.add(pillar); obstacles.push(pillar);
+  }
+  for(let i=0;i<aiCount;i++){
+    const az=-8-(i*11);
+    const startX=Math.random()>0.5?-6:i, endX=startX===-6?6:-6;
+    const group=new THREE.Group();
+    group.add(new THREE.Mesh(new THREE.SphereGeometry(0.45,12,12),
+      new THREE.MeshStandardMaterial({color:0xf97316,emissive:0xf97316,emissiveIntensity:0.9,wireframe:true})));
+    engine.scene.add(group);
+    aiDrones.push({mesh:group,
+      waypoints:[new THREE.Vector3(startX,HOVER_Y+(Math.random()-0.5)*2,az),
+                 new THREE.Vector3(endX,HOVER_Y+(Math.random()-0.5)*2,az)],
+      segIndex:0, segT:0, speed:0.22*speedBoost});
+  }
+}
+function updateEntitiesEnvironment(dt){
+  aiDrones.forEach(ai=>{
+    const from=ai.waypoints[ai.segIndex], to=ai.waypoints[(ai.segIndex+1)%ai.waypoints.length];
+    const dist=from.distanceTo(to);
+    ai.segT+=(ai.speed*dt)/Math.max(dist,0.01);
+    if(ai.segT>=1){ ai.segT=0; ai.segIndex=(ai.segIndex+1)%ai.waypoints.length; }
+    ai.mesh.position.lerpVectors(ai.waypoints[ai.segIndex],ai.waypoints[(ai.segIndex+1)%ai.waypoints.length],ai.segT);
+  });
+  if(currentLoop>=3){
+    checkpoints.forEach(c=>{ c.position.y=c.userData.baseUnitY+Math.sin(flightTime*2+c.userData.seed)*0.6; });
+    obstacles.forEach(o=>{ o.position.y=o.userData.baseUnitY+Math.cos(flightTime*1.5+o.userData.seed)*0.8; });
+  }
+}
+
+/* ── 遊戲狀態 ── */
+let checkpointIndex=0, totalCheckpointsPassed=0, currentLoop=1;
+let score=0, timeLeft=30.0, comboMultiplier=1.0, comboTimer=0.0;
+let invulnTimerObstacle=0, invulnTimerAI=0;
+let flightTime=0, obstacleHits=0, aiHits=0;
+let altitudeDeviationSum=0, altitudeSampleCount=0;
+let playing=false, finished=false;
+
+/* ── 視角／模式／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function toggleMode(){
+  // 挑戰條件「定高關」時，M 在 角度↔專業 之間切；否則維持原本 街機↔專業
+  const base=ch.hold?'arcade':'angle';
+  drone.mode=drone.mode==='pro'?base:'pro';
+  hud.showAttitude(drone.mode!=='arcade');
+  hud.toast(drone.mode==='arcade'?'街機模式（定高輔助）':drone.mode==='angle'?'角度模式（放開回平、無定高）':'專業模式（全姿態）','ok');
+  syncModes();
+}
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='KeyM')toggleMode();
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 動態變形挑戰',
+    html:`<p>記憶地圖沒用了！每過 6 個檢查點，地圖會<b>全面亂數重組</b>：圈數越高，
+      障礙柱與巡邏機<b>數量越多、速度越快</b>，第 3 圈起還會<b>上下漂移</b>！</p>
+      <p>🟢 <b>穿過光環</b>：加秒＋加分，連續穿越疊加 Combo 倍率<br>
+      💥 <b>撞到障礙柱</b>：扣 3 秒　🚨 <b>擦身 AI 巡邏機</b>：扣 1 秒<br>
+      ⏱ 倒數歸零就結束，盡量撐久一點、衝更高分！</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-start',label:'🚀 挑戰未知賽道',onClick:startGame},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-start'],focusIdx);
+}
+function startGame(){
+  checkpointIndex=0; totalCheckpointsPassed=0; currentLoop=1;
+  score=0; timeLeft=30.0; comboMultiplier=1.0; comboTimer=0.0;
+  invulnTimerObstacle=0; invulnTimerAI=0;
+  flightTime=0; obstacleHits=0; aiHits=0;
+  altitudeDeviationSum=0; altitudeSampleCount=0;
+  drone.reset(PLAYER_SPAWN.clone());
+  generateProceduralCourse();
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  drone.mode='arcade'; ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  hud.setMission('依序穿環，撐過倒數！');
+  hud.setOffscreenTarget(checkpoints[0].position);
+  hud.toast('起飛！觀察節奏依序穿環','ok');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>第 ${currentLoop} 圈・已過關 ${totalCheckpointsPassed}・目前得分 ${score}</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-beacon',label:'機頭指示：'+(beaconOn?'開':'關'),
+        onClick:()=>{beaconOn=!beaconOn;progress.setSetting('headingBeacon',beaconOn);
+          beacon.visible=beaconOn;showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  hud.setOffscreenTarget(null);
+  const avgDeviation=altitudeSampleCount>0?(altitudeDeviationSum/altitudeSampleCount):0;
+  const stabilityScore=Math.round(THREE.MathUtils.clamp(100-avgDeviation*20,0,100));
+  progress.record('x-infinite',{completed:true,score:Math.round(score),
+    metrics:{currentLoop,totalCheckpointsPassed,obstacleHits,aiHits,
+      flightTime:+flightTime.toFixed(1),stabilityScore},...ch.recordFields()});
+  ui.showModal({title:'🏁 挑戰結束',
+    html:`<p>🏆 最終得分：<b>${Math.round(score)} 分</b><br>
+      🏁 闖過圈數：第 ${currentLoop} 圈　🟢 通過光環：${totalCheckpointsPassed} 個<br>
+      ⏱ 生存總時間：${flightTime.toFixed(1)} 秒　📊 高度穩定度：${stabilityScore}/100<br>
+      💥 撞障礙：${obstacleHits} 次　🚨 擦身 AI：${aiHits} 次</p>
+      <p>成績已記錄（nd.progress.x-infinite）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再次挑戰未知',onClick:startGame},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇機體樣式後開始挑戰');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    prevPos.copy(drone.pos);
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    flightTime+=dt;
+    altitudeDeviationSum+=Math.abs(drone.pos.y-HOVER_Y); altitudeSampleCount++;
+    updateEntitiesEnvironment(dt);
+
+    timeLeft=Math.max(0,timeLeft-dt);
+    if(timeLeft<=0){ finishGame(); }
+    if(comboMultiplier>1.0){
+      comboTimer-=dt;
+      if(comboTimer<=0)comboMultiplier=1.0;
+    }
+
+    if(invulnTimerObstacle>0)invulnTimerObstacle-=dt;
+    else for(const pillar of obstacles){
+      const dx=drone.pos.x-pillar.position.x, dz=drone.pos.z-pillar.position.z;
+      const horizDist=Math.hypot(dx,dz);
+      const verticalOk=Math.abs(drone.pos.y-pillar.position.y)<4.0;
+      if(horizDist<1.4&&verticalOk){
+        obstacleHits++; invulnTimerObstacle=1.0;
+        timeLeft=Math.max(0,timeLeft-3.0);
+        hud.toast('💥 撞到障礙柱！-3.0 秒','fail'); flashDrone(0xff0000); sfx.play('fail');
+        break;
+      }
+    }
+    if(invulnTimerAI>0)invulnTimerAI-=dt;
+    else for(const ai of aiDrones){
+      if(drone.pos.distanceTo(ai.mesh.position)<1.3){
+        aiHits++; invulnTimerAI=1.2;
+        timeLeft=Math.max(0,timeLeft-1.0);
+        hud.toast('🚨 擦身 AI 巡邏機！-1.0 秒','warn'); flashDrone(0xff8800); sfx.play('warn');
+        break;
+      }
+    }
+
+    if(!finished){
+      const target=checkpoints[checkpointIndex];
+      if(target&&checkRingPass(target,drone.pos,prevPos)){
+        paintRing(target,0x64748b,0.3);
+        comboMultiplier=Math.min(5.0,comboMultiplier+0.5); comboTimer=5.0;
+        const addedTime=5.0*comboMultiplier, addedScore=Math.round(100*comboMultiplier*currentLoop);
+        timeLeft+=addedTime; score+=addedScore; totalCheckpointsPassed++;
+        hud.toast(`⏱️ +${addedTime.toFixed(1)}秒・+${addedScore}分`,'ok'); flashDrone(0x22c55e); sfx.play('ring');
+        checkpointIndex++;
+        if(checkpointIndex>=checkpoints.length){
+          checkpointIndex=0; currentLoop++;
+          drone.reset(PLAYER_SPAWN.clone());
+          generateProceduralCourse();
+        }else{
+          paintRing(checkpoints[checkpointIndex],0x22c55e,0.75);
+        }
+        hud.setOffscreenTarget(checkpoints[checkpointIndex].position);
+      }
+    }
+
+    hud.setTimer(Math.max(0,timeLeft));
+    hud.setScore(Math.round(score));
+    hud.setProgress(`第 ${currentLoop} 圈・過關 ${totalCheckpointsPassed}`);
+    hud.setGuide(`存活 ${flightTime.toFixed(1)}秒・COMBO ${comboMultiplier.toFixed(1)}x・撞障礙${obstacleHits}・擦身AI${aiHits}`);
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(drone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  const mapTargets=checkpoints.map((r,i)=>({pos:r.position,color:i===checkpointIndex?0x22c55e:0x64748b,done:i<checkpointIndex}));
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets,{route:true,landmarks:compassLandmarks});
+  if(drone.mode!=='arcade'){
+    const _e=new THREE.Euler().setFromQuaternion(drone.q,'YXZ');
+    hud.setAttitude(_e.x,-_e.z);
+  }
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

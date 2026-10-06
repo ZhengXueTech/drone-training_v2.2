@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🚁</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>機頭驗收站｜drone-styles v2</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono',monospace;
+    display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+  header{padding:10px 16px;border-bottom:1px solid #1e3a5f;}
+  header h1{margin:0;font-size:16px;color:#00eeff;letter-spacing:2px;display:inline;}
+  header span{font-size:11px;color:#7aa3b8;margin-left:12px;}
+  #main{flex:1;display:flex;min-height:0;}
+  #list{width:210px;overflow-y:auto;border-right:1px solid #1e3a5f;}
+  #list button{display:block;width:100%;text-align:left;background:none;border:none;
+    border-bottom:1px solid #12253d;color:#9fc3d8;font-family:inherit;font-size:12px;
+    padding:9px 12px;cursor:pointer;}
+  #list button.sel{background:#0e2238;color:#00eeff;}
+  #list button .badge{font-size:9px;color:#facc15;}
+  #view{flex:1;position:relative;}
+  #view canvas{width:100%;height:100%;display:block;}
+  #info{position:absolute;left:12px;bottom:10px;font-size:11px;color:#9fc3d8;
+    background:rgba(10,20,35,.75);border:1px solid rgba(0,238,255,.35);
+    border-radius:8px;padding:8px 12px;max-width:70%;}
+  #check{position:absolute;right:12px;top:10px;font-size:12px;color:#4ade80;
+    background:rgba(10,20,35,.75);border:1px solid rgba(74,222,128,.4);
+    border-radius:8px;padding:8px 12px;text-align:right;}
+  #tintbar{position:absolute;left:12px;top:10px;display:flex;gap:8px;}
+  #tintbar button{width:30px;height:30px;border-radius:50%;border:2px solid #fff3;cursor:pointer;}
+</style>
+</head>
+<body>
+<!-- 2026-10-05：這一頁原本沒有回首頁的路（老師回饋） -->
+<a href="../index.html" id="nd-home-link" style="position:fixed;top:8px;right:12px;z-index:40;color:#7aa3b8;text-decoration:none;font:12px Consolas,'Microsoft JhengHei',monospace;background:rgba(10,15,26,.85);border:1px solid rgba(0,238,255,.35);border-radius:8px;padding:5px 10px;">← 回首頁</a>
+<header><h1>機頭驗收站</h1><span>紅色粗箭頭＝機頭方向（規範：-Z）。每個樣式必須箭頭與機鼻一致才可用於關卡。座標軸：紅X／綠Y／藍Z。</span></header>
+<div id="main">
+  <div id="list"></div>
+  <div id="view">
+    <canvas id="c"></canvas>
+    <div id="tintbar">
+      <button style="background:#ff4444" data-tint="0xff4444" title="紅隊"></button>
+      <button style="background:#3399ff" data-tint="0x3399ff" title="藍隊"></button>
+      <button style="background:#00eeff" data-tint="" title="預設色"></button>
+    </div>
+    <div id="check">機頭朝向：<b id="nose-ok">—</b><br><span style="color:#7aa3b8;font-size:10px">點清單切換樣式；點色球換隊色</span></div>
+    <div id="info"></div>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { DRONE_STYLES, buildDroneStyle, droneStyleSet, droneStyleGet } from '../core/drone-styles.js';
+
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0d1524);
+const camera=new THREE.PerspectiveCamera(45,1,0.01,100);
+camera.position.set(0.9,0.7,1.2); camera.lookAt(0,0.1,0);
+scene.add(new THREE.HemisphereLight(0x9fc3ff,0x22331f,1.1));
+const dl=new THREE.DirectionalLight(0xffffff,1.6); dl.position.set(2,4,3); scene.add(dl);
+scene.add(new THREE.GridHelper(3,12,0x2c4a6e,0x18304d));
+const axes=new THREE.AxesHelper(0.8); scene.add(axes);
+
+const turntable=new THREE.Group(); scene.add(turntable); // 模型＋箭頭一起旋轉，箭頭恆指機鼻
+let current=null, arrow=null, tint=null;
+function show(code){
+  if(current){turntable.remove(current);
+    current.traverse(o=>{o.geometry&&o.geometry.dispose();
+      o.material&&(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.dispose());});}
+  if(arrow){turntable.remove(arrow);arrow.dispose();}
+  const opts=tint!=null?{tint}:{};
+  current=buildDroneStyle(code,opts);
+  // [FIX 1] 先量測再加入轉盤：Box3 是軸對齊盒，若在旋轉中的 turntable 內量測，
+  // 縮放比例會隨當下旋轉角度改變 → 換色/重選時機體忽大忽小。獨立量測則角度無關。
+  const box=new THREE.Box3().setFromObject(current);
+  const sph=box.getBoundingSphere(new THREE.Sphere());
+  const k=0.45/Math.max(sph.radius,0.01);
+  current.scale.setScalar(k);
+  current.position.y=0.15;
+  turntable.add(current);
+  // 機頭箭頭：讀 userData.noseDir（規範 -Z）——箭頭與機鼻不一致＝該樣式建構有誤
+  arrow=new THREE.ArrowHelper(current.userData.noseDir.clone().normalize(),
+    new THREE.Vector3(0,0.15,0),0.95,0xff2222,0.22,0.12);
+  turntable.add(arrow);
+  document.getElementById('nose-ok').textContent=
+    current.userData.noseDir.z===-1?'-Z ✓（規範）':'⚠ 非規範！';
+  const def=DRONE_STYLES.find(s=>s.code===code);
+  document.getElementById('info').innerHTML=
+    `<b style="color:#00eeff">${def.name}</b>（${def.code}）｜${def.badge}<br>${def.feat}<br><span style="color:#5b7f95">來源：${def.src}</span>`;
+  droneStyleSet(code);
+  [...document.querySelectorAll('#list button')].forEach(b=>b.classList.toggle('sel',b.dataset.code===code));
+}
+const list=document.getElementById('list');
+DRONE_STYLES.forEach(s=>{
+  const b=document.createElement('button');
+  b.dataset.code=s.code;
+  b.innerHTML=`${s.name} <span class="badge">${s.badge}</span><br><span style="font-size:10px;color:#5b7f95">${s.code}</span>`;
+  b.onclick=()=>show(s.code);
+  list.appendChild(b);
+});
+document.querySelectorAll('#tintbar button').forEach(b=>{
+  b.onclick=()=>{tint=b.dataset.tint?parseInt(b.dataset.tint):null;
+    show(current?.userData.styleCode||DRONE_STYLES[0].code);};
+});
+function resize(){
+  const w=canvas.clientWidth||canvas.parentElement.clientWidth,
+        h=canvas.clientHeight||canvas.parentElement.clientHeight;
+  renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize); resize();
+show(droneStyleGet()||DRONE_STYLES[0].code);
+renderer.setAnimationLoop(()=>{
+  turntable.rotation.y+=0.008;
+  if(current&&current.userData.spin)current.userData.spin.rotation.y+=0.05;
+  resize(); renderer.render(scene,camera);
+});
+</script>
+</body>
+</html>

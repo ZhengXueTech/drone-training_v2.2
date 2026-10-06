@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🎮</text></svg>">
+<title>newdrone｜席位大廳（pairing）</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    min-height:100vh;padding:28px 16px 60px;box-sizing:border-box;}
+  .wrap{max-width:900px;margin:0 auto;}
+  h1{font-size:22px;color:#00eeff;letter-spacing:2px;margin:0;}
+  .topline{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:18px;}
+  .toplabel{font-size:10px;color:#7aa3b8;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;}
+  button,a.btn{background:#0b1626;color:#9fc3d8;border:1px solid rgba(0,238,255,.35);border-radius:8px;
+    font-size:12px;padding:9px 15px;font-family:inherit;cursor:pointer;text-decoration:none;display:inline-block;min-height:40px;}
+  button:hover,a.btn:hover{background:#153a5e;color:#cfefff;}
+  button.primary{background:#0e2238;color:#00eeff;border-color:rgba(0,238,255,.6);}
+  button.primary:disabled{opacity:.35;cursor:not-allowed;}
+  button.danger{border-color:rgba(255,90,90,.4);color:#ff8a8a;}
+  button.danger:hover{background:#3a1414;}
+  select{width:100%;box-sizing:border-box;background:#050a12;border:1px solid rgba(0,238,255,.35);
+    border-radius:7px;padding:9px 10px;color:#cfefff;font-family:inherit;font-size:13px;}
+  select:focus{outline:none;border-color:#00eeff;}
+
+  .sect{background:#0b1626;border:1px solid rgba(0,238,255,.35);border-radius:14px;padding:18px 20px;margin-bottom:20px;}
+  .sect h2{font-size:13px;color:#00eeff;margin:0 0 10px;letter-spacing:1px;}
+  .sect .sub{font-size:11px;color:#7aa3b8;margin:0 0 14px;line-height:1.7;}
+
+  .seat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;}
+  .seat{background:#050a12;border:1px solid rgba(0,238,255,.25);border-radius:10px;padding:12px 14px;}
+  .seat.human{border-color:rgba(74,222,128,.55);box-shadow:0 0 14px rgba(74,222,128,.12);}
+  .seat h3{margin:0 0 8px;font-size:12px;color:#facc15;letter-spacing:1px;}
+  .seat .field{margin-bottom:8px;}
+  .seat label{display:block;font-size:10px;color:#7aa3b8;margin-bottom:4px;}
+  .axbars{display:flex;flex-direction:column;gap:3px;margin-top:8px;}
+  .axrow{display:flex;align-items:center;gap:6px;font-size:9px;color:#7aa3b8;}
+  .axtrack{flex:1;height:6px;background:rgba(0,238,255,.08);border-radius:3px;position:relative;overflow:hidden;}
+  .axfill{position:absolute;top:0;height:100%;background:#38bdf8;border-radius:3px;}
+  .axnum{width:34px;text-align:right;color:#9fc3d8;}
+  .claim-btn{width:100%;margin-top:6px;font-size:10px;padding:6px 8px;}
+  .claim-btn.on{border-color:rgba(74,222,128,.6);color:#4ade80;}
+  .tag-dev{font-size:9px;color:#3b5c7a;margin-top:4px;word-break:break-all;}
+
+  .status-box{margin-top:12px;font-size:12px;padding:10px 12px;border-radius:8px;line-height:1.7;
+    background:rgba(0,238,255,.06);border:1px solid rgba(0,238,255,.25);color:#9fc3d8;}
+  footer{text-align:center;font-size:10px;color:#3b5c7a;margin-top:30px;}
+  .pickgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;}
+  .pickgrid a.card{display:block;background:#050a12;border:1px solid rgba(0,238,255,.3);border-radius:10px;
+    padding:14px 16px;color:#cfefff;text-decoration:none;}
+  .pickgrid a.card:hover{background:#0e2238;}
+  .pickgrid a.card h3{margin:0 0 6px;font-size:13px;color:#00eeff;}
+  .pickgrid a.card p{margin:0;font-size:11px;color:#9fc3d8;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline">
+    <div>
+      <div class="toplabel">newdrone · 全系統席位大廳</div>
+      <h1>🎮 席位指派</h1>
+    </div>
+    <a class="btn" href="../index.html">← 返回入口</a>
+  </div>
+
+  <div id="picker-sect" class="sect" style="display:none">
+    <h2>選擇活動</h2>
+    <p class="sub">下列活動支援多席位（搖桿／鍵盤／AI 自由指派）；單人關卡不需要經過這裡，直接從入口進入即可。</p>
+    <div class="pickgrid" id="picker-grid"></div>
+  </div>
+
+  <div id="lobby-sect" style="display:none">
+    <div class="sect">
+      <h2 id="act-title">—</h2>
+      <p class="sub" id="act-desc"></p>
+      <div id="status-line" class="status-box">尚未指派</div>
+    </div>
+
+    <div class="sect">
+      <h2>逐席指派</h2>
+      <p class="sub">每一席可選：AI（附難度）／鍵盤佈局／已連接的手把。手把玩家可按「搖一下認領」，接下來 2 秒內搖動要指派的手把，系統會自動抓「這段時間內搖最大力的那支手把」（再按一次可取消）。試飛數值列會即時顯示該席目前讀到的輸入，供玩家確認自己被分到正確的席位。</p>
+      <div class="seat-grid" id="seat-grid"></div>
+    </div>
+
+    <div class="sect" id="ch-sect" style="display:none">
+      <h2>⚙ 挑戰條件（雙方相同）</h2>
+      <p class="sub">想比更難的嗎？在這裡統一選，兩位玩家用同一套條件才公平。<b>只套用在真人席</b>（AI 維持標準）。比賽中不能切換，成績會標示條件。</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button id="c-hold"></button><button id="c-wind"></button><button id="c-gear"></button><button id="c-std">恢復標準</button>
+      </div>
+      <p class="sub" id="ch-now" style="margin-top:8px"></p>
+      <p class="sub" id="ch-warn" style="color:#fbbf24;display:none"></p>
+    </div>
+
+    <div class="sect">
+      <div class="row" style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button id="btn-reset" class="danger">🔄 全部重設為 AI</button>
+        <button id="btn-start" class="primary" disabled>▶ 開始（尚未指派完成）</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>手把插拔會自動刷新選項；離開此頁再回來，先前的指派會保留（存在 nd.settings.seats）。</footer>
+</div>
+
+<script type="module">
+import { LEVELS, getLevel } from '../data/levels-manifest.js';
+import { seats, CTL_AI, CTL_GAMEPAD, CTL_KEYBOARD, CTL_TOUCH } from '../data/seats.js';
+import { InputManager } from '../core/input.js';
+import { loadPkConditions, savePkConditions, conditionTag, WIND_LEVELS, GEAR_LABEL } from '../core/challenge-rules.js';
+
+const params=new URLSearchParams(location.search);
+const activityId=params.get('activity');
+const input=new InputManager();
+
+const DIFF_LABEL={easy:'😊 簡單',med:'⚡ 中等',hard:'💀 困難'};
+const KB_LABEL={KB1:'⌨️ 鍵盤 WASD＋方向鍵',KB2:'⌨️ 鍵盤 IJKL＋Numpad'};
+
+/* ── 沒帶 activity 參數：顯示活動選單（列出所有 maxSeats>1 的項目） ── */
+if(!activityId||!getLevel(activityId)){
+  document.getElementById('picker-sect').style.display='';
+  const multi=LEVELS.filter(l=>(l.maxSeats||1)>1);
+  document.getElementById('picker-grid').innerHTML = multi.length
+    ? multi.map(l=>`<a class="card" href="pairing.html?activity=${encodeURIComponent(l.id)}">
+        <h3>${l.emoji||''} ${esc(l.title)}</h3><p>${esc(l.desc||'')}</p></a>`).join('')
+    : `<p class="sub">目前沒有需要席位大廳的多人活動。</p>`;
+  throwAwayLoop(); // 沒有活動也要跑一次 rAF 讓 input.update 不報錯（其實可省略，保留是為了程式碼路徑一致）
+} else {
+  runLobby(getLevel(activityId));
+}
+
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function throwAwayLoop(){ /* no-op：picker 畫面不需要即時輪詢 */ }
+
+function runLobby(LEVEL){
+  document.getElementById('lobby-sect').style.display='';
+  document.getElementById('act-title').textContent=(LEVEL.emoji||'')+' '+LEVEL.title;
+  document.getElementById('act-desc').textContent=LEVEL.desc||'';
+  const n=LEVEL.maxSeats||1;
+  const seatDefs=(LEVEL.seatLabels||[]).map(label=>({label}));
+
+  let list=seats.get(activityId);
+  if(!seats.isValid(list,n)) list=seats.makeDefault(n,seatDefs);
+  let listening=null; // {seatIdx, startT, dur, peaks:Map<gpIndex,peakMag>}——「搖一下認領」改用監聽視窗，見下方 startListening()
+
+  const grid=document.getElementById('seat-grid');
+  grid.innerHTML=list.map((s,i)=>seatRowHtml(s,i)).join('');
+
+  function seatRowHtml(s,i){
+    return `<div class="seat" id="seat-${i}">
+      <h3>席 ${i+1}${s.label&&s.label!=='P'+(i+1)?'　'+esc(s.label):''}</h3>
+      <div class="field"><label>控制器</label><select id="ctl-${i}"></select></div>
+      <div class="field" id="diff-wrap-${i}" style="display:none">
+        <label>AI 難度</label>
+        <select id="diff-${i}">
+          <option value="easy">😊 簡單</option><option value="med">⚡ 中等</option><option value="hard">💀 困難</option>
+        </select>
+      </div>
+      <button class="claim-btn" id="claim-${i}" style="display:none">🕹️ 搖一下認領</button>
+      <div class="axbars" id="ax-${i}">
+        ${['偏航','油門','橫移','俯仰'].map((nm,ai)=>`<div class="axrow"><span style="width:28px">${nm}</span>
+          <div class="axtrack"><div class="axfill" id="axf-${i}-${ai}" style="left:50%;width:0"></div></div>
+          <span class="axnum" id="axv-${i}-${ai}">0.00</span></div>`).join('')}
+      </div>
+      <div class="tag-dev" id="dev-${i}"></div>
+    </div>`;
+  }
+
+  function ctlKey(c){
+    if(!c||c.type===CTL_AI)return 'ai';
+    if(c.type===CTL_KEYBOARD)return 'kb:'+c.layout;
+    if(c.type===CTL_GAMEPAD)return 'gp:'+c.gpIndex;
+    if(c.type===CTL_TOUCH)return 'touch';
+    return 'ai';
+  }
+  function keyToCtl(key,prevDiff){
+    if(key==='ai')return {type:CTL_AI,diff:prevDiff||'med'};
+    if(key==='touch')return {type:CTL_TOUCH};
+    if(key.startsWith('kb:'))return {type:CTL_KEYBOARD,layout:key.slice(3)};
+    if(key.startsWith('gp:'))return {type:CTL_GAMEPAD,gpIndex:+key.slice(3)};
+    return {type:CTL_AI,diff:'med'};
+  }
+
+  function connectedGamepads(){
+    try{return [...(navigator.getGamepads?.()||[])].filter(Boolean);}catch{return [];}
+  }
+
+  function rebuildOptions(){
+    const gps=connectedGamepads();
+    const usedGp=new Set(list.map((s,idx)=>s.controller?.type===CTL_GAMEPAD?s.controller.gpIndex:null));
+    const usedKb=new Set(list.map((s,idx)=>s.controller?.type===CTL_KEYBOARD?s.controller.layout:null));
+    list.forEach((s,i)=>{
+      const sel=document.getElementById('ctl-'+i);
+      const curKey=ctlKey(s.controller);
+      sel.innerHTML='';
+      const opts=[['ai','🤖 AI']];
+      opts.push(['kb:KB1',KB_LABEL.KB1+(usedKb.has('KB1')&&curKey!=='kb:KB1'?'（已被使用）':'')]);
+      opts.push(['kb:KB2',KB_LABEL.KB2+(usedKb.has('KB2')&&curKey!=='kb:KB2'?'（已被使用）':'')]);
+      // 每一席各自獨立虛擬搖桿（core/input.js touchSeat + core/hud.js attachTouchSeat），
+      // 多人分割畫面時可多席同時選觸控，互不干擾——不再是「僅建議 1 人模式」的限制。
+      opts.push(['touch','📱 觸控（本機螢幕，同螢幕多人時各自一組虛擬搖桿）']);
+      gps.forEach(gp=>{
+        const key='gp:'+gp.index;
+        opts.push([key,`🎮 gamepad[${gp.index}] ${gp.id.substring(0,26)}`+(usedGp.has(gp.index)&&curKey!==key?'（已被使用）':'')]);
+      });
+      opts.forEach(([v,label])=>{
+        const o=document.createElement('option'); o.value=v; o.textContent=label;
+        o.selected=(v===curKey); sel.appendChild(o);
+      });
+      document.getElementById('diff-wrap-'+i).style.display=(curKey==='ai')?'':'none';
+      if(curKey==='ai')document.getElementById('diff-'+i).value=s.controller?.diff||'med';
+      document.getElementById('claim-'+i).style.display=gps.length?'':'none';
+      document.getElementById('seat-'+i).classList.toggle('human',curKey!=='ai');
+      document.getElementById('dev-'+i).textContent=
+        s.controller?.type===CTL_GAMEPAD?('gamepad index '+s.controller.gpIndex):'';
+    });
+  }
+
+  list.forEach((s,i)=>{
+    document.getElementById('ctl-'+i).addEventListener('change',e=>{
+      const prevDiff=list[i].controller?.diff;
+      list[i]={...list[i],controller:keyToCtl(e.target.value,prevDiff)};
+      persistAndRefresh();
+    });
+    document.getElementById('diff-'+i).addEventListener('change',e=>{
+      if(list[i].controller?.type===CTL_AI)list[i]={...list[i],controller:{type:CTL_AI,diff:e.target.value}};
+      persistAndRefresh();
+    });
+    document.getElementById('claim-'+i).addEventListener('click',()=>{
+      if(listening&&listening.seatIdx===i){ cancelListening(); return; }
+      startListening(i);
+    });
+  });
+
+  /* ── 搖一下認領：改成「監聽視窗」而不是單一瞬間快照 ──
+     單次快照會要求玩家的手部動作跟按鈕點擊在同一毫秒發生，實機測試証實不可靠
+     （回報「顯示抓不到」）。改成按鈕按下後開一段 ~2.2 秒的視窗，這段時間內每一
+     幀持續讀取所有手把的最大搖動幅度，取「峰值」而不是「瞬間值」，時間到才判定。 */
+  function startListening(i){
+    if(listening)cancelListening();
+    listening={seatIdx:i,startT:performance.now(),dur:2200,peaks:new Map()};
+    updateListeningUI();
+  }
+  function cancelListening(){
+    listening=null;
+    resetClaimButtons();
+  }
+  function resetClaimButtons(){
+    document.querySelectorAll('.claim-btn').forEach(btn=>{
+      btn.textContent='🕹️ 搖一下認領'; btn.classList.remove('on'); btn.disabled=false;
+    });
+  }
+  function updateListeningUI(){
+    document.querySelectorAll('.claim-btn').forEach((btn,i2)=>{
+      if(!listening){ btn.disabled=false; return; }
+      btn.disabled=(listening.seatIdx!==i2);
+    });
+    if(!listening)return;
+    const btn=document.getElementById('claim-'+listening.seatIdx);
+    if(!btn)return;
+    const remain=Math.max(0,listening.dur-(performance.now()-listening.startT));
+    btn.textContent='🕹️ 搖動中…剩 '+(Math.ceil(remain/100)/10).toFixed(1)+' 秒（再按一次取消）';
+    btn.classList.add('on');
+  }
+  function finishListening(){
+    const {seatIdx,peaks}=listening;
+    const usedGp=seats.claimedGpIndexes(list);
+    let best=null,bestMag=0.4; // 門檻：取視窗內峰值，比單一瞬間快照寬鬆但仍避免誤觸
+    peaks.forEach((mag,gpIndex)=>{
+      if(usedGp.has(gpIndex))return;
+      if(mag>bestMag){bestMag=mag;best=gpIndex;}
+    });
+    listening=null;
+    resetClaimButtons();
+    if(best==null){
+      alert('這 2 秒內沒有偵測到搖動、且尚未被使用的手把——請按「搖一下認領」後立刻搖動要指派的那支手把再試一次。');
+      return;
+    }
+    list[seatIdx]={...list[seatIdx],controller:{type:CTL_GAMEPAD,gpIndex:best}};
+    persistAndRefresh();
+  }
+
+  function persistAndRefresh(){
+    seats.set(activityId,list);
+    rebuildOptions();
+    updateStatus();
+    renderChallenge();
+  }
+
+  /* ── 挑戰條件（第三批，2026-10-02）：雙方相同，存 nd.settings.challengePk ── */
+  let ch=loadPkConditions(activityId);
+  const chAny=ch.allow.hold||ch.allow.wind||ch.allow.gear;
+  if(chAny)document.getElementById('ch-sect').style.display='';
+  function renderChallenge(){
+    if(!chAny)return;
+    const b=(id,show,label)=>{const el=document.getElementById(id); el.style.display=show?'':'none'; el.textContent=label;};
+    b('c-hold',ch.allow.hold,'定高輔助：'+(ch.hold?'開':'關（放開油門會往下掉）'));
+    b('c-wind',ch.allow.wind,'環境風：'+WIND_LEVELS[ch.wind].label);
+    b('c-gear',ch.allow.gear,'檔位：'+GEAR_LABEL[ch.gear]+(ch.gear===2?'（快）':'（穩）'));
+    const std=ch.hold&&!ch.wind&&ch.gear===1;
+    document.getElementById('ch-now').innerHTML='目前：<b>'+(std?'標準':'⚠ '+conditionTag(ch))+'</b>'+
+      (ch.allow.wind?'':'（本活動難度已含風或為封閉場地，不另加環境風）');
+    const weak=list.some(s=>s.controller?.type===CTL_KEYBOARD||s.controller?.type===CTL_TOUCH);
+    const w=document.getElementById('ch-warn');
+    w.style.display=(!ch.hold&&weak)?'':'none';
+    w.textContent='⚠ 有玩家用鍵盤或觸控：無定高時油門要一直抓住約四成，鍵盤只有按住／放開、觸控放手會彈回中間，幾乎無法懸停。建議改用手把或遙控器，或把定高打開。';
+  }
+  const chSet=f=>{f();savePkConditions(ch);ch=loadPkConditions(activityId);renderChallenge();};
+  document.getElementById('c-hold').addEventListener('click',()=>chSet(()=>ch.hold=!ch.hold));
+  document.getElementById('c-wind').addEventListener('click',()=>chSet(()=>ch.wind=(ch.wind+1)%3));
+  document.getElementById('c-gear').addEventListener('click',()=>chSet(()=>ch.gear=ch.gear===2?1:2));
+  document.getElementById('c-std').addEventListener('click',()=>chSet(()=>{ch.hold=true;ch.wind=0;ch.gear=1;}));
+  function updateStatus(){
+    const humans=seats.humanSeats(list).length;
+    document.getElementById('status-line').textContent=
+      `${n} 席中 ${humans} 席為真人、${n-humans} 席為 AI。`+
+      (humans===0?'（目前全部 AI，開始後為觀賽模式）':
+       humans===1?'（單人模式：一般跟機視角，含飛手視角）':
+       '（分割畫面：畫面左右分邊，同一隊固定同一邊，同邊多人再往上下分格）');
+    document.getElementById('btn-start').disabled=false;
+    document.getElementById('btn-start').textContent='▶ 開始（'+humans+' 人 vs '+(n-humans)+' AI）';
+  }
+
+  document.getElementById('btn-reset').addEventListener('click',()=>{
+    list=seats.makeDefault(n,seatDefs);
+    persistAndRefresh();
+  });
+  document.getElementById('btn-start').addEventListener('click',()=>{
+    seats.set(activityId,list);
+    location.href='../'+(LEVEL.playFile||LEVEL.file);
+  });
+
+  window.addEventListener('gamepadconnected',rebuildOptions);
+  window.addEventListener('gamepaddisconnected',rebuildOptions);
+  rebuildOptions();
+  updateStatus();
+  renderChallenge();
+
+  /* 每席即時軸值讀值（試飛預覽，不需要 3D 場景——用數字/長條就足以確認「這席是我」） */
+  let lastT=performance.now();
+  function loop(){
+    requestAnimationFrame(loop);
+    const now=performance.now(), dt=Math.min((now-lastT)/1000,.05); lastT=now;
+    input.update(dt);
+    list.forEach((s,i)=>{
+      const p=input.playerFor(s.controller);
+      [p.yaw,p.throttle,p.roll,p.pitch].forEach((v,ai)=>{
+        const fill=document.getElementById(`axf-${i}-${ai}`), val=document.getElementById(`axv-${i}-${ai}`);
+        if(!fill)return;
+        const pct=(Math.abs(v)*50).toFixed(1);
+        if(v>=0){fill.style.left='50%';fill.style.width=pct+'%';}
+        else{fill.style.left=(50-parseFloat(pct)).toFixed(1)+'%';fill.style.width=pct+'%';}
+        val.textContent=v.toFixed(2);
+      });
+    });
+    if(listening){
+      connectedGamepads().forEach(gp=>{
+        const mag=gp.axes.reduce((a,v)=>Math.max(a,Math.abs(v)),0);
+        const prev=listening.peaks.get(gp.index)||0;
+        if(mag>prev)listening.peaks.set(gp.index,mag);
+      });
+      updateListeningUI();
+      if(performance.now()-listening.startT>=listening.dur) finishListening();
+    }
+  }
+  loop();
+}
+</script>
+</body>
+</html>

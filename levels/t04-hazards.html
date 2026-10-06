@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>⚠️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第四關 飛行風險與環境應對｜newdrone T04</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE T04 HAZARDS v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { BatterySystem } from '../core/systems/battery.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t04');
+progress.migrateLegacy();
+
+/* ── 引擎與系統（沿用 t06 同一套：wind.js／battery.js／checkRingPass 全部直接重用，
+   這關跟 t06 是同一批 core 系統的另一種教學編排——t06 是「持續側風、結算抗風分數」，
+   t04 是拆成兩個獨立教學段落：先練「墜機代價＋充電」，再練「陣風即時修正」。） ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const hud=new HUD(LEVEL.hud);
+const ui=new UI(input);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(12,1.7,10), new THREE.Vector3(-12,1.7,10), new THREE.Vector3(0,1.7,16)]});
+/* BOUND 需包住 crash 階段最遠的終點環（z=-35）並留飛越裕度——t02 曾在這裡踩過坑
+   （BOUND 只包到目標座標、沒留裕度就飛不過去）：z 方向最遠 35、留 5 裕度 → 40。
+   wind 階段三個檢查點最遠只到 z=-24，遠在 40 以內，不用另外加大。 */
+const BOUND=40, HOVER_Y=4.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19,skipCompassMark:true});
+/* 四方位地標（Phase 5 x-hover 驗證有效後推廣過來）：skipCompassMark:true
+   讓 buildBasicField 不要再畫它自己那顆北方錐體，改用完整四方位版本。 */
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+
+/* ── 機體（樣式可在開場畫面切換，見 showIntro 的 b-style 按鈕）── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const SPAWN=new THREE.Vector3(0,1.5,5);
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 兩個教學階段：①墜機代價＋充電　②陣風即時修正
+   兩階段全程都是玩家真實操作（跟 t02 不同，這關不做逐軸 gating），
+   物理／風場／電量全部呼叫既有 core 系統，關卡本地只維護「這關特有」的狀態：
+   耐久度、障礙碰撞、陣風開關時序。 ── */
+const STAGE_NAMES=['crash','wind'];
+const wind=new WindSystem();
+let battery=null;                       // 每次進 crash 階段重建
+let durability=100, invulnT=0;
+let obstacleHits=0, finalBattery=100;
+let windIdx=0, gustTimer=0, gustActive=false, gustDuration=0, gustDirX=1, gustDirZ=0, gustMag=0;
+let stageDone={crash:false,wind:false};
+let stageObjs={};
+let lastGuideIdx=-2;
+let flightTime=0, finished=false, failing=false;
+
+const guide=new Guide([
+  { text:'閃避障礙柱，別讓電量歸零', done:s=>s.crashDone },
+  { text:'注意風向箭頭，反向修正', done:s=>s.windDone },
+],hud,engine.scene);
+
+function clearStageObjs(){
+  Object.values(stageObjs).forEach(o=>{
+    if(Array.isArray(o)) o.forEach(x=>engine.scene.remove(x));
+    else if(o instanceof THREE.Object3D) engine.scene.remove(o);
+  });
+  stageObjs={};
+}
+function paintRing(r,hex,op){ r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex); r.children[0].material.opacity=op??0.75; }
+
+/* ── ①墜機後果與換電池（承基本版 stage4 crash 子關：障礙柱＋充電站＋終點環） ── */
+function enterCrash(){
+  clearStageObjs(); hideFail();
+  drone.reset(SPAWN);
+  durability=100; invulnT=0;
+  const pillarPositions=[
+    new THREE.Vector3(-3,HOVER_Y,-10), new THREE.Vector3(3,HOVER_Y,-20), new THREE.Vector3(-2.5,HOVER_Y,-28)];
+  const pillarM=new THREE.MeshStandardMaterial({color:0x64748b,roughness:.6,emissive:0x334155,emissiveIntensity:.3});
+  const pillarG=new THREE.CylinderGeometry(1,1,7,12);
+  stageObjs.pillars=pillarPositions.map(p=>{
+    const m=new THREE.Mesh(pillarG,pillarM); m.position.copy(p); m.castShadow=!lowQ;
+    engine.scene.add(m); return m;
+  });
+  const chargerPos=new THREE.Vector3(0,0.3,-18);
+  const charger=new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.4,0.4,20),
+    new THREE.MeshStandardMaterial({color:0x1e293b,emissive:0xeab308,emissiveIntensity:.6,metalness:.7}));
+  charger.position.copy(chargerPos); engine.scene.add(charger); stageObjs.charger=charger;
+  battery=new BatterySystem({start:100,drainPerSec:4.0*progress.classDiffCoef(),chargers:[{pos:chargerPos,radius:2.6,rate:30}]}); // 2026-08-02：班級難度倍率，無設定＝1.0、行為不變
+  const goal=makeRing(new THREE.Vector3(0,HOVER_Y,-35),{radius:2.2,color:0x22c55e});
+  engine.scene.add(goal); stageObjs.goal=goal;
+  hud.setOffscreenTarget(goal.position);
+  hud.setLiquid(durability);
+  hud.toast('①避開障礙柱，記得到充電站補電','warn');
+  hud.setGuide('閃避障礙柱，別讓電量歸零');
+}
+function updateCrash(dt,p){
+  /* 第一幀（guide.idx 剛切到這個階段、enterCrash() 這幀稍後才會被呼叫）
+     battery/stageObjs.pillars 都還沒建好，安全跳過——承 t02/t03 的
+     「本幀先不做事、enterStage() 跑完下一幀自然正常」慣例。 */
+  if(!battery||!stageObjs.pillars)return;
+  drone.update(dt,p);
+  battery.update(dt,drone.pos,true);
+  if(battery.empty)drone.vel.y-=5.9*dt;   // 電量耗盡：緩緩下沉（承基本版）
+  if(invulnT>0)invulnT-=dt;
+  else for(const ob of stageObjs.pillars){
+    const dx=drone.pos.x-ob.position.x, dz=drone.pos.z-ob.position.z;
+    if(Math.hypot(dx,dz)<1.5&&Math.abs(drone.pos.y-ob.position.y)<3.5){
+      durability=Math.max(0,durability-25); obstacleHits++; invulnT=1.0; sfx.play('fail');
+      drone.vel.addScaledVector(new THREE.Vector3(dx,0,dz).normalize(),4.0);
+      hud.toast(`撞到障礙柱！耐久度 ${durability}%`,'fail');
+      break;
+    }
+  }
+  hud.setLiquid(durability);
+  if(durability<=0){ triggerFail('機體嚴重受損','連續碰撞導致機體耐久度歸零，系統強制迫降。下次請放慢速度、提前閃避障礙柱。'); return; }
+  if(battery.empty){ triggerFail('電池電量耗盡','電池沒有及時在充電站補充，動力完全喪失。記得電量偏低時要提早規劃降落或充電路線。'); return; }
+  if(stageObjs.goal&&checkRingPass(stageObjs.goal,drone.pos,prevPos)){
+    finalBattery=Math.round(battery.pct);
+    stageDone.crash=true;
+  }
+}
+function triggerFail(title,text){
+  failing=true; engine.paused=true; sfx.play('fail');
+  hud.setOffscreenTarget(null);
+  ui.showModal({title,
+    html:`<p>${text}</p>`,
+    buttons:[{id:'b-retry-crash',label:'🔄 重新挑戰',onClick:()=>{
+      ui.closeModal(); engine.paused=false; failing=false; enterCrash();
+    }}]});
+}
+function hideFail(){ failing=false; }
+
+/* ── ②陣風環境干擾（承基本版 stage4 wind 子關：離散陣風開關，非 t06 的持續劇本風場） ── */
+function enterWind(){
+  clearStageObjs(); hideFail();
+  drone.reset(SPAWN);
+  windIdx=0; gustTimer=1.5; gustActive=false; gustDuration=0; gustMag=0;
+  wind.setScripted(1,0,0); drone.wind=wind.vec;
+  const positions=[new THREE.Vector3(2,HOVER_Y,-8),new THREE.Vector3(-2,HOVER_Y+0.6,-16),new THREE.Vector3(0,HOVER_Y,-24)];
+  const rings=positions.map(p=>makeRing(p,{radius:2.0,color:0x64748b}));
+  rings.forEach(r=>engine.scene.add(r));
+  paintRing(rings[0],0x22c55e);
+  stageObjs.rings=rings;
+  hud.setOffscreenTarget(rings[0].position);
+  hud.toast('②注意風向箭頭，依序穿過三個檢查點','warn');
+  hud.setGuide('注意風向箭頭，反向修正');
+}
+function updateGusts(dt){
+  if(!gustActive){
+    gustTimer-=dt;
+    if(gustTimer<=0){
+      gustActive=true; gustDuration=1.2+Math.random()*0.8;
+      const angle=Math.random()*Math.PI*2;
+      gustDirX=Math.cos(angle); gustDirZ=Math.sin(angle); gustMag=3.0+Math.random()*2.5;
+      hud.toast('🌬️ 陣風來襲，注意修正！','warn');
+    }
+  } else {
+    gustDuration-=dt;
+    if(gustDuration<=0){ gustActive=false; gustTimer=2.5+Math.random()*2.5; }
+  }
+  wind.setScripted(gustDirX,gustDirZ,gustActive?gustMag:0);
+  drone.wind=wind.vec;
+}
+function updateWind(dt,p){
+  if(!stageObjs.rings)return;   // 同 updateCrash：enterWind() 這幀稍後才建好場景物件
+  updateGusts(dt);
+  drone.update(dt,p);
+  const rings=stageObjs.rings, cur=rings[windIdx];
+  if(cur&&checkRingPass(cur,drone.pos,prevPos)){
+    paintRing(cur,0x64748b,0.3); windIdx++; sfx.play('ring');
+    hud.toast(`檢查點 ${windIdx}/${rings.length}`,'ok');
+    if(windIdx<rings.length){ paintRing(rings[windIdx],0x22c55e); hud.setOffscreenTarget(rings[windIdx].position); }
+    else { hud.setOffscreenTarget(null); stageDone.wind=true; }
+  }
+}
+
+/* ── 階段切換 ── */
+function enterStage(idx){
+  const name=STAGE_NAMES[idx];
+  if(name==='crash') enterCrash();
+  else if(name==='wind') enterWind();
+}
+
+/* ── 視角／蹲姿（沿用既有慣例） ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes('街機',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=1){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'飛行風險與環境應對',
+    html:`<p>⚠️ 這一關練習兩個真實飛行中常遇到的狀況：</p>
+      <p><b>①墜機後果與換電池</b>：從起點飛到終點，途中閃避障礙柱（撞到會讓機體受損），
+      並在半路的充電站補充電量，兩者歸零都會迫降失敗。<br>
+      <b>②陣風環境干擾</b>：飛行中會隨機出現側風把機身吹偏，看風向箭頭即時反向修正，依序穿過檢查點。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;   // 點一下換下一款（背景即時預覽）
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},  // 焦點留在樣式鈕，可連按
+      {id:'b-go',label:'開始第一項：墜機後果與換電池',onClick:startGame}],align:'top'});
+  ui.gpSetFocus(['b-style','b-go'],focusIdx);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  guide.start(); lastGuideIdx=-2;
+  hud.toast('起飛！','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished||failing)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>目前階段：${guide.idx+1}/2・已飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null);
+  const score=Math.round(flightTime);
+  progress.record('t04',{completed:true,score,
+    metrics:{flightTime:score,obstacleHits,finalBattery}});
+  ui.showModal({title:'飛行風險與環境應對 完成！',
+    html:`<p>⏱ 總時間：${flightTime.toFixed(1)} 秒　💥 障礙碰撞：${obstacleHits} 次　🔋 完成充電段時電量：${finalBattery}%</p>
+      <p>你已經體驗過墜機/斷電的代價，也練過陣風即時修正。成績已記錄（nd.progress.t04）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('飛行風險：墜機代價→陣風修正');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 測試/除錯 hook ── */
+window.ndDebug=()=>({stageIdx:guide.idx,stageName:STAGE_NAMES[Math.max(0,guide.idx)],
+  durability,batteryPct:battery?battery.pct:null,obstacleHits,windIdx,
+  dronePos:drone.pos.clone(),finished,failing});
+window.ndTest={
+  forceStageDone:()=>{
+    const name=STAGE_NAMES[guide.idx];
+    if(name==='crash'){ finalBattery=battery?Math.round(battery.pct):100; stageDone.crash=true; }
+    else if(name==='wind') stageDone.wind=true;
+  },
+  /* crash 終點環／wind 每個檢查點都要求真的跨越環面，warp 到「前方一小段」
+     讓接下來一小段真實飛行能真的觸發 checkRingPass（同 t02/t03 warp 系列的用意）。 */
+  warpBeforeGoal:()=>{
+    if(!stageObjs.goal)return false;
+    drone.pos.set(stageObjs.goal.position.x,stageObjs.goal.position.y,stageObjs.goal.position.z+3);
+    drone.vel.set(0,0,0); return true;
+  },
+  warpBeforeWindRing:(i)=>{
+    const rings=stageObjs.rings; if(!rings||!rings[i])return false;
+    const r=rings[i];
+    drone.pos.set(r.position.x,r.position.y,r.position.z+3);
+    drone.vel.set(0,0,0); windIdx=i; return true;
+  }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished&&!failing){
+    flightTime+=dt;
+    const stageName=STAGE_NAMES[Math.max(0,guide.idx)];
+    prevPos.copy(drone.pos);
+    if(stageName==='crash') updateCrash(dt,p);
+    else if(stageName==='wind') updateWind(dt,p);
+
+    guide.update(dt,{crashDone:stageDone.crash,windDone:stageDone.wind});
+    if(guide.idx!==lastGuideIdx){
+      lastGuideIdx=guide.idx;
+      if(guide.finished) finishLevel();
+      else enterStage(guide.idx);
+    }
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  wind.update(dt);
+  if(battery)hud.setBattery(battery.pct);
+  const _windOn=engine.simStarted&&STAGE_NAMES[Math.max(0,guide.idx)]==='wind';
+  hud.setWind(_windOn?wind.hudInfo():null,_windOn?wind.screenArrowDeg(drone.pos,engine.camera):null);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(engine.simStarted?`階段 ${Math.max(0,guide.idx)+1}/2`:'');
+  const mapTargets=stageObjs.rings?stageObjs.rings.map((r,i)=>({pos:r.position,done:i<windIdx}))
+    :stageObjs.goal?[{pos:stageObjs.goal.position,done:false}]:[];
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets,{route:true,landmarks:compassLandmarks});
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>📦</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：投遞對戰｜newdrone Cargo-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d0a05;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#7a5c3b;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(251,191,36,.4) 15%,rgba(251,191,36,.55) 50%,rgba(251,191,36,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(251,191,36,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(20,16,10,.8);border:1px solid rgba(251,191,36,.35);border-radius:6px;
+    padding:4px 10px;color:#f0e0c3;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(20,16,10,.85);border:1px solid rgba(251,191,36,.4);border-radius:10px;
+    padding:8px 22px;color:#f0e8d8;font-size:13px;text-align:center;box-shadow:0 0 16px rgba(251,191,36,.12);
+    display:flex;gap:18px;align-items:center;}
+  #topbar b{font-size:17px;}
+  #topbar .p1{color:#38bdf8;} #topbar .p2{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(20,16,10,.85);
+    border:1px solid rgba(251,191,36,.4);color:#f0e8d8;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE CARGO-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { renderSplit } from '../core/camera.js';
+import { buildBasicField, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：投遞對戰（x-cargo 的 pk-live 版本，規劃書 §9 成本表中成本
+   第一例：「配送競速：同場搶單或各送各的比總量｜中｜落點判定改
+   per-seat」）
+   ------------------------------------------------------------
+   跟 goalkeeper-pk／chase-pk 的「天生不對稱、AI 換真人」結構不同，
+   這關是**對稱同任務**——兩人做同一件事（取貨→依序送達 3 個落點），
+   比誰送得多，架構上比較接近 x-hover-pk（並排各自懸停）的模式。
+   採用規劃書給的兩種玩法之一：「各送各的比總量」——但不是把場地
+   切兩半（跟 x-hover-pk 不同），而是**兩人共用同一個取貨點／同一組
+   3 個落點**，各自的取貨/投遞進度完全獨立（P1/P2 各自的 cargoHeld/
+   deliveryStep/score，互不影響），沒有「搶單」意義下的資源爭奪——
+   誰都可以隨時去取貨點「拿」（虛擬貨物概念上是各自一份，不是同一顆
+   實體物件被搶），這正是規劃書成本註記「落點判定改 per-seat」的
+   實際做法：把單人版原本「一組全域 cargoHeld/deliveryStep」直接
+   複製成 P[0]/P[1] 兩份獨立狀態，取貨點／落點的座標與半徑判定完全
+   沿用單人版數值，不用另外設計「同一顆貨物該歸誰」的爭奪邏輯——
+   這也是這關能維持「中成本」而不是「高成本」的關鍵簡化。
+
+   跟 goalkeeper-pk／chase-pk 不同，這關兩人做的是同一件事，需要
+   比同一套規則才公平——沿用 x-hover-pk 的做法：**保留單人版的整場
+   難度選單**（easy/med/hard 對應限速/落點大小），雙方共用同一個
+   難度，不是像另外兩關那樣改用「賽局時間」選項＋逐席 AI diff。
+
+   AI 席位處理：單人版 x-cargo.html 本來就沒有 AI 角色（純粹玩家
+   自己操控），不能沿用「零輸入」（貨物永遠送不出去，零輸入在這關
+   不是合理基準線）。這裡新寫一個自動送貨 AI，用跟 chase-pk 同一個
+   從 core/physics.js 的 _arcade() 公式反推的安全轉向函式
+   droneSteerToward()（本檔複製一份，維持每個 pk-live 檔案自包含，
+   不因為這是低/中成本的個別關卡任務而去新增一個共用模組），依序
+   導航「取貨點→落點①→②→③→回取貨點」，且載貨時刻意收斂轉向強度
+   （aggr 降低）並在每幀對速度做安全夾制，確保 AI 不會因為自己的
+   轉向策略不夠精準而觸發「超速掉貨」，導致對戰不公平。
+
+   相機：C2 家族（core/physics.js 的 Drone，yaw=0 機頭朝 -Z），沿用
+   x-hover-pk／chase-pk 已驗證過的 +sinθ,+cosθ 公式，仍照教訓要求
+   用 __ndDebug 獨立驗算一次才交付。
+   ============================================================ */
+
+const ACT='cargo-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const PLABEL=['P1','P2'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 場地（沿單人版 x-cargo.html 數值：對稱 BOUND=11＋四方位地標，
+   共用同一個取貨點／同一組 3 個落點） ── */
+const BOUND=11;
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+buildBasicField(engine.scene,{size:BOUND,sky:0x0d0a05,skipCompassMark:true});
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+
+const GAME_TIME=90.0;
+const DIFF_CFG={
+  easy:{ label:'初級', maxSpd:5.0, delivR:2.2, graceSec:0.5 },
+  med: { label:'中級', maxSpd:3.5, delivR:1.6, graceSec:0.3 },
+  hard:{ label:'高級', maxSpd:2.5, delivR:1.1, graceSec:0.15 },
+};
+const CARGO_SPAWN=new THREE.Vector3(0,1.5,3);
+const PICKUP_R=1.4, DELIVERY_Y=2.5;
+const ZONE_COLORS=[0x22c55e,0x3b82f6,0xec4899];
+const ZONE_LABELS=['①','②','③'];
+const ZONE_POS=[
+  new THREE.Vector3(-6,0.1,-3),
+  new THREE.Vector3( 6,0.1,-5),
+  new THREE.Vector3( 0,0.1,-9),
+];
+const PLAYER_SPAWNS=[new THREE.Vector3(-1.2,2.5,3),new THREE.Vector3(1.2,2.5,3)];
+const AI_AGGR_EMPTY=1.0, AI_AGGR_LOADED=0.5; // 空機快速返回取貨點；載貨時收斂轉向強度，配合下方安全夾速
+
+/* ── 兩台真機體（都是 core/physics.js 的 Drone，跟單人版玩家機同一套物理） ── */
+const drones=[0,1].map(i=>new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:8},spawn:PLAYER_SPAWNS[i].clone()}));
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('trainer-orb',{tint:TINTS[i],scale:1});
+  m.castShadow=true; engine.scene.add(m); return m;
+});
+/* 各自攜帶的貨物視覺（掛在各自機體下方，沿單人版手法） */
+const cargoCarries=[0,1].map((_,i)=>{
+  const g=new THREE.Group();
+  const cbx=new THREE.Mesh(new THREE.BoxGeometry(0.38,0.38,0.38),
+    new THREE.MeshStandardMaterial({color:0xfbbf24,emissive:0xfbbf24,emissiveIntensity:.9,metalness:.3}));
+  cbx.position.y=-0.75; g.add(cbx);
+  const wirePts=[new THREE.Vector3(0,0,0),new THREE.Vector3(0,-0.75,0)];
+  g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(wirePts),
+    new THREE.LineBasicMaterial({color:0x888888})));
+  g.add(new THREE.PointLight(0xfbbf24,0.8,2));
+  g.visible=false;
+  meshes[i].add(g);
+  return g;
+});
+
+/* ── 取貨點視覺（單一，兩人共用，沿單人版樣式） ── */
+const cargoSpawnMesh=new THREE.Group();
+cargoSpawnMesh.add(new THREE.Mesh(new THREE.BoxGeometry(0.6,0.6,0.6),
+  new THREE.MeshStandardMaterial({color:0xfbbf24,emissive:0xfbbf24,emissiveIntensity:.8,metalness:.3})));
+(function(){
+  const pts=[]; for(let j=0;j<=40;j++){const a=(j/40)*Math.PI*2;pts.push(new THREE.Vector3(Math.cos(a)*0.9,0,Math.sin(a)*0.9));}
+  const hr=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({color:0xfbbf24,transparent:true,opacity:.6}));
+  hr.rotation.x=-Math.PI/2; hr.position.y=-1.4; cargoSpawnMesh.add(hr);
+})();
+cargoSpawnMesh.add(new THREE.PointLight(0xfbbf24,1.2,4));
+cargoSpawnMesh.position.copy(CARGO_SPAWN);
+engine.scene.add(cargoSpawnMesh);
+
+/* ── 三個落點視覺（兩人共用同一組，沿單人版樣式；opacity 用「兩人之中
+   任一位剛送達」觸發的短暫脈衝，不追蹤「誰的第幾步」——見檔頭決策說明） ── */
+const dropZones=ZONE_POS.map((pos,i)=>{
+  const g=new THREE.Group();
+  const disc=new THREE.Mesh(new THREE.CircleGeometry(1,48),
+    new THREE.MeshBasicMaterial({color:ZONE_COLORS[i],transparent:true,opacity:.12,side:THREE.DoubleSide}));
+  disc.rotation.x=-Math.PI/2; disc.position.y=0.01; g.add(disc);
+  const ringPts=[]; for(let j=0;j<=64;j++){const a=(j/64)*Math.PI*2;ringPts.push(new THREE.Vector3(Math.cos(a),0,Math.sin(a)));}
+  const ringLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts),
+    new THREE.LineBasicMaterial({color:ZONE_COLORS[i]}));
+  ringLine.rotation.x=-Math.PI/2; ringLine.position.y=0.02; g.add(ringLine);
+  const post=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,DELIVERY_Y+0.5,6),
+    new THREE.MeshBasicMaterial({color:ZONE_COLORS[i],transparent:true,opacity:.3}));
+  post.position.y=(DELIVERY_Y+0.5)/2+0.02; g.add(post);
+  g.add(new THREE.PointLight(ZONE_COLORS[i],0.8,5));
+  g.position.copy(pos);
+  engine.scene.add(g);
+  return {disc,ringLine,pos,pulse:0};
+});
+function setZoneRadius(r){ dropZones.forEach(z=>{ z.disc.scale.set(r,r,r); z.ringLine.scale.set(r,1,r); }); }
+function pulseZone(i){ dropZones[i].pulse=0.5; }
+
+/* ── droneSteerToward()：跟 chase-pk 同一個從 core/physics.js 的
+   _arcade() 公式反推的安全轉向函式（本檔獨立複製一份，理由見檔頭
+   決策說明），讓 AI 全程走標準搖桿輸入介面操控 Drone，不繞過/竄改
+   pos/vel/yaw，避免跨物理家族機頭慣例混用風險。 ── */
+function droneSteerToward(dr,targetPos,dt,aggr){
+  const dx=targetPos.x-dr.pos.x, dy=targetPos.y-dr.pos.y, dz=targetPos.z-dr.pos.z;
+  const distXZ=Math.hypot(dx,dz);
+  const ndx=distXZ>0.05?dx/distXZ:0, ndz=distXZ>0.05?dz/distXZ:0;
+  const desYaw=distXZ>0.05?Math.atan2(-ndx,-ndz):dr.yaw;
+  let yawErr=desYaw-dr.yaw; yawErr=Math.atan2(Math.sin(yawErr),Math.cos(yawErr));
+  const inpYaw=THREE.MathUtils.clamp(yawErr*2.2,-1,1);
+  const sy=Math.sin(dr.yaw), cy=Math.cos(dr.yaw);
+  const inpPitch=THREE.MathUtils.clamp((-sy*ndx-cy*ndz)*aggr,-1,1);
+  const inpRoll =THREE.MathUtils.clamp(( cy*ndx-sy*ndz)*aggr,-1,1);
+  const inpThrottle=THREE.MathUtils.clamp(dy*0.8,-1,1);
+  dr.update(dt,{throttle:inpThrottle,yaw:inpYaw,pitch:inpPitch,roll:inpRoll});
+}
+
+/* ── 分割畫面：C2 家族，沿用 x-hover-pk／chase-pk 驗證過的
+   +sinθ,+cosθ 公式（仍會用 __ndDebug 獨立驗算一次）。 ── */
+const cams=[new THREE.PerspectiveCamera(66,1,0.05,80),new THREE.PerspectiveCamera(66,1,0.05,80)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x+sy*4.5,y+2.2,z+cy*4.5),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 賽局狀態：P[0]/P[1] 各自獨立的取貨/投遞進度（規劃書「落點判定改
+   per-seat」的實作），共用同一組 CARGO_SPAWN／ZONE_POS 座標。 ── */
+let pDiff='med', timer=GAME_TIME, playing=false, finished=false;
+function freshP(){ return {held:false,step:0,score:0,runs:0,drops:0,perfectRuns:0,speedViolTimer:0,perfectRun:true}; }
+const P=[freshP(),freshP()];
+
+function navTargetFor(step){
+  if(step===0)return CARGO_SPAWN;
+  if(step>=1&&step<=3)return ZONE_POS[step-1];
+  return CARGO_SPAWN;
+}
+function checkPickup(i){
+  const p=P[i], d=drones[i];
+  if(p.held||p.step!==0)return;
+  if(d.pos.distanceTo(CARGO_SPAWN)<PICKUP_R){
+    p.held=true; p.step=1; cargoCarries[i].visible=true;
+    toast(`${PLABEL[i]} 拿到貨物！→ 落點 ${ZONE_LABELS[0]}`); sfx.play('ok');
+  }
+}
+function checkDelivery(i){
+  const p=P[i], d=drones[i];
+  if(!p.held||p.step===0||p.step>3)return;
+  const zone=ZONE_POS[p.step-1];
+  const dx=d.pos.x-zone.x, dz=d.pos.z-zone.z;
+  if(Math.hypot(dx,dz)<DIFF_CFG[pDiff].delivR&&d.pos.y<DELIVERY_Y){
+    const step=p.step;
+    p.score+=100; p.step++;
+    pulseZone(step-1);
+    toast(`${PLABEL[i]} 落點 ${ZONE_LABELS[step-1]} +100`); sfx.play('ok');
+    if(p.step>3){
+      p.runs++;
+      const bonus=200+(p.perfectRun?100:0);
+      if(p.perfectRun)p.perfectRuns++;
+      p.score+=bonus;
+      toast(`${PLABEL[i]} 完整投遞！+${bonus}`); sfx.play('finish');
+      p.held=false; p.step=0; cargoCarries[i].visible=false; p.perfectRun=true;
+    }
+  }
+}
+function dropCargo(i,reason){
+  const p=P[i];
+  if(!p.held)return;
+  p.held=false; p.drops++; p.perfectRun=false; p.step=0; p.speedViolTimer=0;
+  cargoCarries[i].visible=false;
+  toast(`${PLABEL[i]} ${reason}！貨物掉落`); sfx.play('warn');
+}
+function checkSpeed(i,dt){
+  const p=P[i], d=drones[i];
+  if(!p.held){ p.speedViolTimer=0; return; }
+  const maxSpd=DIFF_CFG[pDiff].maxSpd;
+  if(d.hSpeed()>maxSpd){
+    p.speedViolTimer+=dt;
+    if(p.speedViolTimer>DIFF_CFG[pDiff].graceSec)dropCargo(i,'速度過快');
+  }else{
+    p.speedViolTimer=Math.max(0,p.speedViolTimer-dt*2);
+  }
+}
+
+/* ── AI 席位：自動送貨（單人版沒有這個角色，新寫的導航狀態機，
+   走 droneSteerToward，並對載貨中的速度做安全夾制——見檔頭決策說明） ── */
+function updateCargoAI(i,dt){
+  const p=P[i], d=drones[i];
+  const tgt=navTargetFor(p.step);
+  droneSteerToward(d,tgt,dt,p.held?AI_AGGR_LOADED:AI_AGGR_EMPTY);
+  if(p.held){
+    const maxSpd=DIFF_CFG[pDiff].maxSpd*0.82; // 安全夾速：不讓 AI 因轉向策略不夠精準而誤觸超速掉貨
+    const hs=d.hSpeed();
+    if(hs>maxSpd){ const k=maxSpd/hs; d.vel.x*=k; d.vel.z*=k; }
+  }
+}
+
+/* ── Intro／暫停／結算 ── */
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showModal({title,html,buttons}){
+  closeModal();
+  const wrap=document.createElement('div');
+  wrap.className='nd-modal';
+  wrap.style.cssText='position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(6,4,2,.55);';
+  wrap.innerHTML=`<div style="background:rgba(20,16,10,.95);border:1px solid rgba(251,191,36,.4);
+    border-radius:14px;padding:22px 26px;max-width:520px;color:#f0e8d8;font-size:13px;line-height:1.6;">
+    <h2 style="margin:0 0 10px;font-size:18px;color:#fbbf24;">${title}</h2>
+    ${html}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;"></div></div>`;
+  const btnWrap=wrap.querySelector('div > div:last-child');
+  buttons.forEach(b=>{
+    const el=document.createElement('button');
+    el.id=b.id; el.textContent=b.label;
+    el.style.cssText='background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.5);color:#fbbf24;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;font-family:inherit;';
+    el.onclick=b.onClick;
+    btnWrap.appendChild(el);
+  });
+  document.body.appendChild(wrap);
+}
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+
+function showIntro(){
+  engine.simStarted=false; playing=false;
+  showModal({title:'情境體驗 · 投遞對戰',
+    html:`<p>P1／P2 共用同一個<strong>取貨點</strong>與<strong>3 個落點</strong>，各自獨立取貨→依序送達，
+      各送各的、比誰的總得分高！</p>
+      <p>⚡ 水平速度持續超限 → 貨物掉落　🚧 碰到邊界 → 貨物掉落<br>
+      完整投遞一輪 +200 分，全程無掉落再 +100 分加成，雙方共用同一套限速/落點難度。<br>
+      ⏱ 挑戰時間 <b>90 秒</b>！</p>
+      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-easy',label:'初級（限速5・大落點）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'中級（限速3.5）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'高級（限速2.5・小落點）',onClick:()=>startGame('hard')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+}
+function startGame(diff){
+  pDiff=diff;
+  timer=GAME_TIME;
+  P[0]=freshP(); P[1]=freshP();
+  cargoCarries.forEach(c=>c.visible=false);
+  drones.forEach((d,i)=>d.reset(PLAYER_SPAWNS[i].clone()));
+  setZoneRadius(DIFF_CFG[diff].delivR);
+  closeModal(); sfx.play('click');
+  pkc.apply(drones,seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始投遞對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else closeModal();
+}
+function showPauseModal(){
+  showModal({title:'暫停',
+    html:`<p>難度：${DIFF_CFG[pDiff].label}　剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>
+      <p>P1 ${Math.floor(P[0].score)} 分　P2 ${Math.floor(P[1].score)} 分</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const s0=Math.floor(P[0].score), s1=Math.floor(P[1].score);
+  const winner=s0>s1?'P1':s1>s0?'P2':'tie';
+  progress.record(ACT,{completed:true,score:Math.max(s0,s1),
+    ...pkc.recordFields(),metrics:{p1Score:s0,p2Score:s1,p1Runs:P[0].runs,p2Runs:P[1].runs,winner,humanCount,diff:pDiff}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner} 獲勝！`;
+  showModal({title:'挑戰結束 · '+resText,
+    html:`<p>P1：<b>${s0} 分</b>（完整投遞 ${P[0].runs} 輪・掉貨 ${P[0].drops} 次）<br>
+      P2：<b>${s1} 分</b>（完整投遞 ${P[1].runs} 輪・掉貨 ${P[1].drops} 次）</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro()},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    [0,1].forEach(i=>{
+      if(seatList[i].controller?.type==='ai'){
+        updateCargoAI(i,dt);
+      }else{
+        const p=input.playerFor(seatList[i].controller);
+        drones[i].update(dt,p);
+      }
+      if(drones[i].collided&&P[i].held)dropCargo(i,'碰觸邊界');
+      checkSpeed(i,dt);
+      checkPickup(i);
+      checkDelivery(i);
+    });
+
+    dropZones.forEach(z=>{
+      if(z.pulse>0){ z.pulse-=dt; z.disc.material.opacity=0.12+0.35*Math.max(0,z.pulse/0.5); }
+      else z.disc.material.opacity=0.12;
+    });
+
+    timer-=dt;
+    if(timer<=0){timer=0;finishGame();}
+  }
+
+  drones.forEach((d,i)=>{
+    meshes[i].position.copy(d.pos);
+    meshes[i].quaternion.copy(d.q);
+    if(meshes[i].userData.spin)meshes[i].userData.spin.rotation.y+=dt*3.2;
+  });
+  cams.forEach((cam,i)=>updatePaneCam(cam,drones[i]));
+
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="p1">P1 <b>${Math.floor(P[0].score)}</b></span>`+
+    `<span>${pkc.topTag()}${DIFF_CFG[pDiff].label}　剩 ${Math.max(0,Math.ceil(timer))}秒</span>`+
+    `<span class="p2">P2 <b>${Math.floor(P[1].score)}</b></span>`;
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🔍</text></svg>">
+<title>newdrone 開發自檢｜dev-check v1.0</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    padding:32px 16px;display:flex;flex-direction:column;align-items:center;}
+  h1{font-size:20px;color:#00eeff;letter-spacing:3px;margin:0 0 4px;}
+  p.sub{font-size:11px;color:#7aa3b8;margin:0 0 24px;text-align:center;line-height:1.7;}
+  section{width:100%;max-width:860px;background:#0b1626;border:1px solid rgba(0,238,255,.35);
+    border-radius:12px;padding:16px 20px;margin-bottom:16px;box-sizing:border-box;}
+  h2{font-size:14px;color:#00eeff;margin:0 0 10px;}
+  table{width:100%;border-collapse:collapse;font-size:12px;}
+  td,th{padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.07);text-align:left;}
+  th{color:#7aa3b8;font-weight:normal;}
+  .ok{color:#4ade80;} .warn{color:#facc15;} .bad{color:#f87171;}
+  code{color:#9fc3d8;}
+  #summary{font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:16px;
+    width:100%;max-width:860px;box-sizing:border-box;text-align:center;}
+  #summary.allok{background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.5);color:#4ade80;}
+  #summary.haswarn{background:rgba(250,204,21,.10);border:1px solid rgba(250,204,21,.5);color:#facc15;}
+  a{color:#00eeff;}
+</style>
+</head>
+<body>
+<h1>DEV-CHECK</h1>
+<p class="sub">manifest ↔ 實際檔案 ↔ localStorage 三方一致性自檢（規劃書 §6.4-3）<br>
+每次開發完新關卡開一下這頁，30 秒完成檢查——取代靠記憶力。</p>
+<div id="summary">檢查中…</div>
+<section><h2>① manifest ↔ 關卡檔案</h2>
+  <table id="t-files"><tr><th>id</th><th>title</th><th>file</th><th>狀態</th></tr></table></section>
+<section><h2>② localStorage 紀錄 ↔ manifest</h2>
+  <table id="t-store"><tr><th>key</th><th>狀態</th><th>內容摘要</th></tr></table></section>
+<section><h2>③ metrics 欄位核對（寫入了 manifest 沒定義的欄位？）</h2>
+  <table id="t-metrics"><tr><th>關卡</th><th>manifest 定義</th><th>實際寫入</th><th>狀態</th></tr></table></section>
+<p class="sub"><a href="../index.html">← 返回入口</a></p>
+<script type="module">
+import { LEVELS } from '../data/levels-manifest.js';
+
+let warns=0;
+const row=(tid,cells)=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=cells.map(c=>`<td>${c}</td>`).join('');
+  document.getElementById(tid).appendChild(tr);
+};
+const OK=t=>`<span class="ok">✔ ${t}</span>`;
+const WARN=t=>{warns++;return `<span class="warn">⚠ ${t}</span>`;};
+const BAD=t=>{warns++;return `<span class="bad">✘ ${t}</span>`;};
+
+/* ① manifest 每關檔案是否存在（HEAD fetch；需經 http 伺服器開啟本頁） */
+for(const lv of LEVELS){
+  let st;
+  try{
+    const res=await fetch('../'+lv.file,{method:'HEAD'});
+    st=res.ok?OK('檔案存在'):BAD(`HTTP ${res.status}`);
+  }catch(e){ st=BAD('讀不到（file:// 直開？）'); }
+  row('t-files',[lv.id,lv.title,`<code>${lv.file}</code>`,st]);
+}
+
+/* ② localStorage 的 nd.progress.* 是否都對得上 manifest */
+const ids=new Set(LEVELS.map(l=>l.id));
+const t11=Array.from({length:11},(_,i)=>'t'+String(i+1).padStart(2,'0'));
+let found=0;
+for(let i=0;i<localStorage.length;i++){
+  const k=localStorage.key(i);
+  if(!k.startsWith('nd.progress.'))continue;
+  found++;
+  const id=k.slice('nd.progress.'.length);
+  let body='';
+  try{const v=JSON.parse(localStorage.getItem(k));
+    body=`completed=${v.completed??'—'}, bestScore=${v.bestScore??'—'}, attempts=${v.attempts??'—'}`;
+  }catch{body='(非 JSON)';}
+  const known=ids.has(id), migrated=t11.includes(id);
+  row('t-store',[`<code>${k}</code>`,
+    known?OK('manifest 有此關'):(migrated?WARN('舊資料匯入關（尚未移植——正常）'):BAD('manifest 查無此關（幽靈 key？）')),
+    body]);
+}
+if(!found)row('t-store',['<code>nd.progress.*</code>',WARN('尚無任何紀錄（還沒玩過）'),'—']);
+
+/* ③ metrics 欄位：實際寫入 vs manifest 定義 */
+for(const lv of LEVELS){
+  const defKeys=(lv.metrics||[]).map(m=>m.key);
+  let st,actual='—';
+  try{
+    const v=JSON.parse(localStorage.getItem('nd.progress.'+lv.id)||'null');
+    if(!v||!v.metrics){ st=WARN('尚無紀錄'); }
+    else{
+      const keys=Object.keys(v.metrics);
+      actual=keys.join(', ')||'(空)';
+      const extra=keys.filter(k=>!defKeys.includes(k));
+      const missing=defKeys.filter(k=>!keys.includes(k));
+      if(extra.length)st=BAD('多出未定義欄位：'+extra.join(','));
+      else if(missing.length)st=WARN('缺欄位：'+missing.join(','));
+      else st=OK('欄位一致');
+    }
+  }catch{ st=BAD('紀錄解析失敗'); }
+  row('t-metrics',[lv.id,defKeys.join(', ')||'(無)',actual,st]);
+}
+
+const sum=document.getElementById('summary');
+if(warns===0){sum.className='allok';sum.textContent='✔ 三方一致，全部通過';}
+else{sum.className='haswarn';sum.textContent=`⚠ 有 ${warns} 項需要注意（黃色=提醒、紅色=需修正）`;}
+</script>
+</body>
+</html>

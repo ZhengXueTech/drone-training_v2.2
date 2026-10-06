@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🕹️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第二關 搖桿位置對應教學｜newdrone T02</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1424;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  #hold-wrap{display:none;position:fixed;left:50%;bottom:120px;transform:translateX(-50%);
+    width:70%;max-width:300px;z-index:25;pointer-events:none;}
+  #hold-track{height:8px;background:rgba(15,23,42,.85);border:1px solid rgba(148,163,184,.3);
+    border-radius:999px;overflow:hidden;}
+  #hold-fill{height:100%;width:0%;background:linear-gradient(90deg,#facc15,#4ade80);
+    transition:width .1s linear;}
+  #hold-label{text-align:center;font-size:10px;color:#7aa3b8;margin-top:4px;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hold-wrap"><div id="hold-track"><div id="hold-fill"></div></div><div id="hold-label">保持穩定持續達標</div></div>
+<div id="ver">NEWDRONE T02 STICKMAP v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet } from '../core/drone-styles.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t02');
+progress.migrateLegacy();
+
+/* ── 引擎與系統（沿用 t06 同一套：engine/input/camera/hud/ui/guide，
+   這關不需要 wind/battery/scoring 以外的系統） ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const hud=new HUD(LEVEL.hud);
+const ui=new UI(input);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(10,1.7,20), new THREE.Vector3(-10,1.7,20),
+  new THREE.Vector3(0,1.7,24),  new THREE.Vector3(12,1.7,5)]});
+/* BOUND 必須包住 course 階段最遠的檢查點（z=-27）並留飛越裕度，
+   否則物理邊界會把無人機夾在 -BOUND，永遠飛不到、更穿不過最後一圈
+   （checkRingPass 判定「跨過環面」需要真的飛過去，卡在邊界=永遠碰不到）——
+   2026-07-21 實測踩坑：BOUND=25 時最後一圈摸不到，已改為 32。 */
+const BOUND=32, HOVER_Y=4.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0c1424});
+
+/* ── 機體（沿用玩家已選樣式，這關聚焦操作教學，不開放切換） ── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+const styleCode=droneStyleGet()||'trainer-orb';
+const inner=buildDroneStyle(styleCode,{tint:teamTint});
+inner.castShadow=true;
+const mesh=new THREE.Group(); mesh.add(inner);
+Object.assign(mesh.userData,inner.userData);
+engine.scene.add(mesh);
+
+const SPAWN_LOW=new THREE.Vector3(0,1.5,5);      // 油門關卡起點（要往上爬到光環）
+const SPAWN_HOVER=new THREE.Vector3(0,HOVER_Y,5); // 其餘關卡直接定高起飛（該軸已鎖定，靠自己爬不上去）
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN_LOW});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 五個教學階段：逐軸開放（承基本版 stage2 設計）──
+   核心教學邏輯＝「這一階段只有一個軸的輸入會真正生效，其餘軸即使搖桿有動也強制歸零」，
+   驗證 Guide class（宣告式 steps + done() 條件）能撐起比 t06 三步驟簡單引導更複雜的
+   狀態機情境，不需要另外擴充 guide.js 本身。 */
+const STAGE_NAMES=['throttle','yaw','pitch','roll','course'];
+const COURSE_CP=[[0,HOVER_Y,-6],[4,HOVER_Y+0.6,-13],[-4,HOVER_Y-0.4,-20],[0,HOVER_Y+0.8,-27]]
+  .map(([x,y,z])=>new THREE.Vector3(x,y,z));
+const HOLD_REQUIRED=2.0;
+
+let holdTimer=0, pitchDone=false, rollDone=false, courseIdx=0;
+let stageObjs={};
+let lastGuideIdx=-2;           // sentinel：強制第一次進入 enterStage(0)
+let flightTime=0, finished=false;
+
+const guide=new Guide([
+  { text:'按住 W 上升、S 下降到光環高度', done:s=>s.throttleDone },
+  { text:'A/D 轉向面對紫色光柱並鎖定', done:s=>s.yawDone },
+  { text:'↑前傾／↓後仰穿過藍色光環', arrow:new THREE.Vector3(0,HOVER_Y,5-17), done:s=>s.pitchDone },
+  { text:'←/→側移穿過綠色光環', arrow:new THREE.Vector3(9,HOVER_Y,5), done:s=>s.rollDone },
+  { text:'四軸全開，依序穿過所有光環', done:s=>s.courseDone },
+],hud,engine.scene);
+
+function wrapAngle(a){ return ((a+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI; }
+function paintRing(r,hex,op){ r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex); r.children[0].material.opacity=op??0.75; }
+function setHoldBar(frac){
+  const wrap=document.getElementById('hold-wrap');
+  if(frac==null){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  document.getElementById('hold-fill').style.width=Math.max(0,Math.min(100,frac*100))+'%';
+}
+function clearStageObjs(){
+  Object.values(stageObjs).forEach(o=>{
+    if(Array.isArray(o)) o.forEach(x=>engine.scene.remove(x)); else engine.scene.remove(o);
+  });
+  stageObjs={};
+}
+
+/* 進入新階段：重置無人機／建立該階段目標物件／重置計時。
+   位置與判定門檻沿用基本版 stage2 數值（HOLD_REQUIRED=2秒、鎖定角 12°、環半徑等），
+   內容邏輯不變，只是物件改用 core/world.js 的 makeRing 共用元件。 */
+function enterStage(idx){
+  clearStageObjs();
+  holdTimer=0; pitchDone=false; rollDone=false; courseIdx=0;
+  setHoldBar(null);
+  const name=STAGE_NAMES[idx];
+  if(name==='throttle'){
+    drone.reset(SPAWN_LOW);
+    const ring=makeRing(new THREE.Vector3(0,HOVER_Y,5),{radius:2.0,color:0xfacc15});
+    engine.scene.add(ring); stageObjs.ring=ring;
+    hud.setOffscreenTarget(ring.position);
+    hud.toast('①油門練習：爬到黃色光環高度','ok');
+  } else if(name==='yaw'){
+    drone.reset(SPAWN_HOVER);
+    const angle=(Math.random()<0.5?1:-1)*(Math.PI/3+Math.random()*Math.PI/4);
+    const pos=new THREE.Vector3(Math.sin(angle)*8,HOVER_Y,5-Math.cos(angle)*8);
+    const beacon=new THREE.Mesh(new THREE.ConeGeometry(0.5,1.4,8),
+      new THREE.MeshStandardMaterial({color:0xd946ef,emissive:0xd946ef,emissiveIntensity:1.2}));
+    beacon.position.copy(pos); beacon.rotation.x=Math.PI;
+    engine.scene.add(beacon); stageObjs.beacon=beacon; stageObjs.beaconPos=pos;
+    hud.setOffscreenTarget(pos);
+    hud.toast('②偏航練習：轉向面對紫色光柱','ok');
+  } else if(name==='pitch'){
+    drone.reset(SPAWN_HOVER);
+    const gate=makeRing(new THREE.Vector3(0,HOVER_Y,5-17),{radius:2.0,color:0x3b82f6});
+    engine.scene.add(gate); stageObjs.gate=gate;
+    hud.setOffscreenTarget(gate.position);
+    hud.toast('③俯仰練習：穿過藍色光環','ok');
+  } else if(name==='roll'){
+    drone.reset(SPAWN_HOVER);
+    const gate=makeRing(new THREE.Vector3(9,HOVER_Y,5),{radius:2.0,color:0x22c55e});
+    gate.rotation.y=Math.PI/2;
+    engine.scene.add(gate); stageObjs.gate=gate;
+    hud.setOffscreenTarget(gate.position);
+    hud.toast('④翻滾練習：穿過綠色光環','ok');
+  } else if(name==='course'){
+    drone.reset(SPAWN_HOVER);
+    const rings=COURSE_CP.map(p=>makeRing(p,{radius:2.0,color:0x64748b}));
+    rings.forEach(r=>engine.scene.add(r));
+    paintRing(rings[0],0x22c55e);
+    stageObjs.rings=rings;
+    hud.setOffscreenTarget(rings[0].position);
+    hud.toast('⑤綜合路線：四軸全開，依序穿環','ok');
+  }
+}
+
+/* ── 視角／蹲姿（沿用 t06；t02 聚焦街機操作教學，不提供專業模式切換） ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes('街機',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(){
+  engine.simStarted=false;
+  const bg=ui.showModal({
+    title:'搖桿位置對應教學',
+    html:`<p>🕹️ 這一關把「油門、偏航、俯仰、翻滾」四個動作拆開來，一次只練一個，
+      練熟一個才會解鎖下一個，最後一關把四個軸全部打開，飛一段綜合路線。</p>
+      <p>按鍵配置（Model 2 美國手，跟主遊戲一致）：<br>
+      <b>W / S</b> 油門（上升/下降）　<b>A / D</b> 偏航（左轉/右轉）<br>
+      <b>↑ / ↓</b> 俯仰（前傾/後仰）　<b>← / →</b> 翻滾（左傾/右傾）</p>`,
+    buttons:[{id:'b-go',label:'開始第一項：油門練習',onClick:startGame}]});
+  ui.gpSetFocus(['b-go'],0);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  guide.start();
+  lastGuideIdx=-2;
+  hud.toast('起飛！','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>目前階段：${guide.idx+1}/5・已飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null); setHoldBar(null);
+  const score=Math.round(flightTime);
+  progress.record('t02',{completed:true,score,metrics:{flightTime:score}});
+  ui.showModal({title:'搖桿位置對應教學 完成！',
+    html:`<p>⏱ 總時間：${flightTime.toFixed(1)} 秒</p>
+      <p>你已經熟悉四個基本操作軸向。成績已記錄（nd.progress.t02）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('逐軸練習：油門→偏航→俯仰→翻滾→綜合路線');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 測試/除錯 hook（承專案慣例 window.ndDebug/window.ndTest，soccer-match.html 同款）
+   forceStageDone()：不模擬真實操作，直接判定當前階段達標——headless 測試/課堂展示用，
+   不影響正常玩法（沒人呼叫就完全不會被觸發）。 */
+window.ndDebug=()=>({stageIdx:guide.idx,stageName:STAGE_NAMES[Math.max(0,guide.idx)],
+  holdTimer,pitchDone,rollDone,courseIdx,dronePos:drone.pos.clone(),droneYaw:drone.yaw,finished});
+window.ndTest={
+  /* 直接讓「當前這一幀」滿足真實判定條件（不是單純塞值騙過去）——
+     throttle/yaw 是連續判定（每幀都依實際距離/角度重新算 holdTimer），
+     單純把 holdTimer 塞成 2.0 撐不過下一幀的衰減判定，所以連無人機
+     的座標/朝向也一併「傳送」到達標位置，讓下一幀的真實判定自然為真。 */
+  forceStageDone:()=>{
+    const name=STAGE_NAMES[Math.max(0,guide.idx)];
+    if(name==='throttle'&&stageObjs.ring){
+      drone.pos.copy(stageObjs.ring.position); drone.vel.set(0,0,0); holdTimer=HOLD_REQUIRED;
+    } else if(name==='yaw'&&stageObjs.beaconPos){
+      const dx=stageObjs.beaconPos.x-drone.pos.x, dz=stageObjs.beaconPos.z-drone.pos.z;
+      drone.yaw=Math.atan2(-dx,-dz); holdTimer=HOLD_REQUIRED;
+    } else if(name==='pitch') pitchDone=true;
+    else if(name==='roll') rollDone=true;
+    else if(name==='course') courseIdx=stageObjs.rings?.length||0;
+  },
+  /* course 階段專用：把無人機傳送到第 i 個檢查點「前方一點」（不是圈心，圈心會直接
+     判定沒有「跨越」動作），讓接下來的一小段真實前飛能真的觸發 checkRingPass——
+     用來驗證邊界/位置本身可不可達，而不是跳過飛行過程本身。 */
+  warpBeforeRing:(i)=>{
+    const rings=stageObjs.rings; if(!rings||!rings[i])return false;
+    const ring=rings[i];
+    drone.pos.set(ring.position.x,ring.position.y,ring.position.z+3);
+    drone.vel.set(0,0,0); drone.yaw=0; courseIdx=i;
+    return true;
+  }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished){
+    flightTime+=dt;
+    const stageName=STAGE_NAMES[Math.max(0,guide.idx)];
+    /* 逐軸開放——這關的教學核心：非當前階段的軸向，輸入強制歸零，
+       即使玩家手在動、搖桿有訊號，該階段也完全不生效。 */
+    const filtered={throttle:0,yaw:0,pitch:0,roll:0};
+    if(stageName==='throttle') filtered.throttle=p.throttle;
+    else if(stageName==='yaw') filtered.yaw=p.yaw;
+    else if(stageName==='pitch') filtered.pitch=p.pitch;
+    else if(stageName==='roll') filtered.roll=p.roll;
+    else if(stageName==='course') Object.assign(filtered,{throttle:p.throttle,yaw:p.yaw,pitch:p.pitch,roll:p.roll});
+    prevPos.copy(drone.pos);
+    drone.update(dt,filtered);
+
+    if(stageName==='throttle'&&stageObjs.ring){
+      const diff=Math.abs(drone.pos.y-stageObjs.ring.position.y);
+      holdTimer=diff<0.35?holdTimer+dt:Math.max(0,holdTimer-dt*1.5);
+      setHoldBar(holdTimer/HOLD_REQUIRED);
+    } else if(stageName==='yaw'&&stageObjs.beacon){
+      const dx=stageObjs.beaconPos.x-drone.pos.x, dz=stageObjs.beaconPos.z-drone.pos.z;
+      const desiredYaw=Math.atan2(-dx,-dz);
+      const diff=wrapAngle(desiredYaw-drone.yaw);
+      const locked=Math.abs(diff)<0.2094;   // 12°
+      stageObjs.beacon.material.color.setHex(locked?0x22c55e:0xd946ef);
+      stageObjs.beacon.material.emissive.setHex(locked?0x22c55e:0xd946ef);
+      stageObjs.beacon.material.emissiveIntensity=locked?2.2:1.0;
+      holdTimer=locked?holdTimer+dt:Math.max(0,holdTimer-dt*1.5);
+      setHoldBar(holdTimer/HOLD_REQUIRED);
+    } else if(stageName==='pitch'&&stageObjs.gate&&!pitchDone){
+      if(checkRingPass(stageObjs.gate,drone.pos,prevPos)){
+        pitchDone=true; sfx.play('ring'); paintRing(stageObjs.gate,0x64748b,0.3);
+      }
+    } else if(stageName==='roll'&&stageObjs.gate&&!rollDone){
+      if(checkRingPass(stageObjs.gate,drone.pos,prevPos)){
+        rollDone=true; sfx.play('ring'); paintRing(stageObjs.gate,0x64748b,0.3);
+      }
+    } else if(stageName==='course'&&stageObjs.rings){
+      const rings=stageObjs.rings, cur=rings[courseIdx];
+      if(cur&&checkRingPass(cur,drone.pos,prevPos)){
+        paintRing(cur,0x64748b,0.3); courseIdx++; sfx.play('ring');
+        hud.toast(`檢查點 ${courseIdx}/${rings.length}`,'ok');
+        if(courseIdx<rings.length){
+          paintRing(rings[courseIdx],0x22c55e);
+          hud.setOffscreenTarget(rings[courseIdx].position);
+        } else hud.setOffscreenTarget(null);
+      }
+    }
+
+    const throttleDone=holdTimer>=HOLD_REQUIRED && stageName==='throttle';
+    const yawDone=holdTimer>=HOLD_REQUIRED && stageName==='yaw';
+    const courseDone=stageName==='course' && stageObjs.rings && courseIdx>=stageObjs.rings.length;
+    guide.update(dt,{throttleDone,yawDone,pitchDone,rollDone,courseDone});
+    if(guide.idx!==lastGuideIdx){
+      lastGuideIdx=guide.idx;
+      if(guide.finished) finishLevel();
+      else enterStage(guide.idx);
+    }
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(engine.simStarted?`階段 ${Math.max(0,guide.idx)+1}/5`:'');
+  const mapTargets=stageObjs.rings?stageObjs.rings.map((r,i)=>({pos:r.position,done:i<courseIdx})):[];
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets,{route:true});
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

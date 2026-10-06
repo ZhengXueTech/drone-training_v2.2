@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🌾</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：農業精準噴藥｜newdrone X-Agri v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d1f0d;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#0a2a0a;z-index:21;}
+  /* 開關噴藥鈕：獨立於 hud.js 既有雙搖桿之外的第三顆觸控按鈕（僅本關需要） */
+  #agri-spray-btn{display:none;position:fixed;right:24px;bottom:120px;z-index:22;
+    width:64px;height:64px;border-radius:50%;background:rgba(74,222,128,.45);
+    border:2px solid rgba(74,222,128,.9);color:#fff;font-size:20px;line-height:1;
+    align-items:center;justify-content:center;flex-direction:column;gap:1px;
+    pointer-events:auto;touch-action:none;-webkit-tap-highlight-color:transparent;}
+  #agri-spray-btn span{font-size:8px;opacity:.85;}
+  #agri-spray-btn.active{transform:scale(.88);opacity:.7;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="agri-spray-btn">💧<span>開關噴藥</span></button>
+<div id="ver">NEWDRONE X-AGRI v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone } from '../core/systems/yaw-drone.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { WindSystem } from '../core/systems/wind.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   情境體驗：農業精準噴藥（移植自基本版 exp/exp-agri.html）
+   ------------------------------------------------------------
+   移植決策（C1 家族第五關／最後一關,沿用前四關已驗證的慣例）：
+   - 玩家物理改用 core/systems/yaw-drone.js 的 YawDrone,phys 參數取自
+     基本版原始碼（THRMAX16/PITCHMAX20/YAWMAX2.6/DRAG0.88/HOVER9.81,
+     跟 bridge/rescue/inspection 同一組基礎值）。但邊界反彈係數這關
+     不是「撞停不彈」（跟 bridge/inspection 不同）,基本版原始碼是
+     WBOUNCE:0.4／FBOUNCE:0.15（撞邊界會有明顯回彈,比較接近
+     goalkeeper 的手感,不是每一關都用 bridge 那組 0/0）——每一關都要
+     重新讀基本版原始碼取值,不能沿用前一關的參數（教訓 7）。
+   - 難度檢查（教訓 2）：基本版 DIFF_CFG 的初級/中級/高級是數值難度
+     （時間/噴藥半徑/風力）疊加漸增的障礙物（無→4 棵樹→4 棵樹+2 電線桿）,
+     農田場地本身（8×5 格）完全不變,沒有「情境造型」這個維度,維持
+     基本版單軸三選一設計,不拆兩層選單（跟 rescue/inspection 是同一種
+     情況）。障礙物是固定座標的離散物件（樹/電線桿,圓柱碰撞體),不是
+     連續地形,碰撞用農田專屬的「推開＋彈跳」演算法（見下方）。
+   - 相機：農田場地雖然只有 8×5 公尺（比 bridge/rescue/inspection 小
+     很多）,但跟 goalkeeper 的 6×3×3 封閉守門籠不同類型——這是開放的
+     戶外農田（高度上限 8 公尺、邊界是軟性回彈牆,不是封閉小房間),
+     跟其他三關同屬「開放場景」類別,改用 CameraRig（透過 camProxy
+     轉接補償後的 yaw）,飛手站位沿用基本版四個田埂角落座標。
+   - 碰撞判定：樹木/電線桿是固定座標的離散圓柱障礙物,沿用基本版
+     `checkObstacleCollisions()` 的「推開＋垂直彈升」演算法（不是
+     bridge/inspection 的「反向 0.3 倍速度」簡化版,因為基本版這關
+     本來就是設計成「擦過障礙物會被推開並彈跳」,不是「撞牆停死」,
+     沿用原始手感）。
+   - 噴藥判定（本關特有,第六種獨立判定模式）：8×5=40 格農田,每格
+     是「距離內即時觸發」（跟 rescue 找到倖存者同一類),但疊加三個
+     額外閘門條件：高度需低於 3m、藥水需大於 0、需開啟噴藥開關
+     （sprayOn）、且不在補給站範圍內——是 rescue 單純距離觸發的
+     加強版（多重資源/狀態閘門,而非單純距離）。
+   - 資源系統（本關特有）：新增「藥水」（liquid）資源,跟電量並存,
+     只有噴藥時才會消耗,飛到西南角補給站範圍內兩者都會回充——沿用
+     core/hud.js 既有的 `setLiquid()` 語彙（本來就是為這種雙資源關卡
+     預留的欄位,`data/levels-manifest.js` 的 hud 設定要加
+     `liquid:true` 才會渲染這個 DOM）。
+   - 開關噴藥（B 鍵/鈕,本關特有的第三種次要能力型態）：跟 bridge 的
+     「限時加速」、rescue 的「限時熱成像」、inspection 的「一次性確認」
+     都不同,這是單純的「持續開關」（toggle),按一下切換 on/off,
+     沒有計時/冷卻。省藥水用的策略性操作（例如飛越已噴完的格子時
+     關閉可以省藥水）。從第一版就直接用 hud.setGpBar(device,
+     {keyboard,gamepad,touch}) 帶上「開關噴藥」提示,吸收前面三關
+     使用者實機回饋才補提示的教訓,gamepad 統一用字母「B」。
+   - 機體樣式固定用本關主題「農噴機」（agri-sprayer),不吃全域裝備
+     設定（教訓 1)。
+   ============================================================ */
+
+const LEVEL=getLevel('x-agri');
+progress.migrateLegacy();
+
+/* ── 常數（沿基本版原始碼原值）── */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:16,PITCHMAX:20,YAWMAX:2.6,
+  DRAG_PER_SEC:Math.pow(0.88,60),WBOUNCE:0.4,FBOUNCE:0.15};
+const COLS=8, ROWS=5, CELL_W=1.0, CELL_D=1.0;
+const FARM_W=COLS*CELL_W, FARM_D=ROWS*CELL_D, TOTAL_CELLS=COLS*ROWS;
+const MAX_SPRAY_H=3.0;
+const TREE_R=0.22, TREE_H=3.2, POLE_R=0.08, POLE_H=5.0;
+const BOUNDS={minX:-(FARM_W/2+2),maxX:(FARM_W/2+2),minY:0.12,maxY:8,
+  minZ:-(FARM_D/2+2),maxZ:(FARM_D/2+2),BR:0};
+/* 純數值難度（教訓 2：農田場地永遠相同，障礙物只是漸增，不混雜情境造型，維持單軸三選一） */
+const DIFF_CFG={
+  easy:{label:'🌾 初級',time:120,sprayR:1.0, wind:0,   obstacles:'none' },
+  med: {label:'⚡ 中級',time:120,sprayR:0.85,wind:0.8, obstacles:'trees'},
+  hard:{label:'💀 高級',time:100,sprayR:0.70,wind:1.8, obstacles:'all'  },
+};
+const TREE_POSITIONS=[[1.5,0.5],[-2.5,-1.0],[3.0,1.5],[-1.0,1.5]];
+const POLE_POSITIONS=[[-2.0,0.0],[2.0,0.0]];
+const BASE_REFILL_POS=new THREE.Vector3(-FARM_W/2-1.4,0,-FARM_D/2-1.4);
+const BAT_DRAIN=0.55, LIQ_DRAIN=9.0, REFILL_RATE=45;
+const PLAYER_SPAWN=new THREE.Vector3(-FARM_W/2+0.5,1.0,-FARM_D/2+0.5);
+const PILOT_POSITIONS=[new THREE.Vector3(-4,1.5,-5),new THREE.Vector3(4,1.5,-5),
+  new THREE.Vector3(4,1.5,5),new THREE.Vector3(-4,1.5,5)];
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-agri',input});
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:PILOT_POSITIONS});
+const wind=new WindSystem();
+
+/* ── 場地（沿基本版：深綠夜色霧＋泥土地面＋8×5 農田格） ── */
+engine.scene.background=new THREE.Color(0x0d1f0d);
+engine.scene.fog=new THREE.FogExp2(0x0a180a,0.025);
+const sun=new THREE.DirectionalLight(0xfff5cc,1.1);
+sun.position.set(6,12,4); sun.castShadow=true; engine.scene.add(sun);
+let cells=[], obstacles=[], sprayDiscMesh=null, windParticles=null;
+let sprayedCount=0;
+function clearDynamicScene(){
+  while(engine.scene.children.length>0)engine.scene.remove(engine.scene.children[0]);
+  engine.scene.add(sun);
+  engine.scene.add(new THREE.AmbientLight(0x143214,4));
+  const fill=new THREE.DirectionalLight(0x88ccff,.35); fill.position.set(-4,5,-3); engine.scene.add(fill);
+  cells=[]; obstacles=[]; windParticles=null;
+}
+function buildGround(){
+  const gnd=new THREE.Mesh(new THREE.PlaneGeometry(40,40),
+    new THREE.MeshStandardMaterial({color:0x3d2a1a,roughness:.95}));
+  gnd.rotation.x=-Math.PI/2; gnd.position.y=-.01; engine.scene.add(gnd);
+  const soil=new THREE.Mesh(new THREE.PlaneGeometry(FARM_W+.3,FARM_D+.3),
+    new THREE.MeshStandardMaterial({color:0x5c3d1e,roughness:.9}));
+  soil.rotation.x=-Math.PI/2; soil.position.y=.001; engine.scene.add(soil);
+}
+function buildCells(){
+  const cellGeo=new THREE.BoxGeometry(CELL_W-.06,.08,CELL_D-.06);
+  for(let c=0;c<COLS;c++)for(let r=0;r<ROWS;r++){
+    const cx=-FARM_W/2+(c+.5)*CELL_W, cz=-FARM_D/2+(r+.5)*CELL_D;
+    const mat=new THREE.MeshStandardMaterial({color:0x1a4a1a,roughness:.7,
+      emissive:0x0a200a,emissiveIntensity:.2});
+    const mesh=new THREE.Mesh(cellGeo,mat);
+    mesh.position.set(cx,.04,cz); engine.scene.add(mesh);
+    cells.push({c,r,x:cx,z:cz,sprayed:false,mesh,mat});
+  }
+  const lm=new THREE.LineBasicMaterial({color:0x2d5a2d,transparent:true,opacity:.4});
+  for(let c=0;c<=COLS;c++){const x=-FARM_W/2+c*CELL_W;
+    const pts=[new THREE.Vector3(x,.005,-FARM_D/2),new THREE.Vector3(x,.005,FARM_D/2)];
+    engine.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lm));}
+  for(let r=0;r<=ROWS;r++){const z=-FARM_D/2+r*CELL_D;
+    const pts=[new THREE.Vector3(-FARM_W/2,.005,z),new THREE.Vector3(FARM_W/2,.005,z)];
+    engine.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lm));}
+  const borderM=new THREE.MeshStandardMaterial({color:0xcc8833,roughness:.8});
+  const postG=new THREE.CylinderGeometry(.04,.04,.5,6);
+  [[-FARM_W/2,-FARM_D/2],[FARM_W/2,-FARM_D/2],[-FARM_W/2,FARM_D/2],[FARM_W/2,FARM_D/2]].forEach(([x,z])=>{
+    const p=new THREE.Mesh(postG,borderM); p.position.set(x,.25,z); engine.scene.add(p);
+  });
+}
+function addTree(x,z){
+  const grp=new THREE.Group();
+  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.09,.12,TREE_H,8),
+    new THREE.MeshStandardMaterial({color:0x5c3510,roughness:.9}));
+  trunk.position.y=TREE_H/2; grp.add(trunk);
+  [[0,TREE_H-.2,.55],[0,TREE_H+.4,.45],[0,TREE_H+.9,.35]].forEach(([dx,dy,r])=>{
+    const s=new THREE.Mesh(new THREE.SphereGeometry(r,10,8),
+      new THREE.MeshStandardMaterial({color:0x1e6b1e,roughness:.8,emissive:0x0a2a0a,emissiveIntensity:.3}));
+    s.position.set(dx,dy,0); grp.add(s);
+  });
+  grp.position.set(x,0,z); engine.scene.add(grp);
+  obstacles.push({type:'tree',pos:new THREE.Vector3(x,0,z),r:TREE_R,h:TREE_H,mesh:grp});
+}
+function addPole(x,z){
+  const grp=new THREE.Group();
+  const poleMat=new THREE.MeshStandardMaterial({color:0x8888aa,roughness:.5,metalness:.6});
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.04,.05,POLE_H,6),poleMat);
+  pole.position.y=POLE_H/2; grp.add(pole);
+  const bar=new THREE.Mesh(new THREE.BoxGeometry(1.2,.06,.06),poleMat);
+  bar.position.y=POLE_H-.25; grp.add(bar);
+  [-0.5,0.5].forEach(bx=>{
+    const ins=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,.12,6),
+      new THREE.MeshStandardMaterial({color:0xcc4444}));
+    ins.position.set(bx,POLE_H-.22,0); grp.add(ins);
+  });
+  grp.position.set(x,0,z); engine.scene.add(grp);
+  obstacles.push({type:'pole',pos:new THREE.Vector3(x,0,z),r:POLE_R,h:POLE_H,mesh:grp});
+}
+function buildBase(){
+  const baseMat=new THREE.MeshStandardMaterial({color:0x88ff44,emissive:0x44aa00,emissiveIntensity:.8,roughness:.4});
+  const basePad=new THREE.Mesh(new THREE.CylinderGeometry(.55,.55,.06,16),baseMat);
+  basePad.position.set(BASE_REFILL_POS.x,.03,BASE_REFILL_POS.z); engine.scene.add(basePad);
+  const baseLight=new THREE.PointLight(0x88ff44,.8,1.8);
+  baseLight.position.set(BASE_REFILL_POS.x,.3,BASE_REFILL_POS.z); engine.scene.add(baseLight);
+}
+function buildSprayDisc(){
+  const discGeo=new THREE.CircleGeometry(1,40);
+  const discMat=new THREE.MeshBasicMaterial({color:0x00ffcc,transparent:true,opacity:.3,side:THREE.DoubleSide});
+  sprayDiscMesh=new THREE.Mesh(discGeo,discMat);
+  sprayDiscMesh.rotation.x=-Math.PI/2; sprayDiscMesh.position.y=.015; sprayDiscMesh.visible=false;
+  engine.scene.add(sprayDiscMesh);
+}
+function buildWindParticles(){
+  const count=60,positions=new Float32Array(count*3);
+  for(let i=0;i<count;i++){positions[i*3]=(Math.random()-.5)*(FARM_W+2);positions[i*3+1]=.3+Math.random()*3.5;positions[i*3+2]=(Math.random()-.5)*(FARM_D+2);}
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  const pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0xaaccff,size:.05,transparent:true,opacity:.28,depthWrite:false,sizeAttenuation:true}));
+  engine.scene.add(pts); return pts;
+}
+function tickWindParticles(dt){
+  if(!windParticles||wind.vec.lengthSq()<0.0025)return;
+  const pos=windParticles.geometry.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    pos.array[i*3]+=wind.vec.x*dt*2.2; pos.array[i*3+2]+=wind.vec.z*dt*2.2;
+    if(pos.array[i*3]>FARM_W/2+2||pos.array[i*3]<-FARM_W/2-2||pos.array[i*3+2]>FARM_D/2+2||pos.array[i*3+2]<-FARM_D/2-2){
+      pos.array[i*3]=(Math.random()-.5)*FARM_W; pos.array[i*3+2]=(Math.random()-.5)*FARM_D; pos.array[i*3+1]=.3+Math.random()*3.5;
+    }
+  }
+  pos.needsUpdate=true;
+}
+function buildScene(diff){
+  clearDynamicScene(); buildGround(); buildCells(); buildSprayDisc(); buildBase();
+  const cfg=DIFF_CFG[diff];
+  if(cfg.obstacles==='trees'||cfg.obstacles==='all')TREE_POSITIONS.forEach(([x,z])=>addTree(x,z));
+  if(cfg.obstacles==='all')POLE_POSITIONS.forEach(([x,z])=>addPole(x,z));
+  if(cfg.wind>0)windParticles=buildWindParticles();
+  sprayedCount=0; cells.forEach(c=>c.sprayed=false);
+  engine.scene.add(mesh);
+  if(spMesh)engine.scene.add(spMesh); // [FIX] 噴藥粒子池是模組載入時只建一次的物件池，
+  // 但 clearDynamicScene() 每次選難度/重試都會清空整個 scene，粒子池物件也會被連帶移除且不會自動補回，
+  // 導致實際遊玩時噴藥特效消失（只有一開始 initSprayParticles() 當下那次有效）。
+  // 修正：物件池本身仍只建立一次（geometry/材質不重建，維持物件池原則），但要在每次 buildScene() 重建場景時把它重新掛回 scene。
+}
+
+/* ── 噴藥噴灑粒子（物件池，沿基本版設計，不在迴圈內 new Mesh）──
+   注意：這段必須排在下面 buildScene('easy') 呼叫「之前」執行，
+   因為 buildScene() 內會把 spMesh 掛回 scene（見上方 [FIX] 註解），
+   若 spMesh 這個 let 變數宣告還沒執行到就先被 buildScene() 引用，
+   會在瀏覽器丟出「Cannot access 'spMesh' before initialization」的 TDZ 錯誤。 */
+const SP_MAX=100;
+let spParts=[], spGeo=null, spMesh=null;
+function initSprayParticles(){
+  spParts=[];
+  for(let i=0;i<SP_MAX;i++)spParts.push({alive:false,x:0,y:0,z:0,vx:0,vy:0,vz:0,life:0});
+  spGeo=new THREE.BufferGeometry();
+  const pos=new Float32Array(SP_MAX*3).fill(1e5);
+  spGeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color:0x44ddff,size:.055,transparent:true,opacity:.75,depthWrite:false,sizeAttenuation:true});
+  spMesh=new THREE.Points(spGeo,mat);
+  // [FIX] 位置緩衝區初始值全部填 1e5（代表「非啟用中，隱藏到很遠的地方」），
+  // 但 Three.js 只會在該物件第一次被算「是否在鏡頭視野內」時計算一次包圍球（boundingSphere），
+  // 之後即使 tickSprayParticles() 每幀都把真正的噴藥座標寫回 position 陣列，包圍球本身不會自動重新計算，
+  // 會永遠卡在「所有點都在(1e5,1e5,1e5)」這個離場景很遠的位置，導致鏡頭視錐剔除(frustum culling)把整個
+  // 粒子物件當成不在畫面內而跳過繪製——這才是噴藥特效實際看不到的關鍵原因(比場景重建沒補回物件更底層)。
+  // 因為這是只有 100 個點的小物件，直接關閉視錐剔除即可，成本可忽略。
+  spMesh.frustumCulled=false;
+  engine.scene.add(spMesh);
+}
+initSprayParticles();
+
+/* ── 玩家機體（樣式固定用本關主題「農噴機」，教訓 1） ── */
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='agri-sprayer'));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const probe=new YawDrone({spawn:PLAYER_SPAWN,yaw:0,bounds:BOUNDS,phys:PHYS});
+const camProxy={pos:probe.pos,yaw:0};
+buildScene('easy'); // intro 畫面預覽用的預設場景，startGame() 會依選擇的難度重建
+
+function tickSprayParticles(dt,spraying){
+  if(!spGeo)return;
+  if(spraying){
+    for(let s=0;s<7;s++){
+      const p=spParts.find(x=>!x.alive); if(!p)break;
+      const angle=Math.random()*Math.PI*2, r=Math.random()*curCfg.sprayR*.85;
+      p.alive=true; p.x=probe.pos.x+Math.cos(angle)*r; p.y=probe.pos.y-.05; p.z=probe.pos.z+Math.sin(angle)*r;
+      p.vx=(Math.random()-.5)*.4+wind.vec.x*.15; p.vy=-2-Math.random()*2; p.vz=(Math.random()-.5)*.4+wind.vec.z*.15;
+      p.life=.28+Math.random()*.3;
+    }
+  }
+  const pos=spGeo.attributes.position.array;
+  for(let i=0;i<SP_MAX;i++){
+    const p=spParts[i];
+    if(p.alive){p.life-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.z+=p.vz*dt;if(p.life<=0||p.y<0)p.alive=false;}
+    pos[i*3]=p.alive?p.x:1e5; pos[i*3+1]=p.alive?p.y:0; pos[i*3+2]=p.alive?p.z:1e5;
+  }
+  spGeo.attributes.position.needsUpdate=true;
+}
+
+/* ── 障礙物碰撞（沿基本版「推開＋垂直彈升」演算法，不是 bridge/inspection 的反向速度簡化版——
+   基本版這關本來就設計成「擦過障礙物會被推開並彈跳」的手感，如實移植） ── */
+let collisionCount=0, lastCollisionTime=-999;
+function checkObstacleCollisions(){
+  const now=performance.now()/1000;
+  if(now-lastCollisionTime<1.2)return;
+  for(const ob of obstacles){
+    const dx=probe.pos.x-ob.pos.x, dz=probe.pos.z-ob.pos.z;
+    const dist2d=Math.sqrt(dx*dx+dz*dz);
+    if(dist2d<(ob.r+.12)&&probe.pos.y<ob.h){
+      collisionCount++; lastCollisionTime=now;
+      const pushDir=new THREE.Vector3(dx,0,dz).normalize().multiplyScalar(.6);
+      probe.vel.addScaledVector(pushDir,3); probe.vel.y+=1.5;
+      hud.toast('💥 碰撞！','fail'); sfx.play('fail');
+      ob.mesh.traverse(m=>{if(m.isMesh&&m.material.color)m.material.color.setHex(0xff3300);});
+      setTimeout(()=>ob.mesh.traverse(m=>{
+        if(m.isMesh&&m.material.color&&ob.type==='tree')m.material.color.setHex(0x1e6b1e);
+        if(m.isMesh&&m.material.color&&ob.type==='pole')m.material.color.setHex(0x8888aa);
+      }),400);
+      break;
+    }
+  }
+}
+
+/* ── 開關噴藥（B 鍵/鈕，本關特有：單純持續開關，沒有計時/冷卻，跟其他三關的
+   限時加速/一次性確認都不同類型） ── */
+let sprayOn=true;
+function toggleSpray(){
+  if(!playing||finished)return;
+  sprayOn=!sprayOn; sfx.play('click');
+  hud.toast(sprayOn?'💧 噴藥開啟':'🚫 噴藥關閉','ok');
+}
+
+/* ── 噴藥判定（第六種獨立判定模式：距離內即時觸發＋高度/藥水/開關三重閘門） ── */
+let sprayPulse=0;
+function checkSpray(dt){
+  const atBase=probe.pos.distanceTo(BASE_REFILL_POS)<1.4;
+  const spraying=probe.pos.y<MAX_SPRAY_H&&liquidPct>0&&!atBase&&sprayOn;
+  if(spraying){
+    const effR=curCfg.sprayR*(1-(probe.pos.y/MAX_SPRAY_H)*.35);
+    sprayDiscMesh.visible=true;
+    sprayDiscMesh.scale.set(effR,effR,effR);
+    sprayDiscMesh.position.x=probe.pos.x; sprayDiscMesh.position.z=probe.pos.z;
+    sprayPulse+=dt*4;
+    sprayDiscMesh.material.opacity=(.25*(1-probe.pos.y/MAX_SPRAY_H)+.05)*(.7+.3*Math.sin(sprayPulse));
+  }else{
+    sprayDiscMesh.visible=false;
+  }
+  tickSprayParticles(dt,spraying);
+  if(!spraying)return;
+  let newlySprayed=false;
+  cells.forEach(cell=>{
+    if(cell.sprayed)return;
+    const dx=probe.pos.x-cell.x, dz=probe.pos.z-cell.z;
+    if(Math.sqrt(dx*dx+dz*dz)<curCfg.sprayR){
+      cell.sprayed=true; sprayedCount++; newlySprayed=true;
+      cell.mat.color.setHex(0x2adb6a); cell.mat.emissive.setHex(0x0d6630); cell.mat.emissiveIntensity=.55;
+    }
+  });
+  if(newlySprayed)sfx.play('ring');
+  if(sprayedCount>=TOTAL_CELLS)finishGame();
+}
+/* 導引文字（優先序：資源不足 > 噴藥中 > 開關關閉 > 一般提示） */
+function guideText(){
+  const atBase=probe.pos.distanceTo(BASE_REFILL_POS)<1.4;
+  if((liquidPct<20||batteryPct<20)&&!atBase)return '⚠ 藥水/電量不足，飛回西南角補給站';
+  if(atBase)return '🔋 補給站範圍內，正在回充藥水與電量';
+  if(probe.pos.y<MAX_SPRAY_H&&liquidPct>0&&sprayOn)return `💧 噴藥中・已覆蓋 ${sprayedCount}/${TOTAL_CELLS} 格`;
+  if(!sprayOn)return '🚫 噴藥關閉，按動作鍵開啟（鍵盤 B／手把 LB）';
+  return '🌾 飛低於 3m 才能噴藥・覆蓋所有格子';
+}
+
+/* ── 資源系統（電量持續耗、藥水只在噴藥時耗，補給站回充兩者） ── */
+function tickResources(dt){
+  batteryPct=Math.max(0,batteryPct-BAT_DRAIN*dt);
+  const atBaseSpray=probe.pos.distanceTo(BASE_REFILL_POS)<1.4;
+  if(probe.pos.y<MAX_SPRAY_H&&liquidPct>0&&!atBaseSpray&&sprayOn)liquidPct=Math.max(0,liquidPct-LIQ_DRAIN*dt);
+  const distBase=probe.pos.distanceTo(BASE_REFILL_POS);
+  if(distBase<1.2){
+    liquidPct=Math.min(100,liquidPct+REFILL_RATE*dt);
+    batteryPct=Math.min(100,batteryPct+REFILL_RATE*dt);
+  }
+  hud.setBattery(batteryPct);
+  hud.setLiquid(liquidPct);
+  if(batteryPct<=0)finishGame();
+}
+
+/* ── 遊戲狀態 ── */
+let pDiff='easy', curCfg=DIFF_CFG.easy;
+let gameTimer=120, totalTime=120, batteryPct=100, liquidPct=100;
+let playing=false, finished=false;
+
+/* ── 視角／飛手站位／暫停 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(ch.hold?'街機':'手動油門',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyB')toggleSpray();
+  if(e.code==='Escape')togglePause();
+});
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── 開關噴藥觸控鈕（獨立於 hud.js 雙搖桿之外，只有觸控裝置顯示） ── */
+(function(){
+  const btn=document.getElementById('agri-spray-btn');
+  const isTouch=navigator.maxTouchPoints>0||matchMedia('(pointer:coarse)').matches;
+  const showIfTouch=()=>{ btn.style.display=(isTouch&&!(navigator.getGamepads&&[...navigator.getGamepads()].some(g=>g)))?'flex':'none'; };
+  showIfTouch();
+  addEventListener('gamepadconnected',showIfTouch); addEventListener('gamepaddisconnected',showIfTouch);
+  btn.addEventListener('pointerdown',e=>{e.preventDefault();toggleSpray();btn.classList.add('active');});
+  btn.addEventListener('pointerup',()=>btn.classList.remove('active'));
+  btn.addEventListener('pointercancel',()=>btn.classList.remove('active'));
+})();
+let _gpSprayPrev=false;
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 農業精準噴藥',
+    html:`<p>操控農噴機飛越 8×5 農田，<strong>高度需低於 3m</strong> 才能噴藥，覆蓋所有格子。</p>
+      <p>按 <b>B</b>／畫面右下角按鈕<b>開關噴藥</b>（省藥水用）。注意藥水與電量，
+      飛回西南角補給站可回充。避開樹木/電線桿！</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-easy',label:'🌾 初級（無障礙・120秒・半徑1.0m）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'⚡ 中級（4棵樹+微風・120秒・半徑0.85m）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'💀 高級（樹+電線桿+風・100秒・半徑0.70m）',onClick:()=>startGame('hard')},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff; curCfg=DIFF_CFG[diff];
+  gameTimer=curCfg.time; totalTime=curCfg.time;
+  collisionCount=0; lastCollisionTime=-999;
+  batteryPct=100; liquidPct=100; sprayOn=true;
+  wind.randomize(curCfg.wind);
+  probe.reset(PLAYER_SPAWN,0);
+  buildScene(diff);
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  ch.apply(probe); syncModes();
+  hud.setMission(curCfg.label+' 噴藥任務');
+  hud.setGuide('開始噴藥，飛低於 3m 才能噴');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${curCfg.label}</p>
+      <p>已覆蓋 ${sprayedCount}/${TOTAL_CELLS} 格・碰撞 ${collisionCount} 次・剩餘 ${Math.max(0,gameTimer).toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function calcScore(){
+  const cov=Math.round((sprayedCount/TOTAL_CELLS)*70);
+  const tim=Math.round(Math.max(0,gameTimer/totalTime)*20);
+  const saf=Math.max(0,10-collisionCount*5);
+  const tot=Math.min(100,cov+tim+saf);
+  return{cov,tim,saf,tot,grade:tot>=90?'S':tot>=75?'A':tot>=55?'B':tot>=35?'C':'D'};
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false;
+  const{cov,tim,saf,tot,grade}=calcScore();
+  sfx.play('finish');
+  progress.record('x-agri',{completed:true,score:tot,
+    metrics:{sprayedCount,totalCells:TOTAL_CELLS,collisionCount,grade,diff:pDiff},...ch.recordFields()});
+  ui.showModal({title:grade+' 級　'+({S:'🏆',A:'🥇',B:'🥈',C:'🥉',D:'💪'}[grade]),
+    html:`<p>噴藥覆蓋率：${sprayedCount}/${TOTAL_CELLS} 格（+${cov}pt）<br>
+      剩餘時間：${Math.max(0,Math.ceil(gameTimer))} 秒（+${tim}pt）<br>
+      安全分：${saf}/10（碰撞 ${collisionCount} 次）<br>
+      <b>總計：${tot} / 100</b></p>
+      <p>成績已記錄（nd.progress.x-agri）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再試一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(ch.any?2:1)},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇難度後開始噴藥');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device,{keyboard:'<kbd>B</kbd>開關噴藥',gamepad:'<kbd>{action}</kbd>開關噴藥',touch:'👆右下角鈕開關噴藥'});
+  if(p.device==='gamepad'){
+    const gp=[...(navigator.getGamepads?.()||[])].find(g=>g);
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    const sprayBtn=gp?input.gpBtn(gp,'action'):false;      // 沿基本版：B 鈕＝gamepad button[1]
+    if(sprayBtn&&!_gpSprayPrev&&simStarted&&!ui.modalOpen)toggleSpray();
+    _gpSprayPrev=sprayBtn;
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    ch.update(dt,probe,engine.camera);
+    probe.step(dt,p);
+    if(wind.enabled)probe.vel.addScaledVector(wind.vec,dt*4.0); // 沿基本版風力比例（見檔頭說明）
+    wind.update(dt);
+    checkObstacleCollisions();
+    checkSpray(dt);
+    tickWindParticles(dt);
+    gameTimer-=dt;
+    hud.setTimer(Math.max(0,gameTimer));
+    hud.setScore(sprayedCount);
+    hud.setProgress(`噴藥 ${sprayedCount}/${TOTAL_CELLS}・碰撞 ${collisionCount}`);
+    hud.setGuide(guideText());
+    tickResources(dt);
+    if(gameTimer<=0)finishGame();
+  }
+  mesh.position.copy(probe.pos);
+  mesh.rotation.y=probe.yaw+Math.PI;               // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  mesh.visible=(rig.mode!=='fpv');
+  camProxy.yaw=probe.yaw+Math.PI;
+  rig.portrait=hud.portrait;
+  rig.update(dt,camProxy,mesh);
+  hud.setTelemetry(probe.pos.y,probe.speed());
+  hud.setWind(playing?wind.hudInfo():null,playing?wind.screenArrowDeg(probe.pos,engine.camera):null);
+  const mapTargets=cells.map(cell=>({pos:new THREE.Vector3(cell.x,0,cell.z),
+    color:cell.sprayed?0x4ade80:0x2d5a2d,done:cell.sprayed}));
+  hud.drawMinimap(probe.pos,probe.yaw+Math.PI,Math.max(FARM_W,FARM_D)/2+3,mapTargets,{route:false});
+  hud.setAnomaly(probe.anomalyT>0);
+  hud.update(dt,engine.camera,probe.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

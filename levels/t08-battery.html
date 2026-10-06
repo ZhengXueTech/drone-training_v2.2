@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🔋</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第八關 限電規劃｜newdrone T08</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE T08 BATTERY v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { BatterySystem } from '../core/systems/battery.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t08');
+progress.migrateLegacy();
+
+/* ── 限電規劃：電量只有 35%、消耗速度是常規的近 2 倍（2.8%/秒），地圖上
+   7 個檢查點（任意順序皆可穿越，重點是路線規劃不是操控技巧）、3 個充電站
+   （各只能用一次，只充到 85% 就斷電——呼應「資源有上限」的教學重點）。
+   電量歸零＝任務失敗（可重試，不影響其他已穿越的檢查點記憶——重試會整個
+   重來，跟基本版一致）。跟 t05/t07 一樣沿用 sandbox 的「連續課程」結構
+   （所有檢查點/充電站一次建好，不需要 t02/t03/t04 那種分階段狀態機）。 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'t08',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(16,7,14), new THREE.Vector3(-16,7,14), new THREE.Vector3(0,7,20)]});
+/* 最遠檢查點 z=-46，留 6 裕度 → BOUND=52（沿用 t04/t05/t07 教訓）。 */
+const BOUND=52, HOVER_Y=4.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19});
+
+/* ── 機體（樣式可在開場畫面切換，見 showIntro 的 b-style 按鈕）── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const SPAWN=new THREE.Vector3(0,1.5,5);   // 地面出生，同 t04/t05
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 7 個檢查點（任意順序，承基本版「路線規劃」設計——跟 t05 的依序穿越
+   刻意不同：t05 考的是航線精準操控，t08 考的是資源／路線規劃思維，任意
+   順序才能讓學生自己想「先去哪裡、要不要繞去充電站」） ── */
+const CHECKPOINT_POS=[
+  new THREE.Vector3(-6,HOVER_Y,-8),
+  new THREE.Vector3(7,HOVER_Y+1,-12),
+  new THREE.Vector3(-5,HOVER_Y-0.5,-20),
+  new THREE.Vector3(6,HOVER_Y,-26),
+  new THREE.Vector3(0,HOVER_Y+1,-34),
+  new THREE.Vector3(-7,HOVER_Y-0.5,-40),
+  new THREE.Vector3(5,HOVER_Y,-46),
+];
+const checkpoints=CHECKPOINT_POS.map(p=>{
+  const r=makeRing(p,{radius:1.8,color:0x22c55e});
+  engine.scene.add(r); return r;
+});
+function paintRing(r,hex,op){ r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex); r.children[0].material.opacity=op??0.75; }
+let checkpointsCleared=0;
+
+/* ── 3 個充電站，各只能用一次、只充到 85%（BatterySystem 的 onceOnly／maxPct
+   ——onceOnly 這個欄位在 class 宣告就有，但 t04/t05 都沒真的用過，這關是
+   第一次真的靠它驗證「單次限用」的資源限制語意） ── */
+const CHARGER_DEFS=[
+  { id:'A', pos:new THREE.Vector3(3,0.3,-15) },
+  { id:'B', pos:new THREE.Vector3(-4,0.3,-30) },
+  { id:'C', pos:new THREE.Vector3(3,0.3,-42) },
+];
+const chargerMeshes=CHARGER_DEFS.map(cd=>{
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.4,0.4,20),
+    new THREE.MeshStandardMaterial({color:0x1e293b,emissive:0xeab308,emissiveIntensity:.8,metalness:.7}));
+  m.position.copy(cd.pos); engine.scene.add(m); return m;
+});
+function paintCharger(m,used){
+  m.material.emissiveIntensity=used?0.1:0.8;
+  m.material.emissive.setHex(used?0x4b5563:0xeab308);
+}
+function makeBattery(){
+  return new BatterySystem({start:35,drainPerSec:2.8,
+    chargers:CHARGER_DEFS.map(cd=>({pos:cd.pos,radius:2.6,rate:25,onceOnly:true,maxPct:85}))});
+}
+let battery=makeBattery();
+let chargerUsedFlags=[false,false,false], chargersUsed=0, failCount=0;
+
+/* ── 引導（單步驟，HUD 文字用；「下一個去哪」交給學生自己規劃，不像 t05
+   那樣強制指向單一目標——呼應這關是路線規劃考核，不是導航練習） ── */
+const guide=new Guide([
+  { text:'穿過全部 7 個檢查點，善用 3 個充電站', done:s=>s.checkpointsCleared>=checkpoints.length },
+],hud,engine.scene);
+
+let flightTime=0, finished=false, failing=false;
+
+function resetLevel(){
+  failing=false;
+  flightTime=0; checkpointsCleared=0; chargersUsed=0; chargerUsedFlags=[false,false,false];
+  checkpoints.forEach(r=>{ r.userData.passed=false; paintRing(r,0x22c55e); });
+  chargerMeshes.forEach(m=>paintCharger(m,false));
+  battery=makeBattery();
+  drone.reset(SPAWN);
+  hud.setOffscreenTarget(null);
+}
+function triggerFail(){
+  if(failing||finished)return;
+  failing=true; failCount++; engine.paused=true; sfx.play('fail');
+  hud.setOffscreenTarget(null);
+  ui.showModal({title:'💀 電量耗盡',
+    html:`<p>穿越了 ${checkpointsCleared} 個檢查點後電量歸零。試著先去充電站再飛向較遠的檢查點！</p>`,
+    buttons:[
+      {id:'b-retry',label:'🔄 再試一次',onClick:()=>{ ui.closeModal(); engine.paused=false; resetLevel(); }},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null);
+  const finalBattery=Math.round(battery.pct);
+  /* 效率分數：用越少充電站、失敗次數越少分數越高，呼應「路線規劃越有效率」 */
+  const score=Math.round(THREE.MathUtils.clamp(100-chargersUsed*15-failCount*10,0,100));
+  progress.record('t08',{completed:true,score,
+    metrics:{checkpointsCleared,chargersUsed,finalBattery,failCount,flightTime:Math.round(flightTime)},...ch.recordFields()});
+  ui.showModal({title:'⚡ 限電規劃 完成！',
+    html:`<p>✅ 完成檢查點：${checkpointsCleared}/${checkpoints.length}　⏱ 飛行時間：${flightTime.toFixed(1)} 秒</p>
+      <p>🔌 使用充電站：${chargersUsed} 個　🔋 剩餘電量：${finalBattery}%　💀 電量耗盡次數：${failCount}</p>
+      <p>使用越少充電站、剩餘電量越多，代表路線規劃越有效率。成績已記錄（nd.progress.t08）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── 視角／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'限電規劃',
+    html:`<p>🔋 電量只有 <b>35%</b>，而且消耗速度是平常的近 2 倍！</p>
+      <p>地圖上有 7 個檢查點（🟢，任意順序均可穿越）和 3 個充電站（🟡 A/B/C，
+      <b>各只能使用一次</b>，只充到 85%）。你必須思考：先去哪個充電站？路線怎麼安排？
+      才能完成全部 7 個檢查點。</p>
+      <p>⚠️ 電量歸零後任務失敗（可重試）。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-go',label:'🔋 開始限電任務',onClick:startGame}].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  guide.start();
+  hud.toast('起飛！先規劃路線再出發','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished||failing)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>已穿越 ${checkpointsCleared}/${checkpoints.length}・已用 ${chargersUsed}/3 充電站・電量 ${Math.round(battery.pct)}%</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('限電規劃：任意順序穿環・善用充電站');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 測試/除錯 hook ── */
+window.ndDebug=()=>({checkpointsCleared,total:checkpoints.length,chargersUsed,failCount,
+  batteryPct:battery.pct,batteryEmpty:battery.empty,dronePos:drone.pos.clone(),
+  flightTime,finished,failing});
+window.ndTest={
+  forceFinish:()=>{
+    checkpoints.forEach(r=>r.userData.passed=true);
+    checkpointsCleared=checkpoints.length;
+    finishLevel();
+  },
+  /* warp 到「檢查點前方一小段」而非直接判定成功，讓接下來一小段真實飛行
+     仍要真的觸發 checkRingPass——同系列 warp 慣例的用意 */
+  warpBeforeCheckpoint:(i)=>{
+    const r=checkpoints[i]; if(!r)return false;
+    drone.pos.set(r.position.x,r.position.y,r.position.z+3);
+    drone.vel.set(0,0,0); return true;
+  },
+  warpToCharger:(i)=>{
+    const cd=CHARGER_DEFS[i]; if(!cd)return false;
+    drone.pos.set(cd.pos.x,HOVER_Y,cd.pos.z); drone.vel.set(0,0,0); return true;
+  },
+  setBatteryPct:(v)=>{ battery.pct=v; return true; }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished&&!failing){
+    flightTime+=dt;
+    prevPos.copy(drone.pos);
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    battery.update(dt,drone.pos,true);
+    battery.chargers.forEach((c,i)=>{
+      if(c.used&&!chargerUsedFlags[i]){
+        chargerUsedFlags[i]=true; chargersUsed++;
+        paintCharger(chargerMeshes[i],true);
+        hud.toast(`🔌 ${CHARGER_DEFS[i].id} 號站已用完（充到 85%）`,'ok');
+      }
+    });
+    if(battery.empty){
+      triggerFail();
+    } else {
+      checkpoints.forEach(r=>{
+        if(checkRingPass(r,drone.pos,prevPos)){
+          paintRing(r,0x64748b,0.3); checkpointsCleared++; sfx.play('ring');
+          hud.toast(`檢查點 ${checkpointsCleared}/${checkpoints.length}`,'ok');
+          if(checkpointsCleared>=checkpoints.length) finishLevel();
+        }
+      });
+      const next=checkpoints.find(r=>!r.userData.passed);
+      hud.setOffscreenTarget(next?next.position:null);
+    }
+    guide.update(dt,{checkpointsCleared});
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setBattery(battery.pct);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(engine.simStarted?`穿越 ${checkpointsCleared}/${checkpoints.length}・充電 ${chargersUsed}/3`:'');
+  const mapTargets=checkpoints.map((r,i)=>({pos:r.position,done:r.userData.passed}));
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets);
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

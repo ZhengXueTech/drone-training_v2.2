@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🏢</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：建築外牆巡檢對戰｜newdrone Inspection-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#89bce8;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#1a2a40;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(251,146,60,.4) 15%,rgba(251,146,60,.55) 50%,rgba(251,146,60,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(251,146,60,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(20,20,26,.8);border:1px solid rgba(251,146,60,.35);border-radius:6px;
+    padding:4px 10px;color:#f0ecd8;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(20,20,26,.85);border:1px solid rgba(251,146,60,.4);border-radius:10px;
+    padding:8px 22px;color:#f0ecd8;font-size:12.5px;text-align:center;box-shadow:0 0 16px rgba(251,146,60,.12);
+    display:flex;gap:16px;align-items:center;}
+  #topbar b{font-size:15px;}
+  #topbar .p1{color:#38bdf8;} #topbar .p2{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(20,20,26,.85);
+    border:1px solid rgba(251,146,60,.4);color:#f0ecd8;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE INSPECTION-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone, aiMoveWorld } from '../core/systems/yaw-drone.js';
+import { renderSplit } from '../core/camera.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：建築外牆巡檢對戰（x-inspection 的 pk-live 版本，規劃書 §9
+   成本表高成本第二例：「同建築搶面板，先掃完算誰的｜高｜面板加
+   owner＋合併兩種判定模式為一種」）
+   ------------------------------------------------------------
+   跟 bridge-pk（同結構搶巡檢段）同一種「同場搶X＋dwell 累加」玩法，
+   共用同一份建築牆面／面板清單，panel.owner 決定歸屬，任何一方在
+   掃描範圍內都會讓該面板的共用進度前進，衝過 100% 時正在貢獻進度
+   的玩家（i=0→1 固定順序，同幀平手 P1 優先）永久鎖定該面板。
+
+   ⚠️ 關鍵設計決策——把單人版「兩種判定模式」合併成一種：單人版
+   x-inspection 有 (a) 一般面板＝懸停累積進度條 (b) 異常面板＝距離
+   門檻判定「在範圍內」後還要玩家主動按 B 鍵確認——這是基本版就有的
+   「第五種判定模式」（比純距離觸發多一道玩家主動確認手續，訓練學生
+   對異常保持警覺）。但讀過 core/input.js 後確認 InputManager.
+   playerFor(ctl) 對鍵盤/觸控席位完全沒有按鍵偵測，pk-live 席位在
+   教室裡幾乎都是鍵盤，沒辦法逐席偵測這顆確認鍵。
+   異常巡查判斷準則（跟 rescue-pk 熱成像同一套決策框架）：「確認異常」
+   這個動作本身是不是核心？異常面板的核心教學意義是「巡檢到異常要能
+   被記錄下來」，不是「按鍵確認」這個手勢本身；因此不是整個拿掉異常
+   機制（那樣會失去異常巡查的教學價值），而是拿掉「顯式按鍵確認」這
+   道手續，讓異常面板改用跟一般面板相同的懸停掃描（dwell）自動判定
+   ——巡檢到即自動記錄，只是異常面板獲得更高分值權重與持續的橘色警示
+   閃爍效果（未完成前無論是否正在被掃描都會脈動警示，一般面板則只在
+   實際被掃描時才會有進度視覺回饋），維持「異常比較醒目、比較重要」
+   的辨識度，同時繞開鍵盤按鍵偵測的限制。這是繼 agri-pk（整個拿掉噴藥
+   開關）、rescue-pk（保留熱成像數值效果，拿掉限時/冷卻）之後，第三種
+   「移除鍵盤無法偵測之手動機制」的具體解法：這裡是「合併判定模式」。
+
+   物理／AI：C1 家族（YawDrone），沿其他 pk-live 情境關卡同一套慣例，
+   yaw=0 機頭朝 +Z，mesh.rotation.y=yaw+Math.PI。單人版沒有 AI 角色，
+   新寫「找最近未完成面板」的搶巡檢 AI，導航目標會依面板所在牆面法向
+   外推到「合理掃描距離帶」中點，而不是直接朝牆面撞過去。
+
+   出生點：建築四面牆的面板配置本身對稱（東西南北四面幾何相同），
+   兩位玩家從建築南／北兩端出生（比單人版原本的單一南側出生點更
+   靠外一些，z=±10，留出雙方各自繞飛的空間），不需要額外處理座標
+   公平性問題。
+
+   電量：沿單人版連續耗電（無補給站），歸零比照其他 pk-live 情境關卡
+   的「停飛不停賽」原則，該玩家停飛、不結束整場比賽。
+
+   碰撞：沿單人版 checkBuildingCollision 的單一 box 障礙物（建築本體）
+   設計，DR=0.12（面板貼牆很近，緩衝值比 bridge-pk 的 0.2 小），
+   per-player 各自獨立 1.5 秒冷卻計時。
+
+   相機：C1 家族，沿用 -sinθ,-cosθ 公式，考量本關場地跟 agri-pk 農田
+   量級接近（建築本體只有 6×6，但玩家會繞行到 ±10~15 公尺外巡查
+   周邊城市剪影），偏移距離取 6.5/3.0（介於 agri-pk 5.5/2.6 與
+   rescue-pk/bridge-pk 之間），已用 __ndDebug 獨立驗算方向。
+   ============================================================ */
+
+const ACT='inspection-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const PLABEL=['P1','P2'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 常數（沿單人版 x-inspection.html 原值一字不改：物理、建築尺寸、
+   邊界、三段純數值難度表，只拿掉異常面板的「確認」手續不用） ── */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:16,PITCHMAX:20,YAWMAX:2.6,
+  DRAG_PER_SEC:Math.pow(0.88,60),WBOUNCE:0,FBOUNCE:0};
+const BWIDTH=6, BDEPTH=6, BHEIGHT=6, HALF_W=BWIDTH/2, HALF_D=BDEPTH/2;
+const BOUNDS={minX:-55,maxX:55,minY:0.15,maxY:30,minZ:-55,maxZ:55,BR:0};
+const DR=0.12;
+const DIFF_CFG={
+  easy:{label:'🏢 初級',time:180,rows:2,cols:3,minDist:0.9,maxDist:5.5,wind:0,   scanRate:0.6,  batDrain:5,  anomalies:3},
+  med: {label:'⚡ 中級',time:150,rows:3,cols:3,minDist:0.9,maxDist:4.5,wind:0.8, scanRate:0.55, batDrain:9,  anomalies:5},
+  hard:{label:'💀 高級',time:120,rows:3,cols:3,minDist:0.9,maxDist:3.5,wind:1.5, scanRate:0.50, batDrain:14, anomalies:6},
+};
+/* 兩人從建築南／北兩端出生（四面牆配置本身對稱，不需額外處理公平性；
+   比單人版原本的單一南側出生點更靠外，留出雙方繞飛空間） */
+const PLAYER_SPAWNS=[new THREE.Vector3(0,2.5,-(HALF_D+7)), new THREE.Vector3(0,2.5,HALF_D+7)];
+const SPAWN_YAW=[0,Math.PI];
+const AI_SPD={easy:2.2,med:3.4,hard:4.8};
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const wind=new WindSystem();
+
+/* ── 場地（沿單人版：天空藍霧＋地面＋建築本體＋周邊城市剪影，幾何
+   與單人版一字不改） ── */
+engine.scene.background=new THREE.Color(0x89bce8);
+engine.scene.fog=new THREE.Fog(0x89bce8,60,150);
+const sun=new THREE.DirectionalLight(0xfff5e0,1.1);
+sun.position.set(20,40,20); sun.castShadow=true;
+sun.shadow.camera.left=sun.shadow.camera.bottom=-50;
+sun.shadow.camera.right=sun.shadow.camera.top=50;
+sun.shadow.camera.near=0.5; sun.shadow.camera.far=200;
+sun.shadow.mapSize.set(2048,2048);
+let walls=[], panels=[], obstacles=[], windParticles=null;
+let totalPanels=36, anomalyTotal=0;
+function clearDynamicScene(){
+  while(engine.scene.children.length>0)engine.scene.remove(engine.scene.children[0]);
+  engine.scene.add(sun);
+  engine.scene.add(new THREE.AmbientLight(0xffffff,.55));
+  engine.scene.add(new THREE.HemisphereLight(0x87ceeb,0x445533,.3));
+  walls=[]; panels=[]; obstacles=[]; windParticles=null;
+}
+function buildGround(){
+  const gGeo=new THREE.PlaneGeometry(200,200,40,40);
+  const gMat=new THREE.MeshStandardMaterial({color:0x888888,roughness:0.85,metalness:0.05});
+  const ground=new THREE.Mesh(gGeo,gMat);
+  ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; engine.scene.add(ground);
+  const gridH=new THREE.GridHelper(200,40,0x777777,0x777777);
+  gridH.position.y=0.01; gridH.material.opacity=0.3; gridH.material.transparent=true; engine.scene.add(gridH);
+}
+function buildBuilding(){
+  const bMat=new THREE.MeshStandardMaterial({color:0xb0b0b0,roughness:0.8,metalness:0.05});
+  const building=new THREE.Mesh(new THREE.BoxGeometry(BWIDTH,BHEIGHT,BDEPTH),bMat);
+  building.position.set(0,BHEIGHT/2,0); building.castShadow=true; building.receiveShadow=true; engine.scene.add(building);
+  obstacles.push({type:'box',
+    min:new THREE.Vector3(-HALF_W-DR,-DR,-HALF_D-DR),
+    max:new THREE.Vector3( HALF_W+DR,BHEIGHT+DR,HALF_D+DR)});
+
+  const roofMat=new THREE.MeshStandardMaterial({color:0x888888,roughness:0.6});
+  const roof=new THREE.Mesh(new THREE.BoxGeometry(BWIDTH+0.1,0.25,BDEPTH+0.1),roofMat);
+  roof.position.set(0,BHEIGHT+0.12,0); engine.scene.add(roof);
+
+  const pillarMat=new THREE.MeshStandardMaterial({color:0x909090,roughness:0.9});
+  [[-HALF_W,-HALF_D],[HALF_W,-HALF_D],[HALF_W,HALF_D],[-HALF_W,HALF_D]].forEach(([x,z])=>{
+    const p=new THREE.Mesh(new THREE.BoxGeometry(0.35,BHEIGHT,0.35),pillarMat);
+    p.position.set(x,BHEIGHT/2,z); p.castShadow=true; engine.scene.add(p);
+  });
+
+  const winMat=new THREE.MeshStandardMaterial({color:0x336699,transparent:true,opacity:0.55,metalness:0.7,roughness:0.2});
+  const wallDefs=[
+    {axis:'z',wallV:-HALF_D-0.01,normal:new THREE.Vector3(0,0,-1)},
+    {axis:'z',wallV: HALF_D+0.01,normal:new THREE.Vector3(0,0, 1)},
+    {axis:'x',wallV: HALF_W+0.01,normal:new THREE.Vector3( 1,0,0)},
+    {axis:'x',wallV:-HALF_W-0.01,normal:new THREE.Vector3(-1,0,0)},
+  ];
+  wallDefs.forEach(wd=>{
+    const isZ=wd.axis==='z';
+    [-BWIDTH/3,0,BWIDTH/3].forEach(cx=>[1.2,3.0,4.8].forEach(cy=>{
+      const wGeo=new THREE.PlaneGeometry(1.1,1.4);
+      const win=new THREE.Mesh(wGeo,winMat.clone());
+      if(isZ){win.position.set(cx,cy,wd.wallV);win.rotation.y=wd.normal.z>0?0:Math.PI;}
+      else{win.position.set(wd.wallV,cy,cx);win.rotation.y=wd.normal.x>0?Math.PI/2:-Math.PI/2;}
+      engine.scene.add(win);
+    }));
+  });
+
+  for(let f=1;f<=2;f++){
+    const fl=new THREE.Mesh(new THREE.BoxGeometry(BWIDTH+0.05,0.18,BDEPTH+0.05),
+      new THREE.MeshStandardMaterial({color:0x999999,roughness:0.7}));
+    fl.position.set(0,f*2,0); engine.scene.add(fl);
+  }
+}
+/* 面板：沿單人版格局（4面牆×rows×cols），新增 owner 欄位取代單人版
+   的純 done 布林值，並預先算好 worldPos（AI 導航／topbar 最近距離
+   讀值用，跟 mesh 實際放置座標公式相同） */
+function buildPanels(diff){
+  const cfg=DIFF_CFG[diff];
+  const {rows,cols,anomalies}=cfg;
+  const panelW=BWIDTH/cols, panelH=BHEIGHT/rows;
+
+  const WALLS=[
+    {name:'北面',id:'n',axis:'z',wallV:-HALF_D,sign:-1,hAxis:'x'},
+    {name:'南面',id:'s',axis:'z',wallV: HALF_D,sign: 1,hAxis:'x'},
+    {name:'東面',id:'e',axis:'x',wallV: HALF_W,sign: 1,hAxis:'z'},
+    {name:'西面',id:'w',axis:'x',wallV:-HALF_W,sign:-1,hAxis:'z'},
+  ];
+
+  WALLS.forEach(wd=>{
+    const isZ=wd.axis==='z';
+    wd.panels=[]; wd.done=false; wd.scanned=0; wd.totalPanels=rows*cols;
+
+    for(let ci=0;ci<cols;ci++)for(let ri=0;ri<rows;ri++){
+      const cx_local=-BWIDTH/2+panelW*(ci+0.5);
+      const cy_world=panelH*(ri+0.5);
+      const geo=new THREE.PlaneGeometry(panelW*0.9,panelH*0.9);
+      const mat=new THREE.MeshStandardMaterial({
+        color:0x1a5080,transparent:true,opacity:0.55,
+        side:THREE.DoubleSide,depthWrite:false,
+        emissive:new THREE.Color(0x0a2840),emissiveIntensity:1.2});
+      const mesh=new THREE.Mesh(geo,mat);
+      const offset=0.05;
+      const worldPos=isZ?new THREE.Vector3(cx_local,cy_world,wd.wallV+wd.sign*offset)
+                         :new THREE.Vector3(wd.wallV+wd.sign*offset,cy_world,cx_local);
+      mesh.position.copy(worldPos);
+      if(isZ)mesh.rotation.y=wd.sign>0?0:Math.PI;
+      else mesh.rotation.y=wd.sign>0?Math.PI/2:-Math.PI/2;
+      engine.scene.add(mesh);
+      const edges=new THREE.EdgesGeometry(geo);
+      const lineMat=new THREE.LineBasicMaterial({color:0x4488bb,transparent:true,opacity:0.6});
+      mesh.add(new THREE.LineSegments(edges,lineMat));
+      const panel={wall:wd,ci,ri,cx_local,cy_world,hw:panelW*0.5,hh:panelH*0.5,worldPos,
+        progress:0,done:false,owner:null,anomaly:false,mesh,mat,lineMat};
+      wd.panels.push(panel); panels.push(panel);
+    }
+  });
+
+  totalPanels=panels.length;
+  anomalyTotal=Math.min(anomalies,panels.length);
+  const shuffled=[...panels].sort(()=>Math.random()-.5);
+  for(let i=0;i<anomalyTotal;i++){
+    const p=shuffled[i];
+    p.anomaly=true;
+    p.mat.color.setHex(0x9b4500); p.mat.emissive.setHex(0x5c1a00); p.mat.emissiveIntensity=1.0;
+    p.lineMat.color.setHex(0xff7020);
+  }
+  walls=WALLS;
+}
+function buildWindParticles(){
+  const count=60,R=22,positions=new Float32Array(count*3);
+  for(let i=0;i<count;i++){positions[i*3]=(Math.random()-.5)*R*2;positions[i*3+1]=Math.random()*12+0.5;positions[i*3+2]=(Math.random()-.5)*R*2;}
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  const pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0xb0d8ff,size:0.18,transparent:true,opacity:0.55,sizeAttenuation:true}));
+  engine.scene.add(pts); return pts;
+}
+function tickWindParticles(dt){
+  if(!windParticles||wind.vec.lengthSq()<0.01)return;
+  const pos=windParticles.geometry.attributes.position,R=22;
+  for(let i=0;i<pos.count;i++){
+    pos.array[i*3]+=wind.vec.x*dt*3.5; pos.array[i*3+1]-=dt*0.25; pos.array[i*3+2]+=wind.vec.z*dt*3.5;
+    if(pos.array[i*3]>R)pos.array[i*3]-=R*2; if(pos.array[i*3]<-R)pos.array[i*3]+=R*2;
+    if(pos.array[i*3+2]>R)pos.array[i*3+2]-=R*2; if(pos.array[i*3+2]<-R)pos.array[i*3+2]+=R*2;
+    if(pos.array[i*3+1]<0.3)pos.array[i*3+1]=Math.random()*12+0.5;
+  }
+  pos.needsUpdate=true;
+}
+function buildCityscape(){
+  const cityMat=new THREE.MeshStandardMaterial({color:0x777777,roughness:0.9});
+  [[22,0,10,6,14,8],[-25,0,5,5,18,6],[18,0,-20,8,10,7],
+   [-20,0,-18,6,22,5],[30,0,-5,5,8,6],[-30,0,12,7,16,8],
+   [15,0,25,6,12,5],[-15,0,28,5,20,6]].forEach(([x,y,z,w,h,d])=>{
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),cityMat.clone());
+    m.position.set(x,h/2,z); m.castShadow=true; m.receiveShadow=true; engine.scene.add(m);
+  });
+}
+function buildScene(diff){
+  clearDynamicScene(); buildGround(); buildBuilding(); buildPanels(diff); buildCityscape();
+  const cfg=DIFF_CFG[diff];
+  if(cfg.wind>0)windParticles=buildWindParticles();
+  engine.scene.add(meshes[0]); engine.scene.add(meshes[1]);
+}
+
+/* ── 兩台真機體（都是 C1 家族 YawDrone；機體樣式改用可染色的
+   trainer-orb——單人版固定用「巡檢機」inspect-cam，PK 版需要清楚隊色
+   識別，沿用其他 pk-live 情境關卡的做法：捨棄情境造型、改用泛用可
+   染色機體） ── */
+const drones=[0,1].map(i=>new YawDrone({spawn:PLAYER_SPAWNS[i].clone(),yaw:SPAWN_YAW[i],bounds:BOUNDS,phys:PHYS}));
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('trainer-orb',{tint:TINTS[i],scale:1});
+  m.castShadow=true; return m;
+});
+
+/* ── 分割畫面：C1 家族，沿用 -sinθ,-cosθ 公式，偏移距離取 6.5/3.0
+   （介於 agri-pk 農田與 rescue-pk/bridge-pk 開放場地之間，見檔頭
+   決策說明）。仍會用 __ndDebug 獨立驗算一次。 ── */
+const cams=[new THREE.PerspectiveCamera(60,1,0.05,120),new THREE.PerspectiveCamera(60,1,0.05,120)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x-sy*6.5,y+3.0,z-cy*6.5),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 賽局狀態：P[0]/P[1] 各自獨立的資源／狀態，共用同一份牆面/面板
+   清單（panel.owner 決定歸屬，不是各自一份） ── */
+let pDiff='easy', curCfg=DIFF_CFG.easy;
+let timer=180, totalTime=180, playing=false, finished=false;
+function freshP(){ return {battery:100,outOfPower:false,collisions:0,lastCollisionT:-2,nearestDist:Infinity}; }
+const P=[freshP(),freshP()];
+const scannedCount=[0,0];
+const anomalyDone=[0,0];
+
+function startBuildScene(diff){
+  pDiff=diff; curCfg=DIFF_CFG[diff];
+  scannedCount[0]=0; scannedCount[1]=0; anomalyDone[0]=0; anomalyDone[1]=0;
+  buildScene(diff);
+  wind.randomize(curCfg.wind);
+}
+
+/* ── 建築碰撞（沿單人版 checkBuildingCollision 同一套單一 box 障礙物
+   設計，per-player 各自獨立冷卻計時） ── */
+function checkBuildingCollision(i){
+  const d=drones[i], p=P[i];
+  const now=performance.now()/1000; let hit=false;
+  obstacles.forEach(ob=>{
+    if(d.pos.x>ob.min.x&&d.pos.x<ob.max.x&&
+       d.pos.y>ob.min.y&&d.pos.y<ob.max.y&&
+       d.pos.z>ob.min.z&&d.pos.z<ob.max.z)hit=true;
+  });
+  if(hit&&now-p.lastCollisionT>1.5){
+    p.lastCollisionT=now; p.collisions++;
+    d.vel.multiplyScalar(-0.3);
+    toast(`💥 ${PLABEL[i]} 碰撞！`); sfx.play('fail');
+  }
+}
+
+/* ── 巡檢掃描（合併單人版兩種判定模式為一種——見檔頭決策說明：一般
+   面板與異常面板都用懸停累積共用進度自動判定，異常面板只是分數
+   權重更高、視覺上持續橘色警示閃爍。同建築搶面板：任何一方在掃描
+   範圍內都會讓該面板的共用進度前進，衝過 100% 時正在貢獻進度的
+   玩家（i=0→1 固定順序，同幀平手 P1 優先）永久鎖定該面板） ── */
+function checkScan(dt){
+  const cfg=curCfg, t=performance.now()/1000;
+  P[0].nearestDist=Infinity; P[1].nearestDist=Infinity;
+  walls.forEach(wd=>{
+    if(wd.done)return;
+    wd.panels.forEach(panel=>{
+      if(panel.done)return;
+      [0,1].forEach(i=>{
+        if(P[i].outOfPower)return;
+        const d=drones[i];
+        const distWorld=d.pos.distanceTo(panel.worldPos);
+        if(distWorld<P[i].nearestDist)P[i].nearestDist=distWorld;
+        const coord=wd.axis==='z'?d.pos.z:d.pos.x;
+        const distToWall=(coord-wd.wallV)*wd.sign;
+        if(distToWall<cfg.minDist||distToWall>cfg.maxDist||distToWall<0)return;
+        const hCoord=wd.hAxis==='x'?d.pos.x:d.pos.z;
+        const inPos=Math.abs(hCoord-panel.cx_local)<panel.hw&&Math.abs(d.pos.y-panel.cy_world)<panel.hh;
+        if(!inPos)return;
+        panel.progress=Math.min(1,panel.progress+cfg.scanRate*dt);
+        if(!panel.anomaly){
+          const p=panel.progress;
+          panel.mat.color.setRGB(0.55+p*0.15,0.35+p*0.3,0.0);
+          panel.mat.opacity=0.40+p*0.35;
+          panel.mat.emissive.setRGB(0.2*p,0.15*p,0); panel.mat.emissiveIntensity=0.6*p;
+        }
+        if(panel.progress>=1&&!panel.done){
+          panel.done=true; panel.owner=i; scannedCount[i]++; wd.scanned++;
+          if(panel.anomaly)anomalyDone[i]++;
+          panel.mat.color.setHex(TINTS[i]); panel.mat.opacity=0.70;
+          panel.mat.emissive.setHex(TINTS[i]); panel.mat.emissiveIntensity=1.2;
+          panel.lineMat.color.setHex(TINTS[i]);
+          toast(`✅ ${PLABEL[i]} 完成${wd.name}${panel.anomaly?'異常面板':'面板'}！`);
+          sfx.play(panel.anomaly?'ok':'ring');
+          if(wd.scanned>=wd.totalPanels&&!wd.done)wd.done=true;
+        }
+      });
+      if(panel.anomaly&&!panel.done){
+        panel.mat.emissiveIntensity=0.8+0.5*Math.sin(t*4);
+      }
+    });
+  });
+  if(scannedCount[0]+scannedCount[1]>=totalPanels)finishGame();
+}
+
+/* ── 資源系統（沿單人版連續耗電，這關沒有充電站；電量歸零＝該玩家
+   停飛，不結束整場比賽——比照其他 pk-live 情境關卡的「停飛不停賽」
+   原則） ── */
+function tickResources(i,dt){
+  const p=P[i];
+  if(p.outOfPower)return;
+  p.battery=Math.max(0,p.battery-curCfg.batDrain*dt/60);
+  if(p.battery<=0&&!p.outOfPower){
+    p.outOfPower=true;
+    toast(`⚠️ ${PLABEL[i]} 電量耗盡，已停飛！`); sfx.play('warn');
+  }
+}
+
+/* ── AI 席位：搶巡檢面板（單人版沒有這個角色，新寫的最近未完成面板
+   導航，目標會依面板所在牆面法向外推到掃描距離帶中點，而不是直接
+   撞牆，沿用 aiMoveWorld()） ── */
+function nearestActivePanel(i){
+  const d=drones[i]; let best=null, bestD2=Infinity;
+  walls.forEach(wd=>{
+    if(wd.done)return;
+    wd.panels.forEach(panel=>{
+      if(panel.done)return;
+      const dx=panel.worldPos.x-d.pos.x, dy=panel.worldPos.y-d.pos.y, dz=panel.worldPos.z-d.pos.z;
+      const d2=dx*dx+dy*dy+dz*dz;
+      if(d2<bestD2){bestD2=d2;best=panel;}
+    });
+  });
+  return best;
+}
+function updateInspectionAI(i,dt,diff){
+  const d=drones[i], p=P[i];
+  if(p.outOfPower)return;
+  const spd=AI_SPD[diff]??AI_SPD.med;
+  const panel=nearestActivePanel(i);
+  if(!panel){ aiMoveWorld(d,PLAYER_SPAWNS[i],dt,spd,BOUNDS,PHYS); return; }
+  const wd=panel.wall, offD=(curCfg.minDist+curCfg.maxDist)/2;
+  const tgt=wd.axis==='z'
+    ? new THREE.Vector3(panel.cx_local,panel.cy_world,wd.wallV+wd.sign*offD)
+    : new THREE.Vector3(wd.wallV+wd.sign*offD,panel.cy_world,panel.cx_local);
+  aiMoveWorld(d,tgt,dt,spd,BOUNDS,PHYS);
+}
+
+/* ── Intro／暫停／結算 ── */
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showModal({title,html,buttons}){
+  closeModal();
+  const wrap=document.createElement('div');
+  wrap.className='nd-modal';
+  wrap.style.cssText='position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(6,6,10,.55);';
+  wrap.innerHTML=`<div style="background:rgba(20,20,26,.95);border:1px solid rgba(251,146,60,.4);
+    border-radius:14px;padding:22px 26px;max-width:520px;color:#f0ecd8;font-size:13px;line-height:1.6;">
+    <h2 style="margin:0 0 10px;font-size:18px;color:#fb923c;">${title}</h2>
+    ${html}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;"></div></div>`;
+  const btnWrap=wrap.querySelector('div > div:last-child');
+  buttons.forEach(b=>{
+    const el=document.createElement('button');
+    el.id=b.id; el.textContent=b.label;
+    el.style.cssText='background:rgba(251,146,60,.15);border:1px solid rgba(251,146,60,.5);color:#fb923c;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;font-family:inherit;';
+    el.onclick=b.onClick;
+    btnWrap.appendChild(el);
+  });
+  document.body.appendChild(wrap);
+}
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+
+function showIntro(){
+  engine.simStarted=false; playing=false;
+  showModal({title:'情境體驗 · 建築外牆巡檢對戰',
+    html:`<p>P1／P2 圍繞同一棟建築巡檢，飛到面板前<strong>懸停</strong>
+      累積掃描進度，先完成的面板永久算誰的。<strong>橘色異常面板</strong>
+      判定方式相同，只是分數權重更高，掃描時請留意持續閃爍的警示！</p>
+      <p>⚠️ 注意避開建築本體碰撞！電量持續消耗，歸零該玩家會停飛
+      （比賽不會因此結束）。</p>
+      <p style="font-size:11px;color:#c9b8a3">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-easy',label:'🏢 初級（24格・3分・無風）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'⚡ 中級（36格・2:30・微風）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'💀 高級（36格・2分・強風）',onClick:()=>startGame('hard')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+}
+function startGame(diff){
+  P[0]=freshP(); P[1]=freshP();
+  drones.forEach((d,i)=>d.reset(PLAYER_SPAWNS[i].clone(),SPAWN_YAW[i]));
+  startBuildScene(diff);
+  timer=curCfg.time; totalTime=timer;
+  closeModal(); sfx.play('click');
+  pkc.apply(drones,seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始巡檢對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else closeModal();
+}
+function showPauseModal(){
+  showModal({title:'暫停',
+    html:`<p>難度：${DIFF_CFG[pDiff].label}　剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>
+      <p>P1 完成 ${scannedCount[0]} 格（異常${anomalyDone[0]}）　P2 完成 ${scannedCount[1]} 格（異常${anomalyDone[1]}）
+      　（共 ${totalPanels} 格・異常 ${anomalyTotal}）</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const winner=scannedCount[0]>scannedCount[1]?'P1':scannedCount[1]>scannedCount[0]?'P2':'tie';
+  progress.record(ACT,{completed:true,score:Math.max(scannedCount[0],scannedCount[1]),
+    ...pkc.recordFields(),metrics:{p1Scanned:scannedCount[0],p2Scanned:scannedCount[1],totalPanels,
+      p1Anomaly:anomalyDone[0],p2Anomaly:anomalyDone[1],anomalyTotal,
+      winner,humanCount,diff:pDiff}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner} 獲勝！`;
+  showModal({title:'挑戰結束 · '+resText,
+    html:`<p>P1：<b>${scannedCount[0]} 格</b>（異常${anomalyDone[0]}・碰撞${P[0].collisions}次）<br>
+      P2：<b>${scannedCount[1]} 格</b>（異常${anomalyDone[1]}・碰撞${P[1].collisions}次）<br>
+      共完成 ${scannedCount[0]+scannedCount[1]}/${totalPanels} 格（異常 ${anomalyDone[0]+anomalyDone[1]}/${anomalyTotal}）</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:showIntro},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    wind.update(dt);
+    [0,1].forEach(i=>{
+      const d=drones[i], p=P[i];
+      if(!p.outOfPower){
+        if(seatList[i].controller?.type==='ai'){
+          updateInspectionAI(i,dt,seatList[i].controller.diff||'med');
+        }else{
+          const ip=input.playerFor(seatList[i].controller);
+          d.step(dt,ip);
+        }
+        if(wind.enabled)d.vel.addScaledVector(wind.vec,dt*4.0);
+      }
+      checkBuildingCollision(i);
+    });
+    checkScan(dt);
+    [0,1].forEach(i=>tickResources(i,dt));
+    tickWindParticles(dt);
+
+    timer-=dt;
+    if(timer<=0&&!finished){timer=0;finishGame();}
+  }
+
+  drones.forEach((d,i)=>{
+    meshes[i].position.copy(d.pos);
+    meshes[i].rotation.y=d.yaw+Math.PI; // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  });
+  cams.forEach((cam,i)=>updatePaneCam(cam,drones[i]));
+
+  const distTxt=v=>(v===Infinity?'－':v.toFixed(0)+'m');
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="p1">P1 <b>${scannedCount[0]}</b> 🔺${anomalyDone[0]} 📡${distTxt(P[0].nearestDist)} 🔋${Math.round(P[0].battery)}%</span>`+
+    `<span>${pkc.topTag()}${DIFF_CFG[pDiff].label}　完成${scannedCount[0]+scannedCount[1]}/${totalPanels}　剩${Math.max(0,Math.ceil(timer))}秒</span>`+
+    `<span class="p2">P2 <b>${scannedCount[1]}</b> 🔺${anomalyDone[1]} 📡${distTxt(P[1].nearestDist)} 🔋${Math.round(P[1].battery)}%</span>`;
+});
+
+startBuildScene('easy'); // intro 畫面預覽用的預設場景，startGame() 會依選擇的難度重建
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

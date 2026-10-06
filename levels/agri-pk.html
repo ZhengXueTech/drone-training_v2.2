@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🌾</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：農噴對戰｜newdrone Agri-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d1f0d;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3a7a3a;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(74,222,128,.4) 15%,rgba(74,222,128,.55) 50%,rgba(74,222,128,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(74,222,128,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(10,20,10,.8);border:1px solid rgba(74,222,128,.35);border-radius:6px;
+    padding:4px 10px;color:#e0f0d8;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(10,20,10,.85);border:1px solid rgba(74,222,128,.4);border-radius:10px;
+    padding:8px 22px;color:#e8f0d8;font-size:12.5px;text-align:center;box-shadow:0 0 16px rgba(74,222,128,.12);
+    display:flex;gap:16px;align-items:center;}
+  #topbar b{font-size:15px;}
+  #topbar .p1{color:#38bdf8;} #topbar .p2{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(10,20,10,.85);
+    border:1px solid rgba(74,222,128,.4);color:#e8f0d8;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE AGRI-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone, aiMoveWorld } from '../core/systems/yaw-drone.js';
+import { renderSplit } from '../core/camera.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：農噴對戰（x-agri 的 pk-live 版本，規劃書 §9 成本表中成本
+   第二例：「同田搶噴／各噴各的比覆蓋率｜中｜覆蓋格加 owner 欄位」）
+   ------------------------------------------------------------
+   跟 cargo-pk（各送各的，互不干涉）不同，這關採用規劃書給的另一種
+   玩法：「同田搶噴」——8×5=40 格農田只有一份，兩人共用同一個場地，
+   每格新增 owner 欄位（null|0|1），誰的噴藥範圍先碰到未認領的格子，
+   那格就永久算誰的（噴過就是你的顏色，不會被對方蓋掉）——這正是成本
+   表註記「覆蓋格加 owner 欄位」的實際做法，而不是像 x-hover-pk 那樣
+   把場地切兩半。時間到或 40 格全部有主，比誰佔的格子多。
+
+   跟 goalkeeper-pk／chase-pk 不同，這關兩人做的是同一件事（開農噴機
+   搶地盤），架構分類上屬於「對稱同任務型」（跟 cargo-pk 同類），因此
+   沿用單人版整場難度選單（easy/med/hard 對應障礙物疊加），雙方共用
+   同一個難度才公平，不是「賽局時間」選項＋逐席 AI diff 那一套。
+
+   ⚠️ 關鍵設計決策——移除「開關噴藥」手動開關（本檔跟單人版最大的
+   差異）：讀過 core/input.js 之後確認 InputManager.playerFor(ctl) 對
+   keyboard／touch 類型的席位回傳的 btn/btnEdge/fnEdge 全部是恆真
+   false 的空函式（只有 gamepad 類型才有真正的按鍵狀態）——pk-live
+   的兩個席位在教室裡幾乎都會是鍵盤（KB1/KB2），現有的共用輸入層
+   沒有辦法讓「每個席位各自」偵測鍵盤按鍵，這是本關卡在架構調查
+   階段發現的硬限制。解法：不去擴充 core/input.js 這個共用底層
+   （會影響其他關卡，風險過高），而是把單人版原本「按 B 鍵開關噴藥」
+   這個機制簡化掉——單人版裡這顆開關本來就只是「省藥水」的策略性
+   加分技巧（不噴的時候飛過已噴完的格子可以省藥水），不是核心得分
+   機制；pk-live 版直接把它改成「條件滿足就自動噴」（高度<3m 且
+   藥水>0 且不在補給站範圍內），三個閘門原封不動保留，只拿掉
+   sprayOn 這個開關閘門本身。這個簡化完全繞開了鍵盤按鍵偵測的限制，
+   而不是去發明新的偵測手段，符合「不修共用底層」的原則。
+
+   物理／AI：C1 家族（core/systems/yaw-drone.js 的 YawDrone），沿
+   goalkeeper-pk 已驗證的慣例：yaw=0 機頭朝 +Z，同步 mesh 時要
+   mesh.rotation.y=yaw+Math.PI。單人版 x-agri.html 沒有 AI 角色
+   （純玩家自己操控），這裡新寫一個「找最近未認領格子」的搶地盤 AI，
+   沿用 goalkeeper-pk 已驗證的 aiMoveWorld()（不是 cargo-pk/chase-pk
+   那個給 core/physics.js 的 Drone 用的 droneSteerToward()——那是
+   C2 家族專用，兩個物理家族的機頭慣例相反，不能混用）。AI 也會做
+   簡單的資源管理（電量/藥水低於門檻就自動飛去最近的補給站回充，
+   帶遲滯避免來回抖動）。
+
+   資源系統／補給站的公平性：農田只有 8×5，兩個玩家分別從對角線
+   兩端出發（跟 goalkeeper-pk 兩個角色分列球門兩端同一設計精神），
+   為了不讓其中一人天生比較靠近補給站，改設「兩座補給站」，分別放在
+   另外兩個對角（NW／SE），兩座都對兩位玩家開放使用，出生點＋補給站
+   整體呈 180° 點對稱（把 P1 出生點跟補給站座標同時做 (x,z)→(-x,-z)
+   映射，會剛好對應到 P2 的出生點跟另一座補給站），確保雙方到最近
+   補給站的距離公平，不像單人版那樣只用一座在西南角（單人版只有一個
+   玩家，沒有公平性問題，PK 版兩個玩家必須重新設計這點）。
+
+   單一玩家電量歸零時，不像單人版直接結束任務（那樣會讓對戰因為
+   其中一人資源管理不佳而提早結束，對另一人不公平）——這裡改成
+   「該玩家停飛」（凍結，不再接受輸入／AI 控制，直到比賽時間結束），
+   比賽本身仍會持續到時間到或 40 格全部有主為止。
+
+   相機：沿用 goalkeeper-pk 已驗證的 C1 家族分割鏡頭公式
+   （原始 yaw、-sinθ,-cosθ 偏移，不需要 CameraRig 那種 yaw+π 補償
+   轉接，因為這裡自己控制 updatePaneCam()），只是農田比守門那個
+   6×3 封閉小房間大很多，把偏移距離放大到接近 CAMERA_SPEC.follow
+   凍結值的量級（5.5/2.6，不直接吃 CAMERA_SPEC，因為規格凍結只
+   套用在共用 CameraRig 身上，這裡是關卡自己的分割鏡頭）。交付前
+   仍照專案教訓用 __ndDebug 對相機世界座標做數學驗證，並用至少
+   3-5 秒的等待時間讓 lerp 收斂（cargo-pk 已踩過一次「等太短誤判
+   公式錯誤」的坑，這次直接用長等待時間，不重蹈覆轍）。
+   ============================================================ */
+
+const ACT='agri-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const PLABEL=['P1','P2'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 場地常數（8×5 農田，沿單人版 x-agri.html 原值一字不改：格數、
+   噴藥高度上限、樹木/電線桿尺寸、資源耗損/回充速率都是已驗證數值） ── */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:16,PITCHMAX:20,YAWMAX:2.6,
+  DRAG_PER_SEC:Math.pow(0.88,60),WBOUNCE:0.4,FBOUNCE:0.15};
+const COLS=8, ROWS=5, CELL_W=1.0, CELL_D=1.0;
+const FARM_W=COLS*CELL_W, FARM_D=ROWS*CELL_D, TOTAL_CELLS=COLS*ROWS;
+const HW=FARM_W/2, HD=FARM_D/2;
+const MAX_SPRAY_H=3.0;
+const TREE_R=0.22, TREE_H=3.2, POLE_R=0.08, POLE_H=5.0;
+const BOUNDS={minX:-(HW+2),maxX:(HW+2),minY:0.12,maxY:8,minZ:-(HD+2),maxZ:(HD+2),BR:0};
+/* 純數值難度（沿單人版：農田本身不變，障礙物漸增，維持單軸三選一） */
+const DIFF_CFG={
+  easy:{label:'🌾 初級',time:120,sprayR:1.0, wind:0,   obstacles:'none' },
+  med: {label:'⚡ 中級',time:120,sprayR:0.85,wind:0.8, obstacles:'trees'},
+  hard:{label:'💀 高級',time:100,sprayR:0.70,wind:1.8, obstacles:'all'  },
+};
+const TREE_POSITIONS=[[1.5,0.5],[-2.5,-1.0],[3.0,1.5],[-1.0,1.5]];
+const POLE_POSITIONS=[[-2.0,0.0],[2.0,0.0]];
+const BAT_DRAIN=0.55, LIQ_DRAIN=9.0, REFILL_RATE=45;
+
+/* 兩座補給站（NW／SE 對角，跟兩位玩家的出生點成 180° 點對稱，見檔頭
+   決策說明——兩座都對雙方開放，不是各自專屬） */
+const BASES=[new THREE.Vector3(-HW-1.4,0, HD+1.4), new THREE.Vector3( HW+1.4,0,-HD-1.4)];
+function nearestBase(pos){
+  const d0=pos.distanceTo(BASES[0]), d1=pos.distanceTo(BASES[1]);
+  return d0<=d1?BASES[0]:BASES[1];
+}
+function atAnyBase(pos){ return pos.distanceTo(BASES[0])<1.4||pos.distanceTo(BASES[1])<1.4; }
+
+/* 兩位玩家對角出生（P1 西南、P2 東北，跟守門/前鋒分列同一精神） */
+const PLAYER_SPAWNS=[new THREE.Vector3(-HW+0.5,1.0,-HD+0.5), new THREE.Vector3(HW-0.5,1.0,HD-0.5)];
+const SPAWN_YAW=[0,Math.PI];
+
+const AI_SPD={easy:2.0,med:3.2,hard:4.5};
+const AI_LOW=20, AI_HIGH=85; // 資源管理遲滯門檻（低於 LOW 觸發返航，高於 HIGH 才解除）
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const wind=new WindSystem();
+
+/* ── 場地（沿單人版：深綠夜色霧＋泥土地面＋8×5 農田格，共用同一份，
+   不像 cargo-pk 那樣切兩半） ── */
+engine.scene.background=new THREE.Color(0x0d1f0d);
+engine.scene.fog=new THREE.FogExp2(0x0a180a,0.02);
+const sun=new THREE.DirectionalLight(0xfff5cc,1.1);
+sun.position.set(6,12,4); sun.castShadow=true; engine.scene.add(sun);
+engine.scene.add(new THREE.AmbientLight(0x143214,4));
+const fill=new THREE.DirectionalLight(0x88ccff,.35); fill.position.set(-4,5,-3); engine.scene.add(fill);
+
+let cells=[], obstacles=[];
+function buildGround(){
+  const gnd=new THREE.Mesh(new THREE.PlaneGeometry(40,40),
+    new THREE.MeshStandardMaterial({color:0x3d2a1a,roughness:.95}));
+  gnd.rotation.x=-Math.PI/2; gnd.position.y=-.01; engine.scene.add(gnd);
+  const soil=new THREE.Mesh(new THREE.PlaneGeometry(FARM_W+.3,FARM_D+.3),
+    new THREE.MeshStandardMaterial({color:0x5c3d1e,roughness:.9}));
+  soil.rotation.x=-Math.PI/2; soil.position.y=.001; engine.scene.add(soil);
+}
+function buildCells(){
+  const cellGeo=new THREE.BoxGeometry(CELL_W-.06,.08,CELL_D-.06);
+  for(let c=0;c<COLS;c++)for(let r=0;r<ROWS;r++){
+    const cx=-HW+(c+.5)*CELL_W, cz=-HD+(r+.5)*CELL_D;
+    const mat=new THREE.MeshStandardMaterial({color:0x1a4a1a,roughness:.7,
+      emissive:0x0a200a,emissiveIntensity:.2});
+    const mesh=new THREE.Mesh(cellGeo,mat);
+    mesh.position.set(cx,.04,cz); engine.scene.add(mesh);
+    cells.push({c,r,x:cx,z:cz,owner:null,mesh,mat});
+  }
+  const lm=new THREE.LineBasicMaterial({color:0x2d5a2d,transparent:true,opacity:.4});
+  for(let c=0;c<=COLS;c++){const x=-HW+c*CELL_W;
+    const pts=[new THREE.Vector3(x,.005,-HD),new THREE.Vector3(x,.005,HD)];
+    engine.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lm));}
+  for(let r=0;r<=ROWS;r++){const z=-HD+r*CELL_D;
+    const pts=[new THREE.Vector3(-HW,.005,z),new THREE.Vector3(HW,.005,z)];
+    engine.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lm));}
+  const borderM=new THREE.MeshStandardMaterial({color:0xcc8833,roughness:.8});
+  const postG=new THREE.CylinderGeometry(.04,.04,.5,6);
+  [[-HW,-HD],[HW,-HD],[-HW,HD],[HW,HD]].forEach(([x,z])=>{
+    const p=new THREE.Mesh(postG,borderM); p.position.set(x,.25,z); engine.scene.add(p);
+  });
+}
+function addTree(x,z){
+  const grp=new THREE.Group();
+  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.09,.12,TREE_H,8),
+    new THREE.MeshStandardMaterial({color:0x5c3510,roughness:.9}));
+  trunk.position.y=TREE_H/2; grp.add(trunk);
+  [[0,TREE_H-.2,.55],[0,TREE_H+.4,.45],[0,TREE_H+.9,.35]].forEach(([dx,dy,r])=>{
+    const s=new THREE.Mesh(new THREE.SphereGeometry(r,10,8),
+      new THREE.MeshStandardMaterial({color:0x1e6b1e,roughness:.8,emissive:0x0a2a0a,emissiveIntensity:.3}));
+    s.position.set(dx,dy,0); grp.add(s);
+  });
+  grp.position.set(x,0,z); engine.scene.add(grp);
+  obstacles.push({type:'tree',pos:new THREE.Vector3(x,0,z),r:TREE_R,h:TREE_H,mesh:grp});
+}
+function addPole(x,z){
+  const grp=new THREE.Group();
+  const poleMat=new THREE.MeshStandardMaterial({color:0x8888aa,roughness:.5,metalness:.6});
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.04,.05,POLE_H,6),poleMat);
+  pole.position.y=POLE_H/2; grp.add(pole);
+  const bar=new THREE.Mesh(new THREE.BoxGeometry(1.2,.06,.06),poleMat);
+  bar.position.y=POLE_H-.25; grp.add(bar);
+  [-0.5,0.5].forEach(bx=>{
+    const ins=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,.12,6),
+      new THREE.MeshStandardMaterial({color:0xcc4444}));
+    ins.position.set(bx,POLE_H-.22,0); grp.add(ins);
+  });
+  grp.position.set(x,0,z); engine.scene.add(grp);
+  obstacles.push({type:'pole',pos:new THREE.Vector3(x,0,z),r:POLE_R,h:POLE_H,mesh:grp});
+}
+function buildBases(){
+  const baseMat=new THREE.MeshStandardMaterial({color:0x88ff44,emissive:0x44aa00,emissiveIntensity:.8,roughness:.4});
+  BASES.forEach(b=>{
+    const basePad=new THREE.Mesh(new THREE.CylinderGeometry(.55,.55,.06,16),baseMat);
+    basePad.position.set(b.x,.03,b.z); engine.scene.add(basePad);
+    const baseLight=new THREE.PointLight(0x88ff44,.8,1.8);
+    baseLight.position.set(b.x,.3,b.z); engine.scene.add(baseLight);
+  });
+}
+function clearObstacles(){ obstacles.forEach(o=>engine.scene.remove(o.mesh)); obstacles=[]; }
+buildGround(); buildCells(); buildBases();
+
+/* ── 噴藥視覺：兩座圓盤（各自玩家色調）＋兩組噴灑粒子物件池（各自
+   一份，物件池原則沿單人版，開場只建一次，不在迴圈內 new Mesh） ── */
+const sprayDiscs=[0,1].map(i=>{
+  const discGeo=new THREE.CircleGeometry(1,32);
+  const discMat=new THREE.MeshBasicMaterial({color:TINTS[i],transparent:true,opacity:.3,side:THREE.DoubleSide});
+  const m=new THREE.Mesh(discGeo,discMat);
+  m.rotation.x=-Math.PI/2; m.position.y=.015; m.visible=false;
+  engine.scene.add(m); return m;
+});
+const SP_MAX=60;
+const spParts=[[],[]], spGeos=[null,null], spMeshes=[null,null];
+function initSprayParticles(i){
+  spParts[i]=[];
+  for(let k=0;k<SP_MAX;k++)spParts[i].push({alive:false,x:0,y:0,z:0,vx:0,vy:0,vz:0,life:0});
+  const geo=new THREE.BufferGeometry();
+  const pos=new Float32Array(SP_MAX*3).fill(1e5);
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color:TINTS[i],size:.055,transparent:true,opacity:.75,depthWrite:false,sizeAttenuation:true});
+  const mesh=new THREE.Points(geo,mat);
+  // [FIX，沿單人版教訓] 位置緩衝區起始值全部填 1e5（代表隱藏在很遠處），
+  // 但 Three.js 只在第一次視錐剔除檢查時計算一次包圍球，之後就算每幀真的
+  // 把座標寫回 position 陣列，包圍球本身不會自動更新，會被鏡頭視錐剔除
+  // 誤判成「不在畫面內」而跳過繪製——只有 60 個點的小物件，直接關閉
+  // frustumCulled 即可，成本可忽略。
+  mesh.frustumCulled=false;
+  engine.scene.add(mesh);
+  spGeos[i]=geo; spMeshes[i]=mesh;
+}
+initSprayParticles(0); initSprayParticles(1);
+function tickSprayParticles(i,dt,spraying,pos,effR){
+  const geo=spGeos[i]; if(!geo)return;
+  if(spraying){
+    for(let s=0;s<5;s++){
+      const p=spParts[i].find(x=>!x.alive); if(!p)break;
+      const angle=Math.random()*Math.PI*2, r=Math.random()*effR*.85;
+      p.alive=true; p.x=pos.x+Math.cos(angle)*r; p.y=pos.y-.05; p.z=pos.z+Math.sin(angle)*r;
+      p.vx=(Math.random()-.5)*.4+wind.vec.x*.15; p.vy=-2-Math.random()*2; p.vz=(Math.random()-.5)*.4+wind.vec.z*.15;
+      p.life=.28+Math.random()*.3;
+    }
+  }
+  const buf=geo.attributes.position.array;
+  for(let k=0;k<SP_MAX;k++){
+    const p=spParts[i][k];
+    if(p.alive){p.life-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.z+=p.vz*dt;if(p.life<=0||p.y<0)p.alive=false;}
+    buf[k*3]=p.alive?p.x:1e5; buf[k*3+1]=p.alive?p.y:0; buf[k*3+2]=p.alive?p.z:1e5;
+  }
+  geo.attributes.position.needsUpdate=true;
+}
+
+/* ── 兩台真機體（都是 C1 家族 YawDrone；機體樣式改用可染色的
+   trainer-orb——單人版固定用「農噴機」agri-sprayer，但那個造型的
+   建構函式沒有吃 tc/color 參數（草綠色寫死），PK 版需要清楚的隊色
+   分隊識別，沿用 cargo-pk 的做法：捨棄情境造型、改用泛用可染色機體，
+   兩者都是同一套 buildDroneStyle() 正規化輸出，機頭仍統一是 -Z，
+   YawDrone 這條物理線需要的 yaw+π 補償跟造型無關，一樣適用） ── */
+const drones=[0,1].map(i=>new YawDrone({spawn:PLAYER_SPAWNS[i].clone(),yaw:SPAWN_YAW[i],bounds:BOUNDS,phys:PHYS}));
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('trainer-orb',{tint:TINTS[i],scale:1});
+  m.castShadow=true; engine.scene.add(m); return m;
+});
+
+/* ── 分割畫面：C1 家族，沿用 goalkeeper-pk 已驗證的原始 yaw、
+   -sinθ,-cosθ 公式（不用 CameraRig，關卡自己控制分割鏡頭），只是
+   把偏移距離放大成適合開放農田的量級（見檔頭決策說明）。仍會用
+   __ndDebug 獨立驗算一次。 ── */
+const cams=[new THREE.PerspectiveCamera(62,1,0.05,80),new THREE.PerspectiveCamera(62,1,0.05,80)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x-sy*5.5,y+2.6,z-cy*5.5),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 賽局狀態：P[0]/P[1] 各自獨立的資源／狀態，共用同一份 40 格農田
+   （cell.owner 決定歸屬，不是各自一份） ── */
+let pDiff='easy', curCfg=DIFF_CFG.easy;
+let timer=120, totalTime=120, playing=false, finished=false;
+function freshP(){ return {battery:100,liquid:100,outOfPower:false,aiReturning:false,collisions:0,lastCollisionTime:-999}; }
+const P=[freshP(),freshP()];
+const ownCount=[0,0];
+
+function buildScene(diff){
+  clearObstacles();
+  curCfg=DIFF_CFG[diff];
+  if(curCfg.obstacles==='trees'||curCfg.obstacles==='all')TREE_POSITIONS.forEach(([x,z])=>addTree(x,z));
+  if(curCfg.obstacles==='all')POLE_POSITIONS.forEach(([x,z])=>addPole(x,z));
+  cells.forEach(c=>{c.owner=null;c.mat.color.setHex(0x1a4a1a);c.mat.emissive.setHex(0x0a200a);c.mat.emissiveIntensity=.2;});
+  ownCount[0]=0; ownCount[1]=0;
+  wind.randomize(curCfg.wind);
+}
+
+/* ── 障礙物碰撞（沿單人版「推開＋垂直彈升」演算法，per-player 各自
+   獨立冷卻計時，不共用） ── */
+function checkObstacleCollisions(i,dt){
+  const d=drones[i], p=P[i];
+  const now=performance.now()/1000;
+  if(now-p.lastCollisionTime<1.2)return;
+  for(const ob of obstacles){
+    const dx=d.pos.x-ob.pos.x, dz=d.pos.z-ob.pos.z;
+    const dist2d=Math.sqrt(dx*dx+dz*dz);
+    if(dist2d<(ob.r+.12)&&d.pos.y<ob.h){
+      p.collisions++; p.lastCollisionTime=now;
+      const pushDir=new THREE.Vector3(dx,0,dz).normalize().multiplyScalar(.6);
+      d.vel.addScaledVector(pushDir,3); d.vel.y+=1.5;
+      toast(`💥 ${PLABEL[i]} 碰撞！`); sfx.play('fail');
+      ob.mesh.traverse(m=>{if(m.isMesh&&m.material.color)m.material.color.setHex(0xff3300);});
+      setTimeout(()=>ob.mesh.traverse(m=>{
+        if(m.isMesh&&m.material.color&&ob.type==='tree')m.material.color.setHex(0x1e6b1e);
+        if(m.isMesh&&m.material.color&&ob.type==='pole')m.material.color.setHex(0x8888aa);
+      }),400);
+      break;
+    }
+  }
+}
+
+/* ── 噴藥判定（本關特有：距離內即時觸發＋高度/藥水/在補給站三重閘門，
+   拿掉單人版原本的第四道「sprayOn 開關」閘門——見檔頭決策說明。
+   同田搶噴：cell.owner 一旦被任一方認領就永久鎖定，不會被另一方蓋掉，
+   兩人同幀搶到同一格時以 i=0（P1）優先，屬於可接受的簡化） ── */
+function checkSpray(i,dt){
+  const d=drones[i], p=P[i];
+  if(p.outOfPower)return;
+  const atBase=atAnyBase(d.pos);
+  const spraying=d.pos.y<MAX_SPRAY_H&&p.liquid>0&&!atBase;
+  if(spraying){
+    const effR=curCfg.sprayR*(1-(d.pos.y/MAX_SPRAY_H)*.35);
+    sprayDiscs[i].visible=true;
+    sprayDiscs[i].scale.set(effR,effR,effR);
+    sprayDiscs[i].position.x=d.pos.x; sprayDiscs[i].position.z=d.pos.z;
+    tickSprayParticles(i,dt,true,d.pos,effR);
+    let claimed=false;
+    cells.forEach(cell=>{
+      if(cell.owner!=null)return;
+      const dx=d.pos.x-cell.x, dz=d.pos.z-cell.z;
+      if(Math.sqrt(dx*dx+dz*dz)<curCfg.sprayR){
+        cell.owner=i; ownCount[i]++; claimed=true;
+        cell.mat.color.setHex(TINTS[i]); cell.mat.emissive.setHex(TINTS[i]); cell.mat.emissiveIntensity=.55;
+      }
+    });
+    if(claimed)sfx.play('ring');
+  }else{
+    sprayDiscs[i].visible=false;
+    tickSprayParticles(i,dt,false,d.pos,curCfg.sprayR);
+  }
+  if(ownCount[0]+ownCount[1]>=TOTAL_CELLS)finishGame();
+}
+
+/* ── 資源系統（電量持續耗、藥水只在噴藥時耗，任一補給站範圍內都能
+   回充兩者；電量歸零＝該玩家停飛，不結束整場比賽——見檔頭決策說明） ── */
+function tickResources(i,dt){
+  const d=drones[i], p=P[i];
+  if(p.outOfPower)return;
+  p.battery=Math.max(0,p.battery-BAT_DRAIN*dt);
+  const atBase=atAnyBase(d.pos);
+  if(d.pos.y<MAX_SPRAY_H&&p.liquid>0&&!atBase)p.liquid=Math.max(0,p.liquid-LIQ_DRAIN*dt);
+  if(atBase){
+    p.liquid=Math.min(100,p.liquid+REFILL_RATE*dt);
+    p.battery=Math.min(100,p.battery+REFILL_RATE*dt);
+  }
+  if(p.battery<=0&&!p.outOfPower){
+    p.outOfPower=true;
+    toast(`⚠️ ${PLABEL[i]} 電量耗盡，已停飛！`); sfx.play('warn');
+  }
+}
+
+/* ── AI 席位：搶地盤噴藥（單人版沒有這個角色，新寫的最近未認領格子
+   導航＋資源管理狀態機，走 aiMoveWorld——C1 家族，不是 cargo-pk/
+   chase-pk 給 core/physics.js Drone 用的 droneSteerToward） ── */
+function nearestUnclaimedCell(i){
+  const d=drones[i]; let best=null, bestD2=Infinity;
+  cells.forEach(cell=>{
+    if(cell.owner!=null)return;
+    const dx=cell.x-d.pos.x, dz=cell.z-d.pos.z, d2=dx*dx+dz*dz;
+    if(d2<bestD2){bestD2=d2;best=cell;}
+  });
+  return best;
+}
+function updateAgriAI(i,dt,diff){
+  const d=drones[i], p=P[i];
+  if(p.outOfPower)return;
+  const spd=AI_SPD[diff]??AI_SPD.med;
+  if(p.aiReturning){
+    if(p.liquid>AI_HIGH&&p.battery>AI_HIGH)p.aiReturning=false;
+  }else if(p.liquid<AI_LOW||p.battery<AI_LOW){
+    p.aiReturning=true;
+  }
+  if(p.aiReturning){
+    const b=nearestBase(d.pos);
+    aiMoveWorld(d,new THREE.Vector3(b.x,1.0,b.z),dt,spd,BOUNDS,PHYS);
+  }else{
+    const cell=nearestUnclaimedCell(i);
+    const tgt=cell?new THREE.Vector3(cell.x,1.0,cell.z):PLAYER_SPAWNS[i];
+    aiMoveWorld(d,tgt,dt,spd,BOUNDS,PHYS);
+  }
+}
+
+/* ── Intro／暫停／結算 ── */
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showModal({title,html,buttons}){
+  closeModal();
+  const wrap=document.createElement('div');
+  wrap.className='nd-modal';
+  wrap.style.cssText='position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(4,8,4,.55);';
+  wrap.innerHTML=`<div style="background:rgba(10,20,10,.95);border:1px solid rgba(74,222,128,.4);
+    border-radius:14px;padding:22px 26px;max-width:520px;color:#e8f0d8;font-size:13px;line-height:1.6;">
+    <h2 style="margin:0 0 10px;font-size:18px;color:#4ade80;">${title}</h2>
+    ${html}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;"></div></div>`;
+  const btnWrap=wrap.querySelector('div > div:last-child');
+  buttons.forEach(b=>{
+    const el=document.createElement('button');
+    el.id=b.id; el.textContent=b.label;
+    el.style.cssText='background:rgba(74,222,128,.15);border:1px solid rgba(74,222,128,.5);color:#4ade80;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;font-family:inherit;';
+    el.onclick=b.onClick;
+    btnWrap.appendChild(el);
+  });
+  document.body.appendChild(wrap);
+}
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+
+function showIntro(){
+  engine.simStarted=false; playing=false;
+  showModal({title:'情境體驗 · 農噴對戰',
+    html:`<p>P1／P2 開農噴機搶同一片 8×5 農田，飛低於 3m 且藥水充足即
+      <strong>自動噴藥</strong>（拿掉單人版的手動開關），先噴到的格子
+      永久算誰的，時間到或 40 格全部有主，比誰佔的格子多！</p>
+      <p>🔋 電量／💧 藥水任一座補給站都能回充；電量歸零該玩家停飛
+      （比賽不會因此結束）。⚠️ 撞到樹木/電線桿會被推開彈開。</p>
+      <p style="font-size:11px;color:#a8c9a8">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-easy',label:'🌾 初級（無障礙・120秒・半徑1.0m）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'⚡ 中級（4棵樹+微風・120秒・半徑0.85m）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'💀 高級（樹+電線桿+風・100秒・半徑0.70m）',onClick:()=>startGame('hard')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+}
+function startGame(diff){
+  pDiff=diff;
+  timer=DIFF_CFG[diff].time; totalTime=timer;
+  P[0]=freshP(); P[1]=freshP();
+  drones.forEach((d,i)=>d.reset(PLAYER_SPAWNS[i].clone(),SPAWN_YAW[i]));
+  buildScene(diff);
+  closeModal(); sfx.play('click');
+  pkc.apply(drones,seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始農噴對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else closeModal();
+}
+function showPauseModal(){
+  showModal({title:'暫停',
+    html:`<p>難度：${DIFF_CFG[pDiff].label}　剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>
+      <p>P1 佔 ${ownCount[0]} 格　P2 佔 ${ownCount[1]} 格　（共 ${TOTAL_CELLS} 格）</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const winner=ownCount[0]>ownCount[1]?'P1':ownCount[1]>ownCount[0]?'P2':'tie';
+  progress.record(ACT,{completed:true,score:Math.max(ownCount[0],ownCount[1]),
+    ...pkc.recordFields(),metrics:{p1Cells:ownCount[0],p2Cells:ownCount[1],totalCells:TOTAL_CELLS,winner,humanCount,diff:pDiff}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner} 獲勝！`;
+  showModal({title:'挑戰結束 · '+resText,
+    html:`<p>P1：<b>${ownCount[0]} 格</b>（碰撞 ${P[0].collisions} 次）<br>
+      P2：<b>${ownCount[1]} 格</b>（碰撞 ${P[1].collisions} 次）<br>
+      共覆蓋 ${ownCount[0]+ownCount[1]}/${TOTAL_CELLS} 格</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro()},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    wind.update(dt);
+    [0,1].forEach(i=>{
+      const d=drones[i], p=P[i];
+      if(!p.outOfPower){
+        if(seatList[i].controller?.type==='ai'){
+          updateAgriAI(i,dt,seatList[i].controller.diff||'med');
+        }else{
+          const ip=input.playerFor(seatList[i].controller);
+          d.step(dt,ip);
+        }
+        if(wind.enabled)d.vel.addScaledVector(wind.vec,dt*4.0);
+      }
+      checkObstacleCollisions(i,dt);
+      checkSpray(i,dt);
+      tickResources(i,dt);
+    });
+
+    timer-=dt;
+    if(timer<=0&&!finished){timer=0;finishGame();}
+  }
+
+  drones.forEach((d,i)=>{
+    meshes[i].position.copy(d.pos);
+    meshes[i].rotation.y=d.yaw+Math.PI; // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  });
+  cams.forEach((cam,i)=>updatePaneCam(cam,drones[i]));
+
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="p1">P1 <b>${ownCount[0]}</b> 🔋${Math.round(P[0].battery)}%💧${Math.round(P[0].liquid)}%</span>`+
+    `<span>${pkc.topTag()}${DIFF_CFG[pDiff].label}　覆蓋${ownCount[0]+ownCount[1]}/${TOTAL_CELLS}　剩${Math.max(0,Math.ceil(timer))}秒</span>`+
+    `<span class="p2">P2 <b>${ownCount[1]}</b> 🔋${Math.round(P[1].battery)}%💧${Math.round(P[1].liquid)}%</span>`;
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

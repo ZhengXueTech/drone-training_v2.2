@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🏆</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>無人機足球 擬真賽規版｜newdrone SOCCER-REAL v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#040810;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  /* GOAL / 判罰 / 起飛倒數 疊層 */
+  #goal-ov{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    flex-direction:column;gap:8px;pointer-events:none;z-index:35;}
+  #goal-word{font-size:64px;font-weight:900;letter-spacing:6px;animation:gpop .5s ease-out;}
+  #goal-sub{font-size:15px;color:#cfefff;}
+  @keyframes gpop{0%{transform:scale(.3);opacity:0}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+  #launch-ov{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    flex-direction:column;gap:6px;pointer-events:none;z-index:34;}
+  #launch-num{font-size:88px;font-weight:900;color:#ffd75e;
+    text-shadow:0 0 40px #ffd75e88;animation:gpop .4s ease-out;}
+  #launch-sub{font-size:14px;color:#9fc2dd;}
+  #foul-ov{position:fixed;top:16%;left:50%;transform:translateX(-50%);display:none;
+    padding:10px 22px;border:2px solid #ffb020;border-radius:10px;background:#20140099;
+    color:#ffd75e;font-size:16px;text-align:center;pointer-events:none;z-index:36;
+    animation:gpop .4s ease-out;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE SOCCER-REAL v1.0</div>
+<div id="goal-ov"><div id="goal-word">GOAL!</div><div id="goal-sub"></div></div>
+<div id="launch-ov"><div id="launch-num">3</div><div id="launch-sub">起飛信號前離地＝搶飛，判對方點球！</div></div>
+<div id="foul-ov"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { FIELD, TA, SOCCER_SEATS, SoccerDrone, buildSoccerField,
+         resolveCollisions, checkGoal, SOCCER_FEEL } from '../core/systems/soccer.js';
+import { updateSoccerAI, AI_DIFF } from '../core/systems/ai.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   soccer-real — 擬真賽規版（FAI F9A-B／教育部 115 年賽規）
+   與 soccer-match.html 的差異（後者維持練習手感，本關重「規則教育」）：
+   1. 判定固定「正式 FAI」（整顆球完全穿過才算進球，無寬鬆檔）
+   2. 每局開賽有「起飛信號」倒數——倒數期間離地＝搶飛（FAI B.8.2）
+   3. 玩家可選角色：前鋒（可得分）或 守門後衛（FAI B.8.4：非前鋒
+      不可進環/停留自家球門環防守，違者判對方點球）
+   4. 得分後全隊退回己方半場才可再進攻，違者判點球（教育部規）
+   5. 判罰簡化：正式賽的「點球」是前鋒單獨罰球，本關簡化為
+      「直接判給對方 1 分」（intro 有註明差異）；同一局累積 3 次
+      違規＝黃牌，該局停飛（兩黃一紅的簡化教學版）
+   6. 電池：每局獨立耗電，局間維修時間換電池＋量電壓（FAI B.1.2）；
+      低電量推力衰減（不墜機——教學不懲罰過頭）
+   7. 3 局 3 戰 2 勝平手時：黃金進球延長賽（先進球者勝）
+   AI 不會犯規（守規矩的示範隊友/對手），judge 系統只盯玩家。
+   ============================================================ */
+const LEVEL=getLevel('soccer-real');
+progress.migrateLegacy();
+const F=FIELD;
+
+/* ── 引擎與系統 ── */
+const engine=new Engine(document.getElementById('c'),{lowQuality:innerWidth<600});
+engine.camera.fov=68; engine.camera.near=0.04; engine.camera.updateProjectionMatrix();
+engine.camera.position.set(0,2.5,-5.5); engine.camera.lookAt(0,1.5,0);
+const input=new InputManager();
+const hud=new HUD(LEVEL.hud);
+const ui=new UI(input);
+const goals=buildSoccerField(engine.scene);
+
+/* ── 六席無人機 ── */
+const drones=SOCCER_SEATS.map((cfg,i)=>{
+  const d=new SoccerDrone(i);
+  d.mesh=buildDroneStyle('soccer-cage',{tc:cfg.tc,sc:cfg.sc,isPlayer:i===0});
+  d.mesh.position.copy(d.pos);
+  engine.scene.add(d.mesh);
+  return d;
+});
+const player=drones[0];
+
+/* ── 賽局狀態 ── */
+let phase='intro'; // intro|launch|playing|set_break|match_end|golden_intro
+let golden=false;                       // 黃金進球延長賽中
+let curSet=1, setTimer=F.SET_DUR, launchT=0, falseStarted=false;
+let scores={A:0,B:0}, setsWon={A:0,B:0}, setGoals={A:0,B:0}, setLog=[];
+let cageSpin=false, crouch=false, returnWarned=false;
+let diff=progress.setting('soccerDiff','med');
+let role=progress.setting('soccerRealRole','striker');  // striker|defender
+/* 判罰系統 */
+let setFouls=0, totalFouls=0, yellow=false, ringDwell=0, ringGrace=0;
+let attackT=0, lingerT=0, mustFouled=false, mustWarned=false;
+/* 電池（每局一顆；FAI 每局換電池） */
+let batt=100, battWarned=false;
+const SF_OPTS=[
+  {code:'slow',  label:'慢速有刷',   v:0.55,noHold:false},
+  {code:'std',   label:'標準',       v:1.0, noHold:false},
+  {code:'race',  label:'競速無刷',   v:1.8, noHold:false},
+  {code:'expert',label:'專家無定高', v:1.8, noHold:true},
+];
+let sfIdx=Math.max(0,SF_OPTS.findIndex(o=>o.code===progress.setting('soccerSFCode','std')));
+let SF=SF_OPTS[sfIdx].v, noHold=SF_OPTS[sfIdx].noHold;
+const DIFF_LABEL={easy:'😊 簡單',med:'⚡ 中等',hard:'💀 困難'};
+const ROLE_LABEL={striker:'⚽ 前鋒（可得分）',defender:'🛡 守門後衛'};
+
+/* 角色套用：玩家選守門後衛時，把 A 隊 striker 職責交給 AI（席位2） */
+function applyRole(){
+  if(role==='defender'){ player.role='defender'; drones[2].role='striker'; }
+  else{ player.role='striker'; drones[2].role='defender'; }
+}
+
+/* ── 相機（沿 soccer-match 足球專屬參數） ── */
+const CAM_MODES=['tpv','fpv','tac','pilot'];
+const CAM_LABELS={tpv:'追蹤',fpv:'FPV',tac:'俯視',pilot:'飛手'};
+const PILOT_SIDES=['left','mid','right'];
+let camMode='tpv', pilotSide='right';
+const camTgt=new THREE.Vector3(), _v=new THREE.Vector3();
+function updateCam(){
+  const cam=engine.camera, {x,y,z}=player.pos;
+  const sy=Math.sin(player.yaw), cy=Math.cos(player.yaw);
+  if(camMode==='tpv'){
+    cam.position.lerp(_v.set(x-sy*1.9,y+.85,z-cy*1.9),.11);
+    camTgt.lerp(_v.set(x,y+.08,z),.11); cam.lookAt(camTgt);
+  }else if(camMode==='fpv'){
+    cam.position.set(x+sy*.08,y+.015,z+cy*.08);
+    cam.lookAt(x+sy*5,y,z+cy*5);
+  }else if(camMode==='tac'){
+    cam.position.lerp(_v.set(0,6,.01),.05); cam.lookAt(0,0,0);
+  }else{
+    let sx=pilotSide==='left'?-.55:pilotSide==='right'?.55:0;
+    const sz=pilotSide==='mid'?-F.HL-1.5:-F.HL-1.3;
+    cam.position.lerp(_v.set(sx,crouch?0.82:1.65,sz),.08);
+    cam.lookAt(0,crouch?1.0:1.5,0);
+  }
+}
+function cycleCam(){ camMode=CAM_MODES[(CAM_MODES.indexOf(camMode)+1)%CAM_MODES.length];
+  hud.toast('視角：'+CAM_LABELS[camMode],'ok'); syncModes(); }
+function cyclePilot(){ if(camMode!=='pilot')return;
+  pilotSide=PILOT_SIDES[(PILOT_SIDES.indexOf(pilotSide)+1)%PILOT_SIDES.length];
+  hud.toast('站位：'+({left:'← 左',mid:'正中',right:'右 →'})[pilotSide],'ok'); }
+function syncModes(){ hud.setModes(`擬真賽規･${player.gear===2?'二檔衝':'一檔穩'}`,CAM_LABELS[camMode]); }
+/* 2026-08-03 新增（使用者回饋「碰撞真實感」C 項：速度檔位）——沿 soccer-match.html */
+let _prevGpY=false;
+/* 2026-10-01 挑戰條件標示（足球沿用自己的「機速」選單與 G／Y 檔位，不另加挑戰按鈕）：
+   機速非「標準」或用過二檔 → 成績與左上模式框標示條件，跟其他關卡同一套欄位。 */
+let gear2Used=false;
+function soccerChallenge(){
+  const t=[]; const c=SF_OPTS[sfIdx].code;
+  if(c!=='std')t.push(SF_OPTS[sfIdx].label);
+  if(gear2Used||player.gear===2)t.push('二檔');
+  return t.join('・');
+}
+function soccerChallengeFields(){ const t=soccerChallenge(); return {challenge:t||'標準',challengeCode:`sf-${SF_OPTS[sfIdx].code}-g${(gear2Used||player.gear===2)?2:1}`}; }
+function toggleGear(){
+  player.gear=player.gear===2?1:2;
+  if(player.gear===2)gear2Used=true;
+  hud.setConditionTag(soccerChallenge()?'⚠ '+soccerChallenge():'');
+  hud.toast('檔位：'+(player.gear===2?'二檔（衝刺，碰撞較烈）':'一檔（穩，碰撞較溫和）'),'ok');
+  syncModes();
+}
+
+/* ── 鍵盤 ── */
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV')cyclePilot();
+  if(e.code==='KeyZ')crouch=true;
+  if(e.code==='KeyF'){cageSpin=!cageSpin;hud.toast('保護籠旋轉：'+(cageSpin?'開':'關'),'ok');}
+  if(e.code==='KeyG'&&phase==='playing')toggleGear();
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── 判罰（點球簡化＝對方直接得 1 分；FAI 正式賽為前鋒單獨罰球） ── */
+const foulEl=document.getElementById('foul-ov');
+let foulHideT=null;
+function foul(reason){
+  setFouls++; totalFouls++;
+  setGoals.B++; scores.B++;          // 玩家永遠是 A 隊 → 判罰＝B 隊得分
+  sfx.play('warn');
+  let extra='';
+  if(setFouls>=3&&!yellow){
+    yellow=true;
+    extra='<br>🟨 本局第 3 次違規＝黃牌，本局停飛！（AI 隊友繼續）';
+  }
+  foulEl.innerHTML=`⚖ 判罰：${reason}<br>→ 判對方點球（簡化＝紅隊 +1）${extra}`;
+  foulEl.style.display='block';
+  clearTimeout(foulHideT);
+  foulHideT=setTimeout(()=>foulEl.style.display='none',2800);
+  hud.setProgress(progressLine());
+}
+
+/* ── 賽制 ── */
+function triggerGoal(team){
+  if(phase!=='playing')return;
+  if(golden){ showMatchEnd(team); return; }   // 黃金進球：先進球者勝
+  scores[team]++; setGoals[team]++;
+  drones.forEach(d=>{if((d.team===TA?'A':'B')===team)d.mustReturn=true;});
+  mustFouled=false; mustWarned=false; attackT=0; lingerT=0;
+  const ov=document.getElementById('goal-ov'), wd=document.getElementById('goal-word');
+  wd.style.color=team==='A'?'#00eeff':'#ff4422';
+  wd.style.textShadow=`0 0 40px ${wd.style.color},0 0 80px ${wd.style.color}`;
+  document.getElementById('goal-sub').textContent=team==='A'?'🎉 我方（藍隊）得分！':'⚠ 紅隊得分！';
+  ov.style.display='flex';
+  sfx.play(team==='A'?'finish':'warn');
+  if(team==='A'){hud.toast('進球後全隊退回己方半場！違者判點球','warn');returnWarned=true;}
+  setTimeout(()=>ov.style.display='none',1600);
+}
+function endSet(){
+  phase='set_break'; sfx.play('warn');
+  setLog.push({A:setGoals.A,B:setGoals.B});
+  if(setGoals.A>setGoals.B)setsWon.A++; else if(setGoals.B>setGoals.A)setsWon.B++;
+  if(setsWon.A>=2||setsWon.B>=2){showMatchEnd();return;}
+  if(curSet>=F.N_SETS){
+    if(setsWon.A===setsWon.B){showGoldenIntro();return;}
+    showMatchEnd();return;
+  }
+  const res=setGoals.A>setGoals.B?'✅ 藍隊贏得本局！':setGoals.B>setGoals.A?'❌ 紅隊贏得本局！':'🤝 本局平局';
+  ui.showModal({title:`第 ${curSet} 局結束`,
+    html:`<p style="text-align:center;font-size:26px">${setGoals.A} : ${setGoals.B}</p>
+      <p style="text-align:center">${res}</p>
+      <p style="text-align:center">局勝紀錄　藍 ${setsWon.A}｜紅 ${setsWon.B}${setFouls?`　本局判罰 ${setFouls} 次`:''}</p>
+      <hr><p>🔧 <b>局間維修時間</b>（正式賽 3 分鐘）：更換電池、檢修機體。</p>
+      <p>🔋 新電池電壓量測：<b style="color:#7CFC00">16.8V ✔</b>（FAI B.1.2：每局開始前得量電壓，不得超過 4S/17V）</p>`,
+    buttons:[{id:'b-next',label:`電池已更換，開始第 ${curSet+1} 局`,onClick:nextSet},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
+  ui.gpSetFocus(['b-next','b-back'],0);
+}
+function nextSet(){
+  curSet++; setGoals={A:0,B:0}; setTimer=F.SET_DUR;
+  setFouls=0; yellow=false; batt=100; battWarned=false;
+  ringDwell=0; attackT=0; lingerT=0; mustFouled=false; mustWarned=false;
+  drones.forEach(d=>{d.reset();d.mesh.position.copy(d.pos);});
+  applyRole();
+  ui.closeModal();
+  hud.setMission(`🏆 第 ${curSet} 局`);
+  startLaunch();
+}
+function showGoldenIntro(){
+  ui.showModal({title:'🤝 三局戰平——黃金進球延長賽',
+    html:`<p style="text-align:center">局勝　藍 ${setsWon.A}：${setsWon.B} 紅</p>
+      <p>正式賽平手時打點球或黃金進球分勝負。<br>本關採<b>黃金進球</b>：延長賽不限時，<b>任一隊先進球立刻獲勝！</b></p>
+      <p>🔋 換上最後一顆電池（16.8V ✔）</p>`,
+    buttons:[{id:'b-gold',label:'進入延長賽',onClick:()=>{
+      golden=true; setGoals={A:0,B:0}; setTimer=0;
+      setFouls=0; yellow=false; batt=100; battWarned=false;
+      ringDwell=0; attackT=0; lingerT=0; mustFouled=false; mustWarned=false;
+      drones.forEach(d=>{d.reset();d.mesh.position.copy(d.pos);});
+      applyRole(); ui.closeModal();
+      hud.setMission('⚡ 黃金進球延長賽'); startLaunch();
+    }},{id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
+  ui.gpSetFocus(['b-gold','b-back'],0);
+}
+function showMatchEnd(goldenWinner){
+  phase='match_end';
+  if(goldenWinner){ if(goldenWinner==='A')setsWon.A++; else setsWon.B++;
+    setLog.push({A:goldenWinner==='A'?1:0,B:goldenWinner==='B'?1:0}); }
+  const win=setsWon.A>setsWon.B, tie=setsWon.A===setsWon.B;
+  sfx.play(win?'finish':'fail');
+  progress.record('soccer-real',{completed:true,score:scores.A,
+    metrics:{goalsA:scores.A,goalsB:scores.B,setsA:setsWon.A,setsB:setsWon.B,
+      fouls:totalFouls,role,result:win?'win':tie?'tie':'lose',diff},...soccerChallengeFields()});
+  ui.showModal({title:win?'🏆 藍隊獲勝！':tie?'🤝 平局':'💔 紅隊獲勝',
+    html:`<p style="text-align:center">局勝　藍 ${setsWon.A}：${setsWon.B} 紅${goldenWinner?'（黃金進球）':''}</p>
+      <p style="text-align:center">${setLog.map((s,i)=>`第${i+1}局 ${s.A}:${s.B}`).join('　')}</p>
+      <p style="text-align:center">裁判判罰共 ${totalFouls} 次${totalFouls===0?'——零犯規，真正的運動家！🎖':''}</p>
+      <p style="text-align:center">成績已記錄（nd.progress.soccer-real）</p>`,
+    buttons:[
+      {id:'b-again',label:'再賽一場',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
+  ui.gpSetFocus(['b-again','b-back'],0);
+}
+
+/* ── 起飛信號（FAI B.8.2：信號前離地＝搶飛，判對方點球） ── */
+const launchOv=document.getElementById('launch-ov'), launchNum=document.getElementById('launch-num');
+function startLaunch(){
+  phase='launch'; launchT=3.99; falseStarted=false;
+  drones.forEach(d=>{d.pos.y=F.BR+.02;d.vel.set(0,0,0);d.mesh.position.copy(d.pos);});
+  launchOv.style.display='flex';
+  hud.toast('各就定位——等待起飛信號！','warn');
+}
+function updateLaunch(dt){
+  const p=input.player(0);
+  // 倒數期間玩家推油門離地 → 搶飛（每次倒數只判一次，判完仍繼續倒數）
+  player.step(dt,p,SF,noHold,SOCCER_FEEL[SF_OPTS[sfIdx].code]);
+  if(!falseStarted&&player.pos.y>F.BR+0.06){
+    falseStarted=true;
+    foul('搶飛——起飛信號前離地（FAI B.8.2）');
+  }
+  launchT-=dt;
+  const n=Math.ceil(launchT);
+  launchNum.textContent=n>0?n:'起飛！';
+  if(launchT<=0){
+    launchOv.style.display='none';
+    phase='playing';
+    hud.toast(golden?'黃金進球——先進球者勝！':'起飛！','ok');
+    sfx.play('click');
+  }
+}
+
+/* ── 裁判系統（只盯玩家；AI 是守規矩的示範機） ── */
+function updateReferee(dt){
+  // 規則 1：非前鋒不可進環/停留自家球門環防守（FAI B.8.4）
+  if(player.role!=='striker'){
+    if(ringGrace>0)ringGrace-=dt;
+    const ownGZ=-F.GZ;   // 玩家永遠 A 隊，自家環在 -GZ
+    const rr=Math.hypot(player.pos.x,player.pos.y-F.GY);
+    const inRing=rr<F.GO+F.BR&&Math.abs(player.pos.z-ownGZ)<0.30;
+    if(inRing&&ringGrace<=0){
+      ringDwell+=dt;
+      if(ringDwell>0.7){
+        foul('守門員進環／停留自家球門環防守（FAI B.8.4）');
+        ringDwell=0; ringGrace=3;
+      }
+    }else ringDwell=Math.max(0,ringDwell-dt*2);
+  }
+  // 規則 2：得分後退回己方半場前不得再進攻（教育部規）——
+  // 2026-07-26 使用者確認：正式賽規沒有時間限制，罰的是「歸位前進攻」
+  // 這個行為，不是回得慢。故只在 mustReturn 期間偵測「持續朝敵方球門
+  // 推進」（vel.z>0.6 累積滿 1 秒）才判罰；慢慢回防完全合法，
+  // 滯留 2 秒只給提醒字幕不扣分。
+  if(player.mustReturn&&player.pos.z>0.05){
+    lingerT+=dt;
+    if(lingerT>2&&!mustWarned){mustWarned=true;hud.toast('⚠ 記得退回己方半場——歸位前進攻會判點球','warn');}
+    // 進攻偵測用「本幀位移速率」而非瞬時 vel.z：headless/低幀率下連續兩幀
+    // 沒補進輸入時，drag 會把 vel 砍到門檻下造成累積/衰減交替歸零；
+    // (pos.z-prevZ)/dt 是這一幀實際前進速率，對幀率穩健（prevZ 由
+    // integrate 每幀開頭寫入，與 checkGoal 同一來源）
+    const fwdRate=(player.pos.z-player.prevZ)/Math.max(dt,1e-4);
+    if(fwdRate>0.35){
+      attackT+=dt;
+      if(attackT>1&&!mustFouled){mustFouled=true;foul('得分後未退回己方半場即再進攻（教育部規）');}
+    }else attackT=Math.max(0,attackT-dt);
+  }else{attackT=0;lingerT=0;}
+}
+
+/* ── Intro／暫停 ── */
+function showIntro(focusIdx=3){
+  engine.simStarted=false;
+  ui.showModal({title:'🏆 無人機足球 擬真賽規版',
+    html:`<p>依 <b>FAI F9A-B／教育部 115 年賽規</b>：3 局×3 分鐘、3 戰 2 勝、
+      平手打<b>黃金進球</b>；判定固定「整顆球完全穿過」正式標準。</p>
+      <p>⚖ 裁判盯著你：<b>搶飛</b>（起飛信號前離地）、<b>守門員進環防守</b>、
+      <b>得分後未退回半場即進攻</b>——都判對方點球（本關簡化為對方直接 +1，
+      正式賽是前鋒單獨罰球）；同局 3 次違規＝🟨 黃牌本局停飛。</p>
+      <p>🔋 每局一顆電池、局間維修換電池＋量電壓；低電量推力會衰減。</p>
+      <p>C 視角・V 站位・Z／手把十字↓ 蹲・F 保護籠旋轉・G／手把 RT 切換檔位</p>
+      <p style="text-align:center;color:#7aa3b8">🛸 碰撞不再永遠對稱彈開：衝擊夠猛時可能撞球定桿換位、門前甚至可能兩機
+      一起捲入球門；起降貼地偶爾會有訊號異常（搖桿暫時打折），都是真實無人機常見現象。</p>
+      <p style="text-align:center;color:#9fc3d8">⚙ 機速：慢速有刷／標準＝推就走、放就停；<b>競速無刷＝放開搖桿還會往前滑、轉向更靈敏，要提早收桿</b>；<b>專家無定高＝競速無刷＋沒有定高，放開油門會往下掉</b>。</p>
+      ${noHold?'<p style="text-align:center;color:#fbbf24">⚠ 專家無定高：放開油門會直接下墜，需自己抓住懸停油門量（約推住四成），AI 隊友/對手不受影響</p>':''}
+      ${role==='defender'?'<p style="color:#fbbf24">🛡 守門後衛：得分交給 AI 前鋒，你負責擋在環前防守——但不可進環！</p>':''}`,
+    buttons:[
+      {id:'b-role',label:'角色：'+ROLE_LABEL[role],onClick:()=>{
+        role=role==='striker'?'defender':'striker';
+        progress.setSetting('soccerRealRole',role); showIntro(0);}},
+      {id:'b-sf',label:'機速：'+SF_OPTS[sfIdx].label,onClick:()=>{
+        sfIdx=(sfIdx+1)%SF_OPTS.length;
+        SF=SF_OPTS[sfIdx].v; noHold=SF_OPTS[sfIdx].noHold;
+        progress.setSetting('soccerSFCode',SF_OPTS[sfIdx].code); showIntro(1);}},
+      {id:'b-diff',label:'AI 難度：'+DIFF_LABEL[diff],onClick:()=>{
+        const ks=Object.keys(AI_DIFF);
+        diff=ks[(ks.indexOf(diff)+1)%ks.length];
+        progress.setSetting('soccerDiff',diff); showIntro(2);}},
+      {id:'b-go',label:'進場！',onClick:startMatch},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
+  ui.gpSetFocus(['b-role','b-sf','b-diff','b-go','b-back'],focusIdx);
+}
+function startMatch(){
+  ui.closeModal(); sfx.play('click');
+  applyRole();
+  engine.simStarted=true;
+  gear2Used=(player.gear===2); hud.setConditionTag(soccerChallenge()?'⚠ '+soccerChallenge():'');
+  hud.setMission('🏆 第 1 局');
+  startLaunch();
+}
+function togglePause(){
+  if(!engine.simStarted||phase==='match_end')return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>第 ${curSet} 局　藍 ${setGoals.A}:${setGoals.B} 紅　剩 ${Math.ceil(setTimer)} 秒　🔋${Math.round(batt)}%</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重新開賽',onClick:()=>location.reload()}]});
+}
+
+/* ── HUD ── */
+function progressLine(){
+  return `藍 ${setGoals.A}:${setGoals.B} 紅${player.mustReturn?'　⚠ 回防':''}${yellow?'　🟨停飛':''}　🔋${Math.max(0,Math.round(batt))}%`;
+}
+hud.setMission('🏆 擬真賽規');
+syncModes();
+const mapTargets=[
+  {pos:goals[0].mesh.position,color:'#3c64ff'},
+  {pos:goals[1].mesh.position,color:'#ff321e'},
+  ...drones.slice(1).map(d=>({pos:d.pos,
+    color:'#'+(d.team===TA?0x2266ff:0xff5533).toString(16).padStart(6,'0')})),
+];
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device,{keyboard:'<kbd>G</kbd>檔位',gamepad:'<kbd>{gear}</kbd>檔位',touch:''});
+  /* 2026-09-30：手把 Y（b3）切檔位（原本只有鍵盤 G，手把沒有對應鍵） */
+  { const pos=input.gearPos();        // 檔位指派給撥桿＝位置型；否則「檔位」鍵（預設 Y）按一下切換
+    if(pos!=null){ if((pos?2:1)!==player.gear&&phase==='playing'&&!ui.modalOpen)toggleGear(); }
+    else{ const yNow=input.anyBtn('gear');
+      if(yNow&&!_prevGpY&&phase==='playing'&&!ui.modalOpen)toggleGear(); _prevGpY=yNow; } }
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){ if(camE)cycleCam(); if(pilotE)cyclePilot(); }
+  }
+  if(simStarted&&phase==='launch')updateLaunch(dt);
+  if(simStarted&&phase==='playing'){
+    // 電池：基礎耗電＋油門加成；低電推力衰減（教學：留電量的重要）
+    batt-=dt*(0.34+0.22*Math.abs(p.throttle));
+    if(batt<0)batt=0;
+    if(batt<15&&!battWarned){battWarned=true;hud.toast('🔋 電量低！推力開始衰減——正式賽要規劃電量','warn');}
+    const effSF=SF*(batt<=0?0.6:batt<15?0.85:1);
+    if(yellow){ player.integrate(dt,0,0,0,0); }          // 黃牌停飛：斷油門落地
+    else player.step(dt,p,effSF,noHold,SOCCER_FEEL[SF_OPTS[sfIdx].code]);
+    drones.slice(1).forEach(d=>updateSoccerAI(d,dt,{drones,player,SF,diff}));
+    drones.forEach(d=>{
+      if(!d.mustReturn)return;
+      if(d.team===TA?d.pos.z<-0.05:d.pos.z>0.05){
+        d.mustReturn=false;
+        if(d.isPlayer&&returnWarned){returnWarned=false;hud.toast('可以再進攻了！','ok');}
+      }
+    });
+    updateReferee(dt);
+    resolveCollisions(drones);
+    for(const d of drones){const g=checkGoal(d,{strict:true});if(g){triggerGoal(g);break;}}
+    if(golden){ setTimer+=dt; }
+    else{ setTimer-=dt; if(setTimer<=0){setTimer=0;endSet();} }
+  }
+  for(const d of drones){
+    d.mesh.position.copy(d.pos);
+    d.mesh.rotation.y=d.yaw+Math.PI;
+    if(cageSpin&&d.mesh.userData.spin){
+      d.mesh.userData.spin.rotation.x+=dt*1.1;
+      d.mesh.userData.spin.rotation.z+=dt*.6;
+    }
+  }
+  goals.forEach((g,i)=>{g.mesh.rotation.z+=dt*(i?.25:.2);
+    g.light.intensity=1.2+Math.sin(performance.now()*.001*(1.1+i*.3))*.5;});
+  player.mesh.visible=(camMode!=='fpv');
+  updateCam();
+  hud.setTelemetry(player.pos.y,player.vel.length());
+  hud.setProgress(progressLine());
+  hud.setTimer(engine.simStarted&&phase!=='intro'?setTimer:null);
+  hud.drawMinimap(player.pos,player.yaw+Math.PI,F.HL,mapTargets);
+  hud.setAnomaly(player.anomalyT>0);
+  hud.update(dt,engine.camera,player.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+/* 除錯/測試掛鉤（函式每次呼叫取即時值；drones 陣列本身穩定不需 getter） */
+window.ndDebug=()=>({phase,golden,curSet,setTimer:+setTimer.toFixed(1),
+  scores:{...scores},setsWon:{...setsWon},setGoals:{...setGoals},
+  setFouls,totalFouls,yellow,batt:+batt.toFixed(1),role,
+  attackT:+attackT.toFixed(2),lingerT:+lingerT.toFixed(2),velZ:+player.vel.z.toFixed(2),mustFouled,
+  playerRole:player.role,launchT:+launchT.toFixed(2),
+  drones:drones.map(d=>({i:d.i,role:d.role,team:d.team,
+    pos:d.pos.toArray().map(v=>+v.toFixed(2)),mustReturn:d.mustReturn}))});
+window.ndTest={
+  goal:t=>triggerGoal(t), endSet:()=>{setTimer=0;}, foul:r=>foul(r||'測試'),
+  liftDuringLaunch:()=>{player.pos.y=F.BR+.3;},
+  warpOwnRing:()=>{player.pos.set(0,F.GY,-F.GZ);player.vel.set(0,0,0);},
+  /* 規則2測試：帶著 mustReturn 待在敵方半場。判罰需「持續 vel.z>0.6」，
+     阻尼會迅速吃掉單次注入的速度——測試要用 setInterval 每幀補速度模擬持續進攻 */
+  stayEnemyHalf:()=>{player.mustReturn=true;player.pos.set(0,1.2,1.0);player.vel.set(0,0,0);},
+  setBatt:v=>{batt=v;}, get player(){return player;}, drones,
+};
+</script>
+</body>
+</html>

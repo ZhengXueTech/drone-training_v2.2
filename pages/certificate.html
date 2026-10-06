@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🏅</text></svg>">
+<title>newdrone｜飛行證書</title>
+<!-- ============================================================
+     certificate.html — 雲端飛行證書（Phase 9 第二輪，2026-10-05）
+     · 一人一張：達成幾個階段就列幾個階段（階段在老師試算表的 certs 工作表）。
+     · 及格＝各關原本的「完成」判定；證書上印各關最佳成績（計時關卡印秒數）。
+     · 老師在 certificates 工作表把狀態改成「通過」後，簽名區才出現老師姓名（每人核准一次）。
+     · 查驗碼：這一頁下方可以查（不用登入，只顯示遮名）。網址加 ?verify=碼 直接查。
+     · 2026-10-06 合併本機證書：沒有設定雲端／沒登入／連不上雲端時，自動改出「本機紀錄，未經認證」的同版面證書——
+       成績取自這台裝置，階段固定為基礎（第 1～5 關）與進階（第 6～11 關），簽名區留空白線給老師用筆簽，沒有查驗碼。
+       成績單頁原本的「產生我的飛行證書」按鈕也改連到這一頁，全站只有這一個證書入口。
+     ============================================================ -->
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas','Microsoft JhengHei',monospace;min-height:100vh;}
+  .top{max-width:820px;margin:0 auto;padding:28px 16px 0;}
+  .top a{color:#7aa3b8;text-decoration:none;font-size:12px;}
+  .top a:hover{color:#00eeff;}
+  .msg{max-width:788px;margin:18px auto;padding:22px 16px;text-align:center;color:#9fc3d8;font-size:13px;line-height:1.9;
+    background:#0b1626;border:1px solid rgba(0,238,255,.25);border-radius:12px;}
+  .msg.err{color:#fbbf24;}
+  .msg b{color:#fde68a;}
+  button,input{font-family:inherit;font-size:13px;border-radius:8px;padding:8px 14px;}
+  button{background:#0b1626;color:#cfefff;border:1px solid rgba(0,238,255,.4);cursor:pointer;}
+  button.primary{color:#00eeff;border-color:rgba(0,238,255,.7);}
+  button:hover{background:#0e2238;}
+  input{background:#0a121e;border:1px solid rgba(0,238,255,.3);color:#cfefff;letter-spacing:2px;text-transform:uppercase;width:150px;}
+  .cert-page{max-width:820px;margin:14px auto 0;padding:0 16px;}
+  .cert-toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:14px;align-items:center;}
+  .cert-toolbar .st{margin-right:auto;font-size:12px;}
+  .cert-card{background:#fbf8ef;color:#2b2013;border-radius:4px;padding:48px 56px 40px;position:relative;
+    font-family:Georgia,'Noto Serif TC','PMingLiU',serif;box-shadow:0 10px 40px rgba(0,0,0,.35);}
+  .cert-card::before{content:'';position:absolute;inset:14px;border:2px solid #b8925a;border-radius:2px;pointer-events:none;}
+  .cert-card::after{content:'';position:absolute;inset:20px;border:1px solid #d8bd8f;border-radius:2px;pointer-events:none;}
+  .cert-emblem{text-align:center;font-size:40px;margin-bottom:6px;}
+  .cert-kicker{text-align:center;font-size:11px;letter-spacing:5px;color:#a8843f;font-family:'Share Tech Mono',monospace;}
+  .cert-title{text-align:center;font-size:30px;margin:8px 0 4px;color:#3a2c14;letter-spacing:4px;}
+  .cert-sub{text-align:center;font-size:13px;color:#6b5a3d;margin:4px 0;}
+  .cert-name-wrap{text-align:center;margin:22px 0 18px;}
+  .cert-name{font-size:34px;font-weight:700;color:#1f1707;border-bottom:2px solid #b8925a;display:inline-block;padding:0 24px 10px;white-space:nowrap;}
+  .cert-body{text-align:center;font-size:13px;color:#4a3c22;margin:14px 0 16px;}
+  .stage{margin:0 0 14px;padding:10px 14px;border-left:3px solid #b8925a;background:rgba(184,146,90,.08);break-inside:avoid;}
+  .stage h3{margin:0 0 2px;font-size:16px;color:#3a2c14;letter-spacing:2px;}
+  .stage .d{font-size:11px;color:#6b5a3d;margin:0 0 6px;}
+  .stage ul{list-style:none;margin:0;padding:0;columns:2;column-gap:26px;font-size:12px;line-height:1.9;color:#3a2c14;}
+  .stage li{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dotted #d8bd8f;break-inside:avoid;}
+  .stage li b{white-space:nowrap;}
+  .cert-footer{display:flex;justify-content:space-between;align-items:flex-end;margin-top:30px;}
+  .cert-sign{width:230px;}
+  .cert-sig{height:58px;display:flex;align-items:flex-end;justify-content:center;font-size:30px;color:#1f1707;
+    font-family:'DFKai-SB','BiauKai','標楷體','KaiTi','STKaiti',cursive;letter-spacing:6px;padding-bottom:4px;}
+  .cert-sig.wait{font-size:12px;color:#b08a4a;font-family:inherit;letter-spacing:1px;font-style:italic;}
+  .cert-line{border-top:1px solid #8a7550;margin-bottom:6px;}
+  .cert-sign-label{font-size:10px;color:#8a7550;letter-spacing:1px;text-align:center;}
+  .cert-date{font-size:12px;color:#4a3c22;text-align:right;line-height:1.8;}
+  .cert-local{display:none;text-align:center;margin:-2px 0 6px;}
+  .cert-local span{display:inline-block;font-size:12px;letter-spacing:3px;color:#8a5a1a;border:1px solid #c79a55;border-radius:3px;padding:3px 12px;font-family:'Share Tech Mono','Microsoft JhengHei',monospace;}
+  .cert-card.local .cert-local{display:block;}
+  .cert-card.local .cert-sig{height:70px;}
+  .cert-card.issued .cert-local{display:none;}
+  .cert-seal{display:block;max-height:88px;max-width:200px;margin:0 auto 4px;mix-blend-mode:multiply;}   /* multiply：圖檔的白底會融進紙色 */
+  .cert-card.issued .cert-sig{height:96px;}
+  .cert-event{text-align:center;font-size:13px;color:#6b5a3d;margin:2px 0 0;letter-spacing:2px;}
+  .cert-code{text-align:center;margin-top:22px;font-size:10px;color:#a8955f;font-family:'Share Tech Mono',monospace;letter-spacing:1px;}
+  .verify{max-width:788px;margin:22px auto 40px;padding:16px;background:#0b1626;border:1px solid rgba(0,238,255,.25);border-radius:12px;font-size:13px;}
+  .verify h2{margin:0 0 10px;font-size:14px;color:#00eeff;letter-spacing:1px;}
+  .verify .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  #v-out{margin-top:12px;line-height:1.9;color:#9fc3d8;}
+  #v-out .ok{color:#4ade80;} #v-out .wait{color:#fbbf24;} #v-out .bad{color:#f87171;}
+  @media print{
+    body{background:#fff;}
+    .top,.cert-toolbar,.verify,.msg{display:none!important;}
+    .cert-page{max-width:none;margin:0;padding:0;}
+    .cert-card{box-shadow:none;}
+  }
+</style>
+</head>
+<body>
+<div class="top"><a href="../index.html">← 回首頁</a></div>
+<div id="state" class="msg">讀取中…（第一次可能要等十幾秒）</div>
+
+<div class="cert-page" id="certificate" style="display:none;">
+  <div class="cert-toolbar">
+    <span class="st" id="cert-status"></span>
+    <button id="btn-reload">重新整理</button>
+    <button class="primary" id="btn-print">🖨️ 列印／存 PDF</button>
+  </div>
+  <div class="cert-card">
+    <div class="cert-emblem">🚁</div>
+    <div class="cert-kicker">DRONE PILOT CERTIFICATE</div>
+    <h1 class="cert-title">無人機飛行員證書</h1>
+    <div class="cert-local"><span>本機紀錄，未經認證</span></div>
+    <div class="cert-event" id="cert-event"></div>
+    <p class="cert-sub">茲證明</p>
+    <div class="cert-name-wrap"><span class="cert-name" id="cert-name"></span></div>
+    <p class="cert-sub" id="cert-meta"></p>
+    <p class="cert-body">已完成無人機飛行模擬訓練下列階段，各關成績如下：</p>
+    <div id="cert-stages"></div>
+    <div class="cert-footer">
+      <div class="cert-sign"><div class="cert-sig" id="cert-sig"></div><div class="cert-line"></div><div class="cert-sign-label">指導教師</div></div>
+      <div class="cert-date" id="cert-date"></div>
+    </div>
+    <div class="cert-code" id="cert-code"></div>
+  </div>
+</div>
+<div id="todo" class="msg" style="display:none;"></div>
+
+<div class="verify">
+  <h2>🔎 查驗證書</h2>
+  <div class="row"><input id="v-code" maxlength="9" placeholder="XXXX-XXXX" aria-label="查驗碼"><button id="v-go">查驗</button></div>
+  <div id="v-out">輸入證書最下面的查驗碼，可以確認這張證書是不是真的。不用登入。</div>
+</div>
+
+<script type="module">
+import { LEVELS } from '../data/levels-manifest.js';
+import { cloudInit, cloudUrl, centerUrl, edition } from '../core/cloud-api.js';
+import { cert, verifyCert, auth } from '../data/cloud-sync.js';
+import { progress } from '../data/progress.js';
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const title=id=>(LEVELS.find(l=>l.id===id)||{}).title||id;
+/* 各關成績的單位：第一關＝答對題數；第二～四關＝花的秒數；其餘＝分數 */
+const UNIT={t01:'題',t02:'秒',t03:'秒',t04:'秒'};
+const fmt=(id,v)=>v==null?'完成':v+' '+(UNIT[id]||'分');
+const state=(t,err)=>{ const el=$('state'); el.style.display=t?'block':'none'; el.className='msg'+(err?' err':''); el.innerHTML=t||''; };
+
+/* 把 r 畫成證書。local=true＝本機版（未經認證、空白簽名線、沒有查驗碼） */
+function paint(r,local){
+  const todo=(r.todo||[]).map(t=>`<b>${esc(t.name)}</b>：完成 ${t.done}／${t.total} 關`+(t.missing.length?`，還差 ${t.missing.map(id=>esc(title(id))).join('、')}`:`，再完成 ${t.total-t.done} 關（哪一關都可以）`)).join('<br>');
+  document.querySelector('.cert-card').classList.toggle('local',!!local);
+  if(!r.stages.length){ $('todo').style.display='block'; $('todo').innerHTML='還沒有完成任何一個階段，所以還沒有證書。<br><br>'+(todo||'老師還沒有設定階段。'); return; }
+  $('cert-name').textContent=r.name;
+  $('cert-meta').textContent=[r.school,r.classId&&r.seat?`${r.classId} 班 ${r.seat} 號`:''].filter(Boolean).join('　');
+  $('cert-stages').innerHTML=r.stages.map(s=>`<div class="stage"><h3>${esc(s.name)}</h3>${s.desc?`<p class="d">${esc(s.desc)}</p>`:''}
+    <ul>${s.levels.map(l=>`<li><span>${esc(title(l.id))}</span><b>${esc(fmt(l.id,l.score))}</b></li>`).join('')}</ul></div>`).join('');
+  const sig=$('cert-sig');
+  const ed=local?edition():null, issued=!!(ed&&ed.issuer);
+  document.querySelector('.cert-card').classList.toggle('issued',issued);
+  $('cert-event').textContent=issued&&ed.event?ed.event:'';
+  if(issued){      // 活動版：發證單位印在簽名區（有單位圖檔就放在線上面），不標「未經認證」
+    sig.className='cert-sig'; sig.textContent='';
+    if(ed.seal){ const im=new Image(); im.className='cert-seal'; im.alt=''; im.onerror=()=>im.remove(); im.src=new URL('../'+String(ed.seal).replace(/^\/+/,''),location.href).href; sig.appendChild(im); }
+    document.querySelector('.cert-sign-label').textContent=ed.issuer;
+    document.querySelector('.cert-sign-label').style.cssText='font-size:12px;color:#3a2c14;letter-spacing:1px;';
+    $('cert-date').innerHTML=`發證日期：${esc(today())}`;
+    $('cert-code').textContent='';
+    $('cert-status').innerHTML=`<span style="color:#4ade80">${esc(ed.issuer)}</span>`;
+  }else if(local){ sig.className='cert-sig'; sig.textContent='';
+    document.querySelector('.cert-sign-label').textContent='指導教師（簽名）';
+    $('cert-date').innerHTML=`列印日期：${esc(today())}`;
+    $('cert-code').textContent='本證書依這台裝置上的紀錄產生，未經雲端認證，沒有查驗碼'+(edition()&&(edition().creditCert||edition().credit)?'｜模擬器製作：'+(edition().creditCert||edition().credit):'');      // creditCert：證書上要印得跟頁尾不一樣時用
+    $('cert-status').innerHTML='<span style="color:#fbbf24">本機紀錄（未經認證）——印出來請老師在簽名線上簽名</span>';
+  }else{
+    document.querySelector('.cert-sign-label').textContent='指導教師';
+    if(r.approved){ sig.className='cert-sig'; sig.textContent=r.teacher||'（已核准）'; }
+    else{ sig.className='cert-sig wait'; sig.textContent='待老師核准'; }
+    $('cert-date').innerHTML=(r.approved?`核准日期：${esc(r.approvedAt)}`:'尚未核准')+`<br>發證日期：${esc(r.issuedAt||'')}`;
+    $('cert-code').textContent='查驗碼 '+r.code;
+    $('cert-status').innerHTML=r.approved?'<span style="color:#4ade80">✔ 老師已核准</span>':'<span style="color:#fbbf24">⏳ 等老師核准（核准後簽名區才會有簽名）</span>';
+  }
+  $('certificate').style.display='block';
+  if(todo){ $('todo').style.display='block'; $('todo').innerHTML='下一個階段：<br>'+todo; }
+}
+const today=()=>{ const d=new Date(); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); };
+/* 本機版的資料：階段固定兩個（跟雲端 certs 工作表的預設一樣），成績取自這台裝置 */
+const LOCAL_STAGES=[
+  {name:'基礎飛行',levels:['t01','t02','t03','t04','t05'],desc:'完成地面安全、搖桿對應、緊急處置、風險應對與單飛考核'},
+  {name:'進階飛行',levels:['t06','t07','t08','t09','t10','t11'],desc:'完成逆風、精準降落、限電規劃、動態障礙、城市峽谷與搜救任務'}];
+function localCert(){
+  const s=progress.student()||{}, a=auth()||{};
+  const done=id=>{ const lv=LEVELS.find(l=>l.id===id), r=progress.get(id); return !!(r&&r[(lv&&lv.doneField)||'completed']); };
+  const stages=[], todo=[];
+  for(const g of LOCAL_STAGES){
+    const miss=g.levels.filter(id=>!done(id));
+    if(miss.length)todo.push({name:g.name,done:g.levels.length-miss.length,total:g.levels.length,missing:miss});
+    else stages.push({name:g.name,desc:g.desc,levels:g.levels.map(id=>{ const r=progress.get(id)||{}; return {id,score:typeof r.bestScore==='number'?r.bestScore:null}; })});
+  }
+  // 活動版的「體驗」階段：還沒拿到任何正式階段，但已經完成 trial.count 關（哪幾關都可以）→ 列出完成的關卡
+  const ed=edition(), tr=ed&&ed.trial;
+  if(tr&&!stages.length){
+    const need=Math.max(1,+tr.count||3), got=LEVELS.filter(l=>l.id!=='sandbox'&&done(l.id));
+    if(got.length>=need)stages.push({name:tr.name||'體驗飛行',desc:tr.desc||'',levels:got.map(l=>{ const r=progress.get(l.id)||{}; return {id:l.id,score:typeof r.bestScore==='number'?r.bestScore:null}; })});
+    else todo.unshift({name:tr.name||'體驗飛行',done:got.length,total:need,missing:[]});
+  }
+  return {name:s.name||a.name||'（未填姓名）',school:s.school||a.school||'',classId:s.classId||a.classId||'',seat:s.seat||a.seat||'',stages,todo};
+}
+function showLocal(why,canLogin){
+  if(edition()&&edition().issuer){ state(''); return paint(localCert(),true); }      // 活動版：不用解釋雲端
+  state(`${why}<br>下面是<b>本機紀錄</b>的證書：成績來自這台裝置，沒有經過老師的雲端認證。`+(canLogin?'<br><a href="../index.html" style="color:#00eeff">回首頁登入雲端</a>，就能拿到有查驗碼的認證版。':''));
+  paint(localCert(),true);
+}
+
+async function load(){
+  $('certificate').style.display='none'; $('todo').style.display='none';
+  await cloudInit();
+  document.querySelector('.verify').style.display=cloudUrl()?'':'none';     // 沒有雲端就沒得查驗
+  if(!cloudUrl())return centerUrl()?showLocal('這台裝置還沒有連到老師的班級（回首頁按「登入」輸入老師代碼）。',true):showLocal('這台裝置沒有設定雲端。',false);
+  if(!auth())return showLocal('你還沒有登入雲端。',true);
+  state('讀取中…（第一次可能要等十幾秒）');
+  const r=await cert();
+  if(!r.ok)return showLocal('現在拿不到雲端證書（'+esc(r.error||'讀取失敗')+'）。',['pw','nouser','name'].includes(r.code));
+  state('');
+  paint(r,false);
+}
+$('btn-print').addEventListener('click',()=>window.print());
+$('btn-reload').addEventListener('click',load);
+
+async function verify(){
+  const code=$('v-code').value.trim().toUpperCase(), out=$('v-out');
+  if(!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(code)){ out.innerHTML='<span class="bad">查驗碼是 8 碼，例如 K7QM-2ABX。</span>'; return; }
+  const c=code.includes('-')?code:code.slice(0,4)+'-'+code.slice(4);
+  out.textContent='查驗中…';
+  const r=await verifyCert(c);
+  if(!r.ok){ out.innerHTML=`<span class="bad">${esc(r.error||'查不到')}</span>`; return; }
+  if(!r.found){ out.innerHTML='<span class="bad">✘ 查不到這組查驗碼，這張證書可能不是真的，或是碼打錯了。</span>'; return; }
+  out.innerHTML=`${r.approved?'<span class="ok">✔ 這是真的證書，老師已核准</span>':'<span class="wait">⏳ 有這張證書，但老師還沒核准</span>'}<br>
+    ${esc(r.school)}　${esc(r.classId)} 班　${esc(r.name)}<br>已達成階段：${esc(r.stages)}${r.approved?`<br>指導教師：${esc(r.teacher||'—')}　核准日期：${esc(r.approvedAt)}`:''}`;
+}
+$('v-go').addEventListener('click',verify);
+$('v-code').addEventListener('keydown',e=>{ if(e.key==='Enter')verify(); });
+const qv=new URLSearchParams(location.search).get('verify');
+if(qv){ $('v-code').value=qv; cloudInit().then(verify); }
+load();
+</script>
+<script type="module" src="../core/gp-nav-boot.js"></script>   <!-- 2026-10-06 選單可用搖桿操作（有接搖桿才載入） -->
+</body>
+</html>

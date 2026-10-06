@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>📦</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：投遞任務｜newdrone X-Cargo v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d0a05;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#7a5c3b;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE X-CARGO v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { buildBasicField, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+
+/* ============================================================
+   情境體驗：投遞任務（移植自基本版 exp/exp-cargo.html）
+   ------------------------------------------------------------
+   移植決策：
+   - 物理沿用 core/physics.js 既有 Drone(arcade) 模式——基本版
+     exp-cargo 的 updatePhysics()（yaw 旋轉＋視覺傾斜 lerp＋朝向水平
+     推力＋PD 定高）跟 physics.js 的 _arcade() 同一設計脈絡（C2 家族，
+     跟 x-hover 已驗證過的判斷一致），直接共用，不需要另開物理模組。
+   - 場地邊界：基本版 ARENA 是不對稱矩形（x:±10、z:-11~+5，貨物往
+     z 負方向送），但 core/physics.js 的 Drone bounds 只支援對稱
+     ±x/±z——改用對稱 BOUND=11（比原本任何一邊都寬鬆），取貨點/
+     三個落點座標原封不動搬過來（-6~6 之間，仍在新邊界內），無人機
+     可以多飛一點點空間，屬於移植的合理簡化，不影響玩法核心。
+   - 邊界碰撞／速度違規判定：直接讀 Drone 既有的 `collided` 旗標
+     （撞 x/z 邊界時 physics.js 會自己設 true）跟 `hSpeed()` 方法，
+     不用像基本版一樣自己重算——比基本版原始寫法更精簡。
+   - 導航提示：基本版用一根浮空的 THREE.ArrowHelper 指向下一個目標，
+     newdrone 已經有更成熟的通用機制（hud.setOffscreenTarget() 螢幕
+     邊緣貼邊箭頭 ＋ hud.setGuide() 文字提示，t04/t06 等關卡都在用），
+     直接沿用共用元件，不用再刻一個 3D 箭頭。
+   - 投遞進度（📦→①→②→③）：基本版有一條專屬的 HTML progress strip，
+     newdrone 用既有的 hud.setProgress() 文字列＋toast() 事件通知取代，
+     不用另開 DOM 元件。
+   - 取貨點／三個落點的地面圓盤＋光柱視覺，跟四方位地標一樣是這關
+     獨有的裝飾物，比照 x-hover 懸停圈的慣例留在關卡本地。
+   ============================================================ */
+
+const LEVEL=getLevel('x-cargo');
+progress.migrateLegacy();
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-cargo',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(0,3,7), new THREE.Vector3(9,3,7),
+  new THREE.Vector3(-9,3,7), new THREE.Vector3(0,6,12)]});
+const BOUND=11, SPAWN_Y=2.5;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0d0a05,skipCompassMark:true});
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+
+/* ── 常數（沿用基本版數值） ── */
+const GAME_TIME=90.0;
+const DIFF_CFG={
+  easy:{ label:'初級', maxSpd:5.0, delivR:2.2, graceSec:0.5 },
+  med: { label:'中級', maxSpd:3.5, delivR:1.6, graceSec:0.3 },
+  hard:{ label:'高級', maxSpd:2.5, delivR:1.1, graceSec:0.15 },
+};
+const CARGO_SPAWN=new THREE.Vector3(0,1.5,3);
+const PICKUP_R=1.4, DELIVERY_Y=2.5;
+const ZONE_COLORS=[0x22c55e,0x3b82f6,0xec4899];
+const ZONE_LABELS=['①','②','③'];
+const ZONE_POS=[
+  new THREE.Vector3(-6,0.1,-3),
+  new THREE.Vector3( 6,0.1,-5),
+  new THREE.Vector3( 0,0.1,-9),
+];
+
+/* ── 席位與機體（樣式可選——nd.settings.droneStyle 全關卡通用） ── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='trainer-orb')); // 情境體驗關卡固定用自己的主題機體，不吃全域裝備設定（t02-t11／template／showroom 才共用 droneStyleGet）
+let beaconOn=progress.setting('headingBeacon',true);
+let mesh=null, beacon=null, cargoCarry=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);
+  // 貨物掛在機體下方（沿用基本版視覺：方塊＋吊索＋小燈）
+  cargoCarry=new THREE.Group();
+  const cbx=new THREE.Mesh(new THREE.BoxGeometry(0.38,0.38,0.38),
+    new THREE.MeshStandardMaterial({color:0xfbbf24,emissive:0xfbbf24,emissiveIntensity:.9,metalness:.3}));
+  cbx.position.y=-0.75; cargoCarry.add(cbx);
+  const wirePts=[new THREE.Vector3(0,0,0),new THREE.Vector3(0,-0.75,0)];
+  cargoCarry.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(wirePts),
+    new THREE.LineBasicMaterial({color:0x888888})));
+  cargoCarry.add(new THREE.PointLight(0xfbbf24,0.8,2));
+  cargoCarry.visible=cargoHeld;
+  mesh.add(cargoCarry);
+  engine.scene.add(mesh);
+}
+let drone; // 需要在 rebuildMesh 之前先宣告 cargoHeld，見下方遊戲狀態
+
+/* ── 遊戲狀態 ── */
+let pDiff='med', timer=GAME_TIME, score=0;
+let runsCompleted=0, cargoDrops=0, perfectRuns=0;
+let cargoHeld=false, deliveryStep=0, speedViolTimer=0, perfectRun=true;
+let playing=false, finished=false;
+
+drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:8},spawn:CARGO_SPAWN.clone().add(new THREE.Vector3(0,1,0))});
+rebuildMesh();
+
+/* ── 取貨點視覺（沿用基本版：方塊＋懸浮圈＋燈光） ── */
+const cargoSpawnMesh=new THREE.Group();
+const csBox=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.6,0.6),
+  new THREE.MeshStandardMaterial({color:0xfbbf24,emissive:0xfbbf24,emissiveIntensity:.8,metalness:.3}));
+cargoSpawnMesh.add(csBox);
+(function(){
+  const pts=[]; for(let j=0;j<=40;j++){const a=(j/40)*Math.PI*2;pts.push(new THREE.Vector3(Math.cos(a)*0.9,0,Math.sin(a)*0.9));}
+  const hr=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({color:0xfbbf24,transparent:true,opacity:.6}));
+  hr.rotation.x=-Math.PI/2; hr.position.y=-1.4; cargoSpawnMesh.add(hr);
+})();
+cargoSpawnMesh.add(new THREE.PointLight(0xfbbf24,1.2,4));
+cargoSpawnMesh.position.copy(CARGO_SPAWN);
+engine.scene.add(cargoSpawnMesh);
+
+/* ── 三個落點視覺（地面圓盤＋外框線＋發光柱＋點光源，難度切換時改半徑） ── */
+const dropZones=ZONE_POS.map((pos,i)=>{
+  const g=new THREE.Group();
+  const disc=new THREE.Mesh(new THREE.CircleGeometry(1,48),
+    new THREE.MeshBasicMaterial({color:ZONE_COLORS[i],transparent:true,opacity:.12,side:THREE.DoubleSide}));
+  disc.rotation.x=-Math.PI/2; disc.position.y=0.01; g.add(disc);
+  const ringPts=[]; for(let j=0;j<=64;j++){const a=(j/64)*Math.PI*2;ringPts.push(new THREE.Vector3(Math.cos(a),0,Math.sin(a)));}
+  const ringLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints(ringPts),
+    new THREE.LineBasicMaterial({color:ZONE_COLORS[i]}));
+  ringLine.rotation.x=-Math.PI/2; ringLine.position.y=0.02; g.add(ringLine);
+  const post=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,DELIVERY_Y+0.5,6),
+    new THREE.MeshBasicMaterial({color:ZONE_COLORS[i],transparent:true,opacity:.3}));
+  post.position.y=(DELIVERY_Y+0.5)/2+0.02; g.add(post);
+  const lgt=new THREE.PointLight(ZONE_COLORS[i],0.8,5);
+  lgt.position.y=0.5; g.add(lgt);
+  g.position.copy(pos);
+  engine.scene.add(g);
+  return {group:g,disc,ringLine,lgt,pos,done:false};
+});
+function setZoneRadius(r){
+  dropZones.forEach(z=>{ z.disc.scale.set(r,r,r); z.ringLine.scale.set(r,1,r); });
+}
+function resetZones(){
+  dropZones.forEach(z=>{ z.done=false; z.disc.material.opacity=.12; });
+}
+
+/* ── 導航提示：取貨→依序送達三個落點 ── */
+function navTarget(){
+  if(deliveryStep===0)return CARGO_SPAWN;
+  if(deliveryStep>=1&&deliveryStep<=3)return ZONE_POS[deliveryStep-1];
+  return null;
+}
+function stepLabel(){
+  if(deliveryStep===0)return '📦 前往取貨點拾取貨物';
+  return `🚚 送往落點 ${ZONE_LABELS[deliveryStep-1]}（低速靠近再投遞）`;
+}
+
+/* ── 遊戲判定 ── */
+function checkPickup(){
+  if(cargoHeld||deliveryStep!==0)return;
+  if(drone.pos.distanceTo(CARGO_SPAWN)<PICKUP_R){
+    cargoHeld=true; deliveryStep=1;
+    cargoSpawnMesh.visible=false; cargoCarry.visible=true;
+    hud.toast(`📦 拿到貨物！→ 落點 ${ZONE_LABELS[0]}`,'ok'); sfx.play('ok');
+  }
+}
+function checkDelivery(){
+  if(!cargoHeld||deliveryStep===0||deliveryStep>3)return;
+  const zone=ZONE_POS[deliveryStep-1];
+  const dx=drone.pos.x-zone.x, dz=drone.pos.z-zone.z;
+  if(Math.hypot(dx,dz)<DIFF_CFG[pDiff].delivR&&drone.pos.y<DELIVERY_Y){
+    const step=deliveryStep;
+    score+=100; deliveryStep++;
+    const zo=dropZones[step-1]; zo.done=true; zo.disc.material.opacity=0.32;
+    hud.toast(`✅ 落點 ${ZONE_LABELS[step-1]} +100`,'ok'); sfx.play('ok');
+    if(deliveryStep>3){
+      runsCompleted++;
+      const bonus=200+(perfectRun?100:0);
+      if(perfectRun)perfectRuns++;
+      score+=bonus;
+      hud.toast(`🏆 完整投遞！+${bonus}`,'ok'); sfx.play('finish');
+      setTimeout(()=>{ if(playing&&!finished)startNewRun(); },900);
+    }
+  }
+}
+function dropCargo(reason){
+  if(!cargoHeld)return;
+  cargoHeld=false; cargoDrops++; perfectRun=false; deliveryStep=0; speedViolTimer=0;
+  cargoSpawnMesh.visible=true; cargoCarry.visible=false;
+  resetZones();
+  hud.toast(`💥 ${reason}！貨物掉落`,'warn'); sfx.play('warn');
+}
+function startNewRun(){
+  cargoHeld=false; deliveryStep=0; perfectRun=true; speedViolTimer=0;
+  cargoSpawnMesh.visible=true; cargoCarry.visible=false;
+  resetZones();
+}
+function checkSpeed(dt){
+  if(!cargoHeld){ speedViolTimer=0; return; }
+  const maxSpd=DIFF_CFG[pDiff].maxSpd;
+  if(drone.hSpeed()>maxSpd){
+    speedViolTimer+=dt;
+    if(speedViolTimer>DIFF_CFG[pDiff].graceSec)dropCargo('速度過快');
+  }else{
+    speedViolTimer=Math.max(0,speedViolTimer-dt*2);
+  }
+}
+
+/* ── 視角／模式／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function toggleMode(){
+  // 挑戰條件「定高關」時，M 在 角度↔專業 之間切；否則維持原本 街機↔專業
+  const base=ch.hold?'arcade':'angle';
+  drone.mode=drone.mode==='pro'?base:'pro';
+  hud.showAttitude(drone.mode!=='arcade');
+  hud.toast(drone.mode==='arcade'?'街機模式（定高輔助）':drone.mode==='angle'?'角度模式（放開回平、無定高）':'專業模式（全姿態）','ok');
+  syncModes();
+}
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='KeyM')toggleMode();
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?3:2)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 投遞任務',
+    html:`<p>從<b>取貨點</b>拿貨物（靠近自動拾取），依序飛到<b>3 個落點</b>低速靠近精準投下。</p>
+      <p>⚡ <b>水平速度持續超限</b> → 貨物掉落　🚧 <b>碰到邊界</b> → 貨物掉落<br>
+      完整投遞一輪 +200 分，全程無掉落再 +100 分加成。<br>
+      ⏱ 限時 <b>90 秒</b>，看能送幾輪！</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-easy',label:'初級（限速5・大落點）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'中級（限速3.5）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'高級（限速2.5・小落點）',onClick:()=>startGame('hard')},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff;
+  timer=GAME_TIME; score=0; runsCompleted=0; cargoDrops=0; perfectRuns=0;
+  cargoHeld=false; deliveryStep=0; speedViolTimer=0; perfectRun=true;
+  drone.reset(CARGO_SPAWN.clone().add(new THREE.Vector3(0,1,0)));
+  cargoSpawnMesh.visible=true; cargoCarry.visible=false;
+  setZoneRadius(DIFF_CFG[diff].delivR); resetZones();
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  drone.mode='arcade'; ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  hud.setMission('投遞任務：'+DIFF_CFG[diff].label);
+  hud.toast('開始投遞！注意速度與邊界','ok');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>目前得分 ${Math.floor(score)}・剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-beacon',label:'機頭指示：'+(beaconOn?'開':'關'),
+        onClick:()=>{beaconOn=!beaconOn;progress.setSetting('headingBeacon',beaconOn);
+          beacon.visible=beaconOn;showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  hud.setOffscreenTarget(null);
+  let grade='C';
+  if(runsCompleted>=5||perfectRuns>=3)grade='S';
+  else if(runsCompleted>=3||perfectRuns>=1)grade='A';
+  else if(runsCompleted>=1)grade='B';
+  const emoji={S:'🥇',A:'🥈',B:'🥉',C:'💪'}[grade];
+  const msgs={S:'完美控制！穩如磐石',A:'優秀投遞！試試更難的難度',B:'不錯！繼續練習路線規劃',C:'慢慢來！控制速度是關鍵'};
+  progress.record('x-cargo',{completed:true,score:Math.floor(score),
+    metrics:{runsCompleted,cargoDrops,perfectRuns},...ch.recordFields()});
+  ui.showModal({title:'任務結束 · '+emoji+' '+grade,
+    html:`<p>🏆 總得分：<b>${Math.floor(score)} 分</b><br>
+      📦 完整投遞：${runsCompleted} 輪　💥 貨物掉落：${cargoDrops} 次　✨ 完美輪：${perfectRuns}<br>
+      ${msgs[grade]}</p>
+      <p>成績已記錄（nd.progress.x-cargo）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再試一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(ch.any?3:2)},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇難度後開始投遞');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    if(drone.collided&&cargoHeld)dropCargo('碰觸邊界');
+    checkSpeed(dt);
+    checkPickup();
+    checkDelivery();
+
+    timer-=dt;
+    hud.setTimer(Math.max(0,timer));
+    hud.setScore(Math.floor(score));
+    hud.setProgress(`第 ${runsCompleted+1} 輪・${stepLabel()}`);
+    hud.setGuide(stepLabel());
+    hud.setOffscreenTarget(navTarget());
+    if(timer<=0)finishGame();
+  }
+  cargoCarry.visible=cargoHeld;
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(drone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  const mapTargets=[
+    {pos:CARGO_SPAWN,color:0xfbbf24},
+    ...dropZones.map((z,i)=>({pos:z.pos,color:ZONE_COLORS[i],done:z.done})),
+  ];
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets,{landmarks:compassLandmarks});
+  if(drone.mode!=='arcade'){
+    const _e=new THREE.Euler().setFromQuaternion(drone.q,'YXZ');
+    hud.setAttitude(_e.x,-_e.z);
+  }
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

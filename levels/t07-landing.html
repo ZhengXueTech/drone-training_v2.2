@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🎯</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第七關 精準降落｜newdrone T07</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  /* 保持懸停進度條——沿用 t02 的 hold-bar 樣式（同一套「維持條件N秒」UI，
+     這關拿來用在「維持降落 1.5 秒」而非「維持姿態穩定」，語意通用可直接借） */
+  #hold-wrap{display:none;position:fixed;left:50%;bottom:120px;transform:translateX(-50%);
+    width:70%;max-width:300px;z-index:25;pointer-events:none;}
+  #hold-track{height:8px;background:rgba(15,23,42,.85);border:1px solid rgba(148,163,184,.3);
+    border-radius:999px;overflow:hidden;}
+  #hold-fill{height:100%;width:0%;background:linear-gradient(90deg,#facc15,#4ade80);
+    transition:width .1s linear;}
+  #hold-label{text-align:center;font-size:10px;color:#7aa3b8;margin-top:4px;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hold-wrap"><div id="hold-track"><div id="hold-fill"></div></div><div id="hold-label">維持降落中...</div></div>
+<div id="ver">NEWDRONE T07 LANDING v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Guide } from '../core/guide.js';
+import { buildBasicField } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+
+const LEVEL=getLevel('t07');
+progress.migrateLegacy();
+
+/* ── 精準降落：3 回合，降落墊依序縮小（3m→2m→1.2m），緩速垂直下降到墊上
+   並維持 1.5 秒才算成功；下降太快（>2 m/s）判定墜機、不計分、重來這一回合。
+   跟 t05 一樣是「一次把所有場地物件建好」的連續課程結構（3 個降落墊全部
+   一開始就在場景裡、用顏色區分完成狀態），不是 t02/t03/t04 那種要動態
+   重建場景的分階段狀態機——因為這關本質上也不需要「切換場景」，只需要
+   「換一個目標墊、換一個難度」，沿用 sandbox 模式最省事也最不容易出錯。 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'t07',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(16,7,14), new THREE.Vector3(-16,7,14), new THREE.Vector3(0,7,20)]});
+/* 最遠降落墊 z=-32，留 6 裕度 → BOUND=38（沿用 t04/t05 教訓：BOUND 一定要
+   包住最遠目標並留出飛越裕度）。 */
+const BOUND=38, HOVER_START_Y=6.0, HOLD_DURATION=1.5, MAX_LAND_VSPEED=2.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19});
+
+/* ── 機體（樣式可在開場畫面切換，見 showIntro 的 b-style 按鈕）── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const SPAWN=new THREE.Vector3(0,HOVER_START_Y,5);   // 承基本版：一開始就在空中，不是地面出生
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN});
+
+/* ── 3 個降落墊（承基本版設計：外圈降落區＋中心精準標記＋邊框光環＋號誌柱，
+   world.js 沒有現成的「降落墊」原型，這是這關唯一需要的客製 3D 物件） ── */
+const ROUNDS=[
+  { label:'大型降落墊 (3m)', radius:3.0, color:0x3b82f6, colorInner:0x60a5fa, size:'大型' },
+  { label:'中型降落墊 (2m)', radius:2.0, color:0xf59e0b, colorInner:0xfbbf24, size:'中型' },
+  { label:'小型降落墊 (1.2m)', radius:1.2, color:0xef4444, colorInner:0xf87171, size:'小型' },
+];
+const PAD_POS=[
+  new THREE.Vector3(0,0.05,-10),
+  new THREE.Vector3(4,0.05,-22),
+  new THREE.Vector3(-3,0.05,-32),
+];
+function buildPad(pos,r){
+  const g=new THREE.Group();
+  const outer=new THREE.Mesh(new THREE.CylinderGeometry(r.radius,r.radius,0.08,40),
+    new THREE.MeshStandardMaterial({color:r.color,emissive:r.color,emissiveIntensity:.5,transparent:true,opacity:.35}));
+  g.add(outer);
+  const inner=new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.1,20),
+    new THREE.MeshStandardMaterial({color:r.colorInner,emissive:r.colorInner,emissiveIntensity:1.2}));
+  g.add(inner);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(r.radius,0.06,6,40),
+    new THREE.MeshStandardMaterial({color:r.color,emissive:r.color,emissiveIntensity:1.0}));
+  ring.rotation.x=Math.PI/2; ring.position.y=0.12; g.add(ring);
+  const pillar=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,1.5,6),
+    new THREE.MeshStandardMaterial({color:r.color,emissive:r.color,emissiveIntensity:.6}));
+  pillar.position.y=0.75; g.add(pillar);
+  g.position.copy(pos); engine.scene.add(g);
+  return {outer,inner,ring,pillar};
+}
+const padMeshes=ROUNDS.map((r,i)=>buildPad(PAD_POS[i],r));
+function paintPadDone(i){
+  padMeshes[i].outer.material.emissive.setHex(0x22c55e);
+  padMeshes[i].ring.material.emissive.setHex(0x22c55e);
+}
+
+/* ── 降落狀態機（每回合共用同一套：flying→holding→scored，或 flying→crash→flying）── */
+let currentRound=0, landingState='flying', holdTimer=0;
+let roundScores=[], crashCount=0, flightTime=0, finished=false;
+
+function setHoldBar(frac){
+  const wrap=document.getElementById('hold-wrap');
+  if(frac==null){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  document.getElementById('hold-fill').style.width=Math.max(0,Math.min(100,frac*100))+'%';
+}
+function respawnDrone(){
+  const p=PAD_POS[currentRound];
+  drone.reset(new THREE.Vector3(p.x,HOVER_START_Y,p.z+6));
+}
+function scoreRound(horizDist,vspeed,padR){
+  landingState='scored'; setHoldBar(null);
+  const accuracyPct=Math.max(0,1-horizDist/padR);
+  const accuracyScore=Math.round(accuracyPct*50);
+  const speedScore=Math.round(THREE.MathUtils.clamp((1-vspeed/MAX_LAND_VSPEED)*50,0,50));
+  const total=accuracyScore+speedScore;
+  const stars=total>=85?'★★★':total>=60?'★★☆':'★☆☆';
+  roundScores.push({round:currentRound+1,accuracyScore,speedScore,total,stars,horizDist:+horizDist.toFixed(2)});
+  sfx.play('ring');
+  hud.toast(`🎯 第${currentRound+1}回合完成！${stars} 得分${total}/100`,'ok');
+  paintPadDone(currentRound);
+  setTimeout(()=>{
+    if(finished)return;
+    currentRound++;
+    if(currentRound>=ROUNDS.length){ finishLevel(); }
+    else {
+      landingState='flying'; respawnDrone();
+      hud.setOffscreenTarget(PAD_POS[currentRound]);
+    }
+  },1800);
+}
+function updateLanding(dt){
+  if(currentRound>=ROUNDS.length||landingState==='scored')return;
+  const padPos=PAD_POS[currentRound], padR=ROUNDS[currentRound].radius;
+  const horizDist=Math.hypot(drone.pos.x-padPos.x,drone.pos.z-padPos.z);
+  const vspeed=-drone.vel.y;   // 正值＝下降
+  const nearGround=drone.pos.y<1.2;
+  const onPad=horizDist<padR;
+  if(landingState==='flying'){
+    if(nearGround&&onPad){
+      if(vspeed>MAX_LAND_VSPEED){
+        landingState='crash'; crashCount++; sfx.play('fail');
+        hud.toast('💥 降落過快！速度超過 2m/s，不計分','fail');
+        setTimeout(()=>{ if(finished)return; landingState='flying'; respawnDrone(); },1200);
+      } else {
+        landingState='holding'; holdTimer=0; setHoldBar(0);
+      }
+    }
+  } else if(landingState==='holding'){
+    if(!nearGround||!onPad){
+      landingState='flying'; holdTimer=0; setHoldBar(null);
+    } else {
+      holdTimer+=dt; setHoldBar(holdTimer/HOLD_DURATION);
+      if(holdTimer>=HOLD_DURATION) scoreRound(horizDist,vspeed,padR);
+    }
+  }
+}
+
+/* ── 引導（3 步驟，各自箭頭指向對應降落墊；HUD 文字用，不驅動場景建置） ── */
+const guide=new Guide([
+  { text:`降落在${ROUNDS[0].size}墊並維持`, arrow:PAD_POS[0], done:s=>s.roundsDone>=1 },
+  { text:`降落在${ROUNDS[1].size}墊並維持`, arrow:PAD_POS[1], done:s=>s.roundsDone>=2 },
+  { text:`降落在${ROUNDS[2].size}墊並維持`, arrow:PAD_POS[2], done:s=>s.roundsDone>=3 },
+],hud,engine.scene);
+
+/* ── 視角／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'精準降落',
+    html:`<p>🎯 本關訓練最關鍵的實戰技能：精準落地。</p>
+      <p>飛到降落墊正上方，<b>緩慢垂直下降</b>至地面，並在墊上維持 1.5 秒完成降落。共 3 回合，
+      降落墊會越來越小：🔵 大型(3m)　🟡 中型(2m)　🔴 小型(1.2m)。</p>
+      <p>⚠️ 下降速度過快（&gt;2 m/s）將判定為墜機，不計分（會重來這一回合，不影響其他回合）。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-go',label:'🎯 開始精準降落訓練',onClick:startGame}].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  guide.start();
+  hud.setOffscreenTarget(PAD_POS[0]);
+  hud.toast('起飛！','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>回合 ${Math.min(currentRound+1,3)}/3・已飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null); setHoldBar(null);
+  const totalScore=roundScores.reduce((s,r)=>s+r.total,0);
+  progress.record('t07',{completed:true,score:totalScore,
+    metrics:{totalScore,crashCount,flightTime:Math.round(flightTime)},...ch.recordFields()});
+  ui.showModal({title:'🎯 精準降落 完成！',
+    html:`<p>${roundScores.map((r,i)=>`${ROUNDS[i].size}墊：${r.total}/100 ${r.stars}（中心偏移 ${r.horizDist}m）`).join('<br>')}</p>
+      <p>🏆 總分：${totalScore} / 300　💥 降落過快次數：${crashCount}</p>
+      <p>降落愈精準、速度愈慢，分數愈高。成績已記錄（挑戰條件：${ch.tag()||'標準'}）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('精準降落：緩速下降・維持 1.5 秒');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 測試/除錯 hook ── */
+window.ndDebug=()=>({currentRound,landingState,holdTimer,crashCount,roundsDone:roundScores.length,
+  dronePos:drone.pos.clone(),droneVelY:drone.vel.y,flightTime,finished});
+window.ndTest={
+  forceFinish:()=>{
+    while(roundScores.length<ROUNDS.length){
+      roundScores.push({round:roundScores.length+1,accuracyScore:50,speedScore:50,total:100,stars:'★★★',horizDist:0});
+    }
+    currentRound=ROUNDS.length;
+    finishLevel();
+  },
+  /* warp 到「墊子正上方低空」而非直接判定成功，讓接下來一小段真實下降操作
+     仍要真的觸發降落判定——同系列 warp 慣例的用意，避免測試捷徑掩蓋掉
+     「真的能不能穩穩降落」這件事 */
+  warpAbovePad:(i)=>{
+    const p=PAD_POS[i]; if(!p)return false;
+    currentRound=i; landingState='flying'; holdTimer=0; setHoldBar(null);
+    drone.reset(new THREE.Vector3(p.x,2.0,p.z));
+    return true;
+  }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished){
+    flightTime+=dt;
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    if(landingState!=='crash') updateLanding(dt);
+    guide.update(dt,{roundsDone:roundScores.length});
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(engine.simStarted?`回合 ${Math.min(currentRound+1,3)}/3`:'');
+  const mapTargets=PAD_POS.map((pos,i)=>({pos,done:i<roundScores.length}));
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets);
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

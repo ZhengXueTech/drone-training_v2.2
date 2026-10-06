@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🥅</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：守門對戰｜newdrone Goalkeeper-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0612;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#7a3050;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(255,80,80,.4) 15%,rgba(255,80,80,.55) 50%,rgba(255,80,80,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(255,80,80,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(20,10,20,.8);border:1px solid rgba(255,80,80,.35);border-radius:6px;
+    padding:4px 10px;color:#e8c3d8;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(20,10,20,.85);border:1px solid rgba(255,80,80,.4);border-radius:10px;
+    padding:8px 22px;color:#f0d8e8;font-size:13px;text-align:center;box-shadow:0 0 16px rgba(255,80,80,.12);
+    display:flex;gap:18px;align-items:center;}
+  #topbar b{font-size:17px;}
+  #topbar .gk{color:#38bdf8;} #topbar .st{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(20,10,20,.85);
+    border:1px solid rgba(255,80,80,.4);color:#f0d8e8;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE GOALKEEPER-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone, aiMoveWorld, blockImpact, tumbleStep } from '../core/systems/yaw-drone.js';
+import { UI } from '../core/ui.js';
+import { renderSplit } from '../core/camera.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：守門對戰（x-goalkeeper 的 pk-live 版本，規劃書 §9 成本表
+   低成本第二例：「一攻一守（本來就是攻防結構，AI 換成真人）｜天生 PvP」）
+   ------------------------------------------------------------
+   跟 x-hover-pk（並排、雙方各自獨立任務）不同，這關「天生不對稱」：
+   席 0＝守門（防守方，沿用單人版 gkDrone 的角色與物理），
+   席 1＝前鋒（進攻方，取代單人版原本的 AI 攻擊機，改由真人操控）。
+   兩人共用同一個場地／同一顆球門，不是各自一半場地——比照
+   levels/pvp.html／soccer-match.html「同場分割畫面」的既有慣例。
+
+   設計決策：
+   - 不修改 levels/x-goalkeeper.html 本身，另開專屬檔案（比照
+     x-hover-pk 對 x-hover.html 的作法）。
+   - 物理／場地／球門判定全部沿用單人版數值與演算法（FL/FW/FH、
+     GZ/GY/GR/GI、YawDrone＋PHYS 參數表、prevZ 跨越＋半徑進球判定），
+     只有「前鋒現在也是一台可操控的 YawDrone」這件事是新的。
+   - AI 席位處理（兩邊都可能是 AI，教訓：不可用全零輸入這個小技巧）：
+     * 前鋒席若為 AI：直接沿用單人版 updateAttacker() 的 aim/jitter/
+       aiMoveWorld 邏輯（單一前鋒，取 ATK_AIMS 第一個瞄準點），這正是
+       單人版本來就有、已驗證的真前鋒行為，PK 版沒有理由重新發明。
+     * 守門席若為 AI：單人版原本沒有「AI 守門員」這個角色（防守方
+       原本恆為真人），這裡新寫一個最小可行的區域防守 AI
+       aiDefendGoal()——追蹤前鋒目前 X/Y 投影到球門面、貼近球門線
+       左右移動攔截，比照規劃書 507 行提到的「守門預測 GK_PRED」
+       雛型（完整預測留待 AI 專題），但已是有意義的主動防守，不是
+       hover-pk 那種「零輸入基準線」（那個技巧只對「懸停不動」這種
+       任務語意成立，這關不成立，見專案記憶教訓）。
+     * 兩個 AI 行為的速度／敏捷度都吃各自席位在 pairing 大廳選的
+       controller.diff（seats.js 既有的逐席 AI 難度欄位），不需要
+       再疊加一個「全場共用難度」選單——這點跟 x-hover-pk 不同（那
+       關兩人做的是同一件事，需要共用難度曲線比公平；這關兩人角色
+       本來就不同，各自 AI 難度本來就該分開設定）。
+   - 相機：這關跟 x-goalkeeper.html 同一個物理家族（yaw-drone.js，
+     yaw=0 機頭朝 +Z），比照 pvp.html 的 updateSplitCam() 公式（同一
+     慣例，理論上不需要反轉），但仍照專案教訓「資料正確≠呈現正確」，
+     交付前用 __ndDebug 對相機世界座標做數學驗證，不能只憑「這關
+     跟 pvp 同慣例」就假設沒事。
+   - 沒有套用 core/hud.js（分割畫面，比照 pvp.html／x-hover-pk 用
+     輕量頂部列＋自訂分割線／格標籤）。
+   - 只用「賽局時間」三選項（30/60/90 秒）取代單人版的難度選單——
+     單人版的 easy/med/hard 是在調「AI 前鋒的數量與速度」，PK 版
+     前鋒若是真人就無所謂 AI 難度，若前鋒是 AI 則難度已經由
+     pairing 大廳的逐席 diff 決定，這裡不需要重複的整場難度選單，
+     改給老師「調整比賽長度」這個更實用的選項。
+   ============================================================ */
+
+const ACT='goalkeeper-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const SEAT_GK=0, SEAT_ST=1;
+const PLABEL=['守門','前鋒'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 場地常數（沿基本版 exp-goalkeeper.html／x-goalkeeper.html 原值，
+   一字不改——場地大小、球門位置、物理手感都是已驗證的數值） ── */
+const FL=6, FW=3, FH=3, HL=FL/2, HW=FW/2, BR=0.11;
+const GR=0.20, GI=GR-0.01, GT=0.025;
+const GZ=HL-0.70, GY=1.5;
+const GAME_TIME_OPTS={short:30,normal:60,long:90};
+const ATK_COLORS=[0xffaa00];
+const ATK_SPD={easy:2.2,med:3.8,hard:6.5};
+const DEF_AI_SPD={easy:2.6,med:4.2,hard:6.2};
+
+const BOUNDS={minX:-HW,maxX:HW,minY:0,maxY:FH,minZ:-HL,maxZ:HL,BR};
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:14,PITCHMAX:18,YAWMAX:2.8,
+  DRAG_PER_SEC:Math.pow(0.92,60),WBOUNCE:0.45,FBOUNCE:0.3};
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ui=new UI(input);
+
+/* ── 場地建構（沿 x-goalkeeper.html 的 buildField/buildGoal，逐行搬過來） ── */
+function buildField(){
+  const scene=engine.scene;
+  scene.background=new THREE.Color(0x0a0612);
+  scene.fog=new THREE.FogExp2(0x0a0612,.06);
+  scene.add(new THREE.AmbientLight(0x334466,0.9));
+  const dl=new THREE.DirectionalLight(0xffffff,0.8); dl.position.set(2,6,2); scene.add(dl);
+  const redPt=new THREE.PointLight(0xff2244,1.8,6); redPt.position.set(0,GY,GZ+0.5); scene.add(redPt);
+
+  const flr=new THREE.Mesh(new THREE.PlaneGeometry(FW,FL),
+    new THREE.MeshStandardMaterial({color:0x080010,roughness:.95}));
+  flr.rotation.x=-Math.PI/2; flr.receiveShadow=true; scene.add(flr);
+  const grid=new THREE.GridHelper(Math.max(FL,FW),12,0x220033,0x110022);
+  grid.position.y=0.001; scene.add(grid);
+
+  const wallM=new THREE.MeshBasicMaterial({color:0x221133,wireframe:true,transparent:true,opacity:.25});
+  [[FW,FH,0.02,0,FH/2,HL],[FW,FH,0.02,0,FH/2,-HL],
+   [0.02,FH,FL,HW,FH/2,0],[0.02,FH,FL,-HW,FH/2,0],
+   [FW,0.02,FL,0,FH,0]].forEach(([w,h,d,x,y,z])=>{
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),wallM);
+    m.position.set(x,y,z); scene.add(m);
+  });
+
+  const pilM=new THREE.MeshStandardMaterial({color:0x1a0030,metalness:.8,roughness:.3});
+  const pilG=new THREE.CylinderGeometry(0.04,0.04,FH,6);
+  [[-HW,-HL],[HW,-HL],[-HW,HL],[HW,HL]].forEach(([x,z])=>{
+    const p=new THREE.Mesh(pilG,pilM); p.position.set(x,FH/2,z); scene.add(p);
+  });
+
+  const cl=new THREE.Mesh(new THREE.PlaneGeometry(FW,0.015),
+    new THREE.MeshBasicMaterial({color:0x441133,transparent:true,opacity:.6}));
+  cl.rotation.x=-Math.PI/2; cl.position.y=0.002; scene.add(cl);
+
+  const spawn=new THREE.Mesh(new THREE.PlaneGeometry(FW,0.5),
+    new THREE.MeshBasicMaterial({color:0xffdd00,transparent:true,opacity:.15}));
+  spawn.rotation.x=-Math.PI/2; spawn.position.set(0,0.003,-HL+0.25); scene.add(spawn);
+}
+let goalMesh;
+function buildGoal(){
+  const scene=engine.scene;
+  goalMesh=new THREE.Mesh(new THREE.TorusGeometry(GR,GT,8,32),
+    new THREE.MeshStandardMaterial({color:0xff2244,emissive:0xff0022,emissiveIntensity:1.2,metalness:.5,roughness:.2}));
+  goalMesh.position.set(0,GY,GZ);
+  scene.add(goalMesh);
+  const glow=new THREE.Mesh(new THREE.TorusGeometry(GR+0.03,0.008,6,32),
+    new THREE.MeshBasicMaterial({color:0xff2244,transparent:true,opacity:.4}));
+  glow.position.copy(goalMesh.position); scene.add(glow);
+  const wire=new THREE.Mesh(new THREE.CylinderGeometry(0.004,0.004,FH-GY,4),
+    new THREE.MeshBasicMaterial({color:0x334455}));
+  wire.position.set(0,(GY+FH)/2,GZ); scene.add(wire);
+}
+buildField(); buildGoal();
+
+/* ── 兩位玩家的機體（沿用 exp-gk-red 樣式，P1 守門藍／P2 前鋒橘紅，
+   比照 x-hover-pk 的隊色語意） ── */
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('exp-gk-red',{tint:TINTS[i]});
+  m.castShadow=true;
+  engine.scene.add(m);
+  return m;
+});
+const PLAYER_SPAWN=new THREE.Vector3(0,GY,GZ-0.4);
+const STRIKER_SPAWN=new THREE.Vector3(0,GY,-HL+0.3);
+const gkDrone=new YawDrone({spawn:PLAYER_SPAWN,yaw:Math.PI,bounds:BOUNDS,phys:PHYS});
+const stDrone=new YawDrone({spawn:STRIKER_SPAWN,yaw:0,bounds:BOUNDS,phys:PHYS});
+stDrone.cooldown=0.6; stDrone.resetTimer=0; stDrone.scored=false; // 前鋒專屬的回合狀態欄位（直接掛在 YawDrone 實例上）
+
+/* ── 分割畫面：席 0＝守門視角、席 1＝前鋒視角（同一個共用場地，
+   跟 x-hover-pk「兩個獨立場地並排」不同，這關兩台鏡頭看的是同一顆
+   球門／同一個場地） ── */
+const cams=[new THREE.PerspectiveCamera(64,1,0.05,80),new THREE.PerspectiveCamera(64,1,0.05,80)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  // 這關跟 pvp.html／單人版 x-goalkeeper.html 同一個物理家族
+  // （core/systems/yaw-drone.js 的 YawDrone，yaw=0 機頭朝 +Z），
+  // 理論上可以直接沿用 pvp.html updateSplitCam() 的正負號慣例
+  // （-sy/-cy）。即便如此，仍照專案教訓用 __ndDebug 做世界座標
+  // 數學驗證，不能只憑「這關跟 pvp 同慣例」就假設一定正確。
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x-sy*1.3,y+0.75,z-cy*1.3),.14);
+  cam.lookAt(x,y+0.15,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 前鋒 AI（席 1 若指派 AI：直接沿用單人版 updateAttacker 的單一
+   前鋒瞄準／抖動邏輯，同一組 aim 常數，不重新發明） ── */
+const ATK_AIM=new THREE.Vector3(0,GY,GZ);
+function updateStrikerAI(dt,diff){
+  const st=stDrone;
+  if(st.cooldown>0){st.cooldown-=dt;return;}
+  if(st.resetTimer>0){
+    st.resetTimer-=dt;
+    if(st.tumble)tumbleStep(st,dt,BOUNDS,PHYS);
+    if(st.resetTimer<=0)resetStriker();
+    return;
+  }
+  const spd=ATK_SPD[diff]??ATK_SPD.med;
+  const aim=ATK_AIM.clone();
+  if(diff==='easy')     aim.x+=Math.sin(simTime*0.8)*0.15;
+  else if(diff==='med') aim.x+=Math.sin(simTime*1.2)*0.06;
+  aiMoveWorld(st,aim,dt,spd,BOUNDS,PHYS);
+}
+
+/* ── 守門 AI（席 0 若指派 AI：單人版沒有這個角色，這裡新寫一個最小
+   可行的區域防守——貼球門線、左右／上下追蹤前鋒目前位置的投影，
+   比照規劃書「守門預測 GK_PRED」雛型精神，屬於有意義的主動防守，
+   刻意不用 hover-pk 那種「零輸入基準線」技巧——這關不是懸停任務，
+   零輸入等於守門員完全不撲救，會讓對戰失去意義） ── */
+function aiDefendGoal(dt,diff){
+  const spd=DEF_AI_SPD[diff]??DEF_AI_SPD.med;
+  const tgt=new THREE.Vector3(
+    THREE.MathUtils.clamp(stDrone.pos.x,-HW+BR,HW-BR),
+    THREE.MathUtils.clamp(stDrone.pos.y,GY-0.6,GY+0.6),
+    GZ-0.35,
+  );
+  aiMoveWorld(gkDrone,tgt,dt,spd,BOUNDS,PHYS);
+}
+
+/* ── 攔截／進球判定（沿單人版邏輯，改成單一前鋒 vs 單一守門） ── */
+let blockedCount=0, goalsScored=0;
+function resolveInterception(){
+  if(stDrone.cooldown>0||stDrone.resetTimer>0||stDrone.scored)return;
+  const INTERCEPT_R=BR*2.2;
+  const diff=gkDrone.pos.clone().sub(stDrone.pos);
+  const d2=diff.lengthSq();
+  if(d2<INTERCEPT_R*INTERCEPT_R&&d2>1e-4){
+    blockedCount++;
+    stDrone.scored=true; stDrone.resetTimer=1.5; stDrone.tumble=true;
+    const dist=Math.sqrt(d2), n=diff.divideScalar(dist);
+    // 2026-10-03：撞擊結果改機率分段（彈開／定桿／守門被撞飛），見 yaw-drone.js blockImpact()
+    const tier=blockImpact(gkDrone,stDrone,n);
+    toast(tier==='knock'?'💥 擋下，但守門被撞飛！':'✋ 守門擋下！'); sfx.play(tier==='knock'?'fail':'ok');
+  }
+}
+function checkStrikerGoal(){
+  if(stDrone.cooldown>0||stDrone.resetTimer>0||stDrone.scored)return;
+  if(stDrone.prevZ<GZ&&stDrone.pos.z>=GZ){
+    const dx=stDrone.pos.x, dy=stDrone.pos.y-GY;
+    const r=Math.sqrt(dx*dx+dy*dy);
+    if(r<=GI){
+      stDrone.scored=true; goalsScored++;
+      toast('🥅 前鋒得分！'); sfx.play('fail');
+      stDrone.resetTimer=1.8;
+    }else{
+      blockedCount++;
+      toast('✋ 擦門而過，算擋下！'); sfx.play('ok');
+      stDrone.resetTimer=1.2;
+    }
+  }
+  if(stDrone.pos.z>HL-BR){
+    if(!stDrone.scored)blockedCount++;
+    stDrone.scored=true; stDrone.resetTimer=1.0;
+  }
+}
+function resetStriker(){
+  stDrone.reset(STRIKER_SPAWN,0);
+  stDrone.cooldown=0.8; stDrone.scored=false; stDrone.tumble=false;
+}
+
+/* ── 賽局狀態 ── */
+let pDur='normal', timeLeft=GAME_TIME_OPTS.normal, simTime=0;
+let playing=false, finished=false;
+
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showIntro(focusIdx=0){
+  engine.simStarted=false; playing=false;
+  ui.showModal({title:'情境體驗 · 守門對戰',
+    html:`<p>席 0＝<strong>守門</strong>（防守球門），席 1＝<strong>前鋒</strong>（衝鋒進攻）——
+      一攻一守的天生對戰結構，前鋒衝過來時守門靠近攔截或撞偏即可擋下！</p>
+      <p>🥅 前鋒穿過球門中心圈算得分，撞偏／擦身算擋下，衝出底線也算擋下。<br>
+      比賽結束時比「擋下率」：守門擋下超過一半＝守門獲勝，反之前鋒獲勝。</p>
+      <p style="font-size:11px;color:#caa3b8">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-short', label:'⏱ 30 秒（快速）',onClick:()=>startGame('short')},
+      {id:'b-normal',label:'⏱ 60 秒（標準）',onClick:()=>startGame('normal')},
+      {id:'b-long',  label:'⏱ 90 秒（長場）',onClick:()=>startGame('long')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+  ui.gpSetFocus(['b-short','b-normal','b-long','b-pairing'],focusIdx);
+}
+function startGame(dur){
+  pDur=dur;
+  timeLeft=GAME_TIME_OPTS[dur]; simTime=0;
+  blockedCount=0; goalsScored=0;
+  gkDrone.reset(PLAYER_SPAWN,Math.PI);
+  resetStriker(); stDrone.cooldown=0.6;
+  ui.closeModal(); sfx.play('click');
+  pkc.apply((()=>{const a=[];a[SEAT_GK]=gkDrone;a[SEAT_ST]=stDrone;return a;})(),seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始守門對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>賽制：${GAME_TIME_OPTS[pDur]} 秒　剩餘 ${Math.max(0,timeLeft).toFixed(0)} 秒</p>
+      <p>✋ 守門擋下 ${blockedCount}　🥅 前鋒得分 ${goalsScored}</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const total=blockedCount+goalsScored;
+  const rate=total>0?blockedCount/total:null;
+  const winner=rate===null?'tie':rate>0.5?'守門':rate<0.5?'前鋒':'tie';
+  const rateTxt=rate===null?'—':Math.round(rate*100)+'%';
+  progress.record(ACT,{completed:true,score:blockedCount,
+    ...pkc.recordFields(),metrics:{blockedCount,goalsScored,saveRate:rate===null?0:Math.round(rate*100),
+      winner,humanCount,matchTime:GAME_TIME_OPTS[pDur]}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner}獲勝！`;
+  ui.showModal({title:'比賽結束 · '+resText,
+    html:`<p>✋ 守門擋下：<b>${blockedCount}</b> 次　🥅 前鋒得分：<b>${goalsScored}</b> 次<br>
+      共攻門 ${total} 次　守門擋下率 <b>${rateTxt}</b></p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDur)},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    simTime+=dt;
+
+    // 守門（席 0）
+    if(seatList[SEAT_GK].controller?.type==='ai'){
+      aiDefendGoal(dt,seatList[SEAT_GK].controller.diff||'med');
+    }else{
+      const p=input.playerFor(seatList[SEAT_GK].controller);
+      gkDrone.step(dt,p);
+    }
+
+    // 前鋒（席 1）——回合鎖定中（cooldown/resetTimer）不接受輸入，跟單人版
+    // AI 前鋒在鎖定期間「完全不動」的行為一致，真人操控時同理凍結。
+    if(seatList[SEAT_ST].controller?.type==='ai'){
+      updateStrikerAI(dt,seatList[SEAT_ST].controller.diff||'med');
+    }else if(stDrone.cooldown<=0&&stDrone.resetTimer<=0){
+      const p=input.playerFor(seatList[SEAT_ST].controller);
+      stDrone.step(dt,p);
+    }else{
+      stDrone.cooldown-=dt;
+      if(stDrone.resetTimer>0){
+        stDrone.resetTimer-=dt;
+        if(stDrone.tumble)tumbleStep(stDrone,dt,BOUNDS,PHYS);
+        if(stDrone.resetTimer<=0)resetStriker();
+      }
+    }
+
+    resolveInterception();
+    checkStrikerGoal();
+    if(goalMesh)goalMesh.rotation.z+=dt*0.4;
+
+    timeLeft-=dt;
+    if(timeLeft<=0){timeLeft=0;finishGame();}
+  }
+
+  meshes[0].position.copy(gkDrone.pos);
+  meshes[0].rotation.y=gkDrone.yaw+Math.PI; // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  meshes[1].position.copy(stDrone.pos);
+  meshes[1].rotation.y=stDrone.yaw+Math.PI;
+  if(meshes[0].userData.spin)meshes[0].userData.spin.rotation.y+=dt*1.5;
+  if(meshes[1].userData.spin)meshes[1].userData.spin.rotation.y+=dt*1.5;
+
+  cams.forEach((cam,i)=>updatePaneCam(cam,i===0?gkDrone:stDrone));
+
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="gk">守門 <b>${blockedCount}</b></span>`+
+    `<span>${pkc.topTag()}${GAME_TIME_OPTS[pDur]}秒賽制　剩 ${Math.max(0,Math.ceil(timeLeft))}秒</span>`+
+    `<span class="st">前鋒 <b>${goalsScored}</b></span>`;
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

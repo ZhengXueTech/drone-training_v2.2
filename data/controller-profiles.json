@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "note": "內建的遙控器設定：接上同款遙控器就會自動套用，不用網路。來源＝中心審核通過的清單（2026-10-07 匯出，已拿掉上傳者姓名）。",
+  "profiles": [
+    {
+      "id": "穿越机手柄 (Vendor: 1209 Product: 4f54)",
+      "name": "穿越机手柄",
+      "labels": {},
+      "axes": {
+        "throttle": {
+          "i": 2,
+          "inv": false,
+          "rest": 0.02,
+          "min": -0.904,
+          "max": 0.944
+        },
+        "yaw": {
+          "i": 3,
+          "inv": false,
+          "rest": 0.016,
+          "min": -0.912,
+          "max": 0.944
+        },
+        "pitch": {
+          "i": 1,
+          "inv": false,
+          "rest": 0.008,
+          "min": -0.928,
+          "max": 0.944
+        },
+        "roll": {
+          "i": 0,
+          "inv": false,
+          "rest": 0,
+          "min": -0.944,
+          "max": 0.944
+        }
+      },
+      "throttleType": "bottom",
+      "shape": "rc",
+      "buttons": {
+        "confirm": 4,
+        "back": 5,
+        "camCycle": 0,
+        "action": 1,
+        "selfLevel": 2,
+        "crouch": 3
+      },
+      "axBtns": [
+        {
+          "ax": 5,
+          "type": "hold",
+          "fn": "gear",
+          "on": -1,
+          "mid": -0.456
+        },
+        {
+          "ax": 4,
+          "type": "toggle",
+          "fn": "mode"
+        }
+      ],
+      "deadzone": 0.08,
+      "expo": 0,
+      "created": "2026-10-04",
+      "browser": "edge",
+      "os": "windows"
+    },
+    {
+      "id": "BETAFPV Joystick (Vendor: 0483 Product: 572b)",
+      "name": "BETAFPV Joystick",
+      "labels": {},
+      "axes": {
+        "throttle": {
+          "i": 2,
+          "inv": false,
+          "rest": 0,
+          "min": -1,
+          "max": 1
+        },
+        "yaw": {
+          "i": 3,
+          "inv": false,
+          "rest": -0.0005,
+          "min": -1.001,
+          "max": 1
+        },
+        "pitch": {
+          "i": 1,
+          "inv": false,
+          "rest": -0.0005,
+          "min": -1.001,
+          "max": 1
+        },
+        "roll": {
+          "i": 0,
+          "inv": false,
+          "rest": -0.0005,
+          "min": -1.001,
+          "max": 1
+        }
+      },
+      "throttleType": "bottom",
+      "shape": "rc",
+      "buttons": {
+        "gear": 1,
+        "mode": 3,
+        "confirm": 6
+      },
+      "axBtns": [
+        {
+          "ax": 4,
+          "type": "toggle",
+          "fn": "camCycle"
+        }
+      ],
+      "deadzone": 0.08,
+      "expo": 0,
+      "created": "2026-10-05",
+      "browser": "chrome",
+      "os": "windows"
+    }
+  ]
+}

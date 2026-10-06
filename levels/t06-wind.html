@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🌬️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第六關 逆風飛行｜newdrone T06 v1.1</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1424;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE T06 WIND v1.1</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { BatterySystem } from '../core/systems/battery.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t06');
+progress.migrateLegacy();
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const hud=new HUD(LEVEL.hud);
+const ui=new UI(input);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(10,1.7,24), new THREE.Vector3(-10,1.7,24),
+  new THREE.Vector3(0,1.7,27),  new THREE.Vector3(12,1.7,0)]});
+const wind=new WindSystem();
+const HOVER_Y=4.0, BOUND=28;
+const battery=new BatterySystem({start:100,drainPerSec:1.2,
+  chargers:[{pos:new THREE.Vector3(-3,0.3,-5),radius:2.6,rate:30}]});
+buildBasicField(engine.scene,{size:BOUND,sky:0x0c1424,skipCompassMark:true});
+/* 四方位地標（Phase 5 x-hover 驗證有效後推廣過來）：skipCompassMark:true
+   讓 buildBasicField 不要再畫它自己那顆北方錐體，改用完整四方位版本。 */
+const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
+
+/* ── 賽道：zigzag 檢查點（移植自基本版 stage6，座標整體平移置中） ── */
+const CP=[[0,0,16],[6,.5,10],[-6,-.5,4],[6,1,-2],[-6,0,-8],[5,.5,-14],[-5,-.5,-20],[0,0,-26]]
+  .map(([x,dy,z])=>new THREE.Vector3(x,HOVER_Y+dy,z));
+const rings=CP.map(p=>makeRing(p,{radius:1.9,color:0x64748b}));
+rings.forEach(r=>engine.scene.add(r));
+function paintRing(r,hex,op){r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex);
+  r.children[0].material.opacity=op??0.75;}
+let cpIdx=0; paintRing(rings[0],0x22c55e);
+
+/* 中央障礙柱（迫使繞行、不能直線飛） */
+const pillarM=new THREE.MeshStandardMaterial({color:0x64748b,roughness:.6,
+  emissive:0x334155,emissiveIntensity:.3});
+const pillarG=new THREE.CylinderGeometry(1,1,7,12);
+const obstacles=[new THREE.Vector3(0,HOVER_Y,7),new THREE.Vector3(0,HOVER_Y,-11)].map(p=>{
+  const m=new THREE.Mesh(pillarG,pillarM); m.position.copy(p); m.castShadow=!lowQ;
+  engine.scene.add(m); return m;});
+
+/* 充電站（黃色圓盤） */
+const charger=new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.4,0.4,20),
+  new THREE.MeshStandardMaterial({color:0x1e293b,emissive:0xeab308,emissiveIntensity:.6,metalness:.7}));
+charger.position.set(-3,0.2,-5); engine.scene.add(charger);
+
+/* ── 席位與機體（樣式可選——nd.settings.droneStyle 全關卡通用） ── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let beaconOn=progress.setting('headingBeacon',true);   // 機頭指示（遠看清楚朝向）
+let mesh=null, beacon=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);                       // 掛機體上，跟著位置與朝向
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const SPAWN=new THREE.Vector3(0,1.5,22);
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 統計（計分公式與基本版 stage6 一致） ── */
+let flightTime=0, obstacleHits=0, invulnT=0, finished=false;
+let altDevSum=0, altSamples=0, driftSum=0, driftSamples=0;
+let windCycle=0, chargingPrev=false;
+
+/* ── 引導（宣告式） ── */
+const guide=new Guide([
+  { text:'推左桿起飛到 3 公尺', done:s=>s.drone.pos.y>3 },
+  { text:'穿過發亮的綠色檢查點', arrow:CP[0], done:s=>s.cp>=1 },
+  { text:'注意右上風向，反向補正', done:s=>s.cp>=2 },
+],hud,engine.scene);
+
+/* ── 視角／模式／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function toggleMode(){
+  drone.mode=drone.mode==='arcade'?'pro':'arcade';
+  hud.showAttitude(drone.mode==='pro');       // 姿態儀：pro 模式才顯示（5.7）
+  hud.toast(drone.mode==='arcade'?'街機模式（定高輔助）':'專業模式（全姿態）','ok');
+  syncModes();
+}
+function syncModes(){ hud.setModes(drone.mode==='arcade'?'街機':'專業',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;         // 蹲姿（承基本版 Z 鍵）
+  if(e.code==='KeyM')toggleMode();
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=1){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'第六關 逆風飛行',
+    html:`<p>🌬️ 風向與風力持續變化，會不斷把無人機往旁邊推——
+      看右上角風向箭頭（指向被吹去的方向），往反方向推桿補正。</p>
+      <p>🟢 依序穿過 8 個檢查點　🚧 避開中央障礙柱<br>
+      🔋 電量會消耗，可到黃色充電站補充<br>
+      📊 結算顯示抗風分數與高度穩定度</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;   // 點一下換下一款（背景即時預覽）
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},  // 焦點留在樣式鈕，可連按
+      {id:'b-go',label:'開始逆風飛行',onClick:startGame}],align:'top'});  // 對話框靠上，讓下方跟機視角看得到機體本人
+  ui.gpSetFocus(['b-style','b-go'],focusIdx);   // 預設焦點在「開始」
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  guide.start();
+  hud.toast('起飛！注意側風','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>檢查點 ${cpIdx}/8・碰撞 ${obstacleHits} 次・飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-beacon',label:'機頭指示：'+(beaconOn?'開':'關'),
+        onClick:()=>{beaconOn=!beaconOn;progress.setSetting('headingBeacon',beaconOn);
+          beacon.visible=beaconOn;showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishRace(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  const avgAlt=altSamples>0?altDevSum/altSamples:0;
+  const stabilityScore=Math.round(THREE.MathUtils.clamp(100-avgAlt*20,0,100));
+  const avgDrift=driftSamples>0?driftSum/driftSamples:0;
+  const windScore=Math.round(THREE.MathUtils.clamp(100-avgDrift*18,0,100));
+  const score=Math.round((windScore+stabilityScore)/2);   // bestScore＝兩項平均
+  progress.record('t06',{completed:true,score,
+    metrics:{windScore,stabilityScore,obstacleHits,
+      flightTime:Math.round(flightTime),finalBattery:Math.round(battery.pct)}});
+  hud.setOffscreenTarget(null); hud.setGuide(null);
+  ui.showModal({title:'飛行報告 · 第六關',
+    html:`<p>⏱ 飛行時間：${flightTime.toFixed(1)} 秒<br>
+      🌬️ 抗風分數：<b>${windScore} / 100</b><br>
+      📊 高度穩定度：<b>${stabilityScore} / 100</b><br>
+      💥 障礙碰撞：${obstacleHits} 次　🔋 剩餘電量：${Math.round(battery.pct)}%</p>
+      <p>成績已記錄（nd.progress.t06）。抗風分數越高，代表側風下仍能穩住路線。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('依序穿過 8 個檢查點');
+hud.showAttitude(false);
+syncModes();
+const cpTargets=rings.map(r=>({pos:r.position,done:false}));
+const _e=new THREE.Euler();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  // 搖桿功能鍵——fnEdge 每幀無條件輪詢（[FIX 5]）
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');               // LB 按住＝蹲（STARTRC 無此鍵）
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished){
+    flightTime+=dt;
+    // 劇本化風場（公式移植自基本版 stage6：風向緩慢擺動、風力 40 秒漸強）
+    windCycle+=dt*0.10;
+    const dirX=Math.sin(windCycle)*1.0+Math.sin(windCycle*0.61)*0.5;
+    const dirZ=Math.sin(windCycle*0.37)*0.25;
+    const str=(1.0+Math.min(flightTime/40,1)*2.5+Math.sin(windCycle*1.9)*0.8)
+              *Math.hypot(dirX,dirZ)            // setScripted 會正規化方向，故乘回長度
+              *progress.classDiffCoef();        // 2026-08-02：班級難度倍率（index.html 設定，無設定＝1.0，行為不變）
+    wind.setScripted(dirX,dirZ,Math.max(str,0.2));
+    drone.wind=wind.vec;
+    prevPos.copy(drone.pos);
+    drone.update(dt,p);
+    battery.update(dt,drone.pos,simStarted);
+    if(battery.charging!==chargingPrev){
+      chargingPrev=battery.charging;
+      if(battery.charging){hud.toast('充電中…','ok');sfx.play('charge');}
+    }
+    sfx.lowBatteryTick(dt,battery.pct);
+    if(battery.empty)drone.vel.y-=5.9*dt;      // 電量耗盡：緩緩下沉（承基本版）
+    // 統計取樣（與基本版公式一致）
+    altDevSum+=Math.abs(drone.pos.y-HOVER_Y); altSamples++;
+    driftSum+=Math.abs(drone.vel.x)*dt; driftSamples+=dt;
+    // 障礙碰撞（1 秒無敵）
+    if(invulnT>0)invulnT-=dt;
+    else for(const ob of obstacles){
+      const dx=drone.pos.x-ob.position.x, dz=drone.pos.z-ob.position.z;
+      if(Math.hypot(dx,dz)<1.5&&Math.abs(drone.pos.y-ob.position.y)<3.5){
+        obstacleHits++; invulnT=1.0; sfx.play('fail');
+        drone.vel.addScaledVector(new THREE.Vector3(dx,0,dz).normalize(),4.0);
+        hud.toast(`撞到障礙柱！(${obstacleHits})`,'fail');
+        break;
+      }
+    }
+    // 檢查點（依序）
+    const cur=rings[cpIdx];
+    if(cur&&checkRingPass(cur,drone.pos,prevPos)){
+      paintRing(cur,0x64748b,0.3); cpTargets[cpIdx].done=true;
+      cpIdx++; sfx.play('ring');
+      hud.toast(`檢查點 ${cpIdx}/8`,'ok');
+      if(cpIdx>=rings.length)finishRace();
+      else paintRing(rings[cpIdx],0x22c55e);
+    }
+    guide.update(dt,{drone,cp:cpIdx});
+    hud.setOffscreenTarget(cpIdx<rings.length?rings[cpIdx].position:null);
+  }
+  // 機體姿態（FPV 隱藏自機）＋旋轉件
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  // 機頭指示：依相機距離放大，遠看仍清楚（暫停選單可關）
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(drone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  // 相機與 HUD（姿態儀與機體傾斜同源 q——檢查清單 #7）
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  wind.update(dt);
+  hud.setBattery(battery.pct);
+  hud.setWind(engine.simStarted?wind.hudInfo():null,engine.simStarted?wind.screenArrowDeg(drone.pos,engine.camera):null);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(`檢查點 ${cpIdx}/8`);
+  if(drone.mode==='pro'){
+    _e.setFromQuaternion(drone.q,'YXZ');
+    hud.setAttitude(_e.x,-_e.z);
+  }
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,cpTargets,{route:true,landmarks:compassLandmarks});
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🔶</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第九關 動態障礙｜newdrone T09</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE T09 DYNAMIC v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { BatterySystem } from '../core/systems/battery.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t09');
+progress.migrateLegacy();
+
+/* ── 動態障礙：跟 t05/t07/t08 一樣沿用 sandbox 的「連續課程」結構——依序穿過
+   6 個檢查點，全程要閃避 6 個持續移動的障礙物（左右擺動／上下振動／圓形軌道
+   三種節奏各兩個），核心考驗是「觀察節奏、抓安全空隙」，不是操控精細度。
+   沒有分階段場景重建，不需要 Guide 狀態機，Guide 只用來顯示一行提示文字。 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'t09',input});   // 挑戰條件（須先於 HUD：決定是否建立風場面板）
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(16,7,14), new THREE.Vector3(-16,7,14), new THREE.Vector3(0,7,20)]});
+/* 最遠檢查點 z=-42，留 6 裕度 → BOUND=48（沿用 t04-t08 教訓：BOUND 一定要
+   包住最遠目標並留出「飛過去」的裕度）。 */
+const BOUND=48, HOVER_Y=4.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19});
+
+/* ── 機體（樣式可在開場畫面切換，見 showIntro 的 b-style 按鈕）── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const SPAWN=new THREE.Vector3(0,1.5,5);   // 地面出生，同 t04/t05/t08
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 6 個動態障礙（忠實移植自基本版 stage9 的三種移動節奏與參數，
+   world.js 沒有現成的「移動中障礙物」原型，直接沿用基本版的圓柱視覺＋
+   sin/cos 位置公式，關卡本地維護，不是另外發明新系統） ── */
+const DYNAMIC_OBSTACLES=[
+  { center:new THREE.Vector3(0,HOVER_Y,-10), type:'sway-x', speed:1.2, amplitude:3.5, phase:0 },
+  { center:new THREE.Vector3(0,HOVER_Y,-25), type:'sway-x', speed:1.6, amplitude:4.0, phase:Math.PI },
+  { center:new THREE.Vector3(3,HOVER_Y,-17), type:'bob-y',  speed:1.0, amplitude:2.2, phase:0 },
+  { center:new THREE.Vector3(-3,HOVER_Y,-33),type:'bob-y',  speed:1.3, amplitude:2.0, phase:Math.PI*0.7 },
+  { center:new THREE.Vector3(0,HOVER_Y,-20), type:'orbit',  speed:0.8, amplitude:3.0, phase:0 },
+  { center:new THREE.Vector3(0,HOVER_Y,-38), type:'orbit',  speed:1.0, amplitude:2.5, phase:Math.PI },
+];
+const obstacleG=new THREE.CylinderGeometry(0.8,0.8,5,10);
+const obstacleM=new THREE.MeshStandardMaterial({color:0xf97316,emissive:0xf97316,emissiveIntensity:.7,metalness:.5});
+const obstacles=DYNAMIC_OBSTACLES.map(od=>{
+  const m=new THREE.Mesh(obstacleG,obstacleM.clone()); m.position.copy(od.center); m.castShadow=!lowQ;
+  engine.scene.add(m); return { mesh:m, def:od };
+});
+function updateDynamicObstacles(t){
+  obstacles.forEach(({mesh,def})=>{
+    const tt=t*def.speed+def.phase, c=def.center;
+    if(def.type==='sway-x') mesh.position.set(c.x+Math.sin(tt)*def.amplitude,c.y,c.z);
+    else if(def.type==='bob-y') mesh.position.set(c.x,c.y+Math.sin(tt)*def.amplitude,c.z);
+    else if(def.type==='orbit') mesh.position.set(c.x+Math.cos(tt)*def.amplitude,c.y,c.z+Math.sin(tt)*def.amplitude*0.5);
+  });
+}
+let invulnTObstacle=0, obstacleHits=0;
+
+/* ── 6 個檢查點（依序穿過，跟 t05 一樣一次只判定當前那一個——這關的挑戰在
+   「閃避移動障礙」，不是路線規劃，沿用固定航線設計） ── */
+const CHECKPOINT_POS=[
+  new THREE.Vector3(0,HOVER_Y,-6),
+  new THREE.Vector3(5,HOVER_Y+1,-13),
+  new THREE.Vector3(-5,HOVER_Y,-21),
+  new THREE.Vector3(5,HOVER_Y-0.5,-28),
+  new THREE.Vector3(-4,HOVER_Y+1,-35),
+  new THREE.Vector3(0,HOVER_Y,-42),
+];
+const checkpoints=CHECKPOINT_POS.map((p,i)=>{
+  const r=makeRing(p,{radius:1.8,color:i===0?0x22c55e:0x64748b});
+  engine.scene.add(r); return r;
+});
+function paintRing(r,hex,op){ r.children[0].material.color.setHex(hex);
+  r.children[1].material.color.setHex(hex); r.children[0].material.opacity=op??0.75; }
+let checkpointIndex=0;
+
+/* ── 充電站＋電池（沿用 t04/t05 已驗證過的 BatterySystem 用法，單一充電站、
+   無 onceOnly／maxPct，跟 t08 的限電規劃刻意不同——這關重點是躲避障礙，
+   電量只是背景壓力） ── */
+const chargerPos=new THREE.Vector3(0,0.3,-24);
+const charger=new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.4,0.4,20),
+  new THREE.MeshStandardMaterial({color:0x1e293b,emissive:0xeab308,emissiveIntensity:.6,metalness:.7}));
+charger.position.copy(chargerPos); engine.scene.add(charger);
+const battery=new BatterySystem({start:100,drainPerSec:1.4*progress.classDiffCoef(),chargers:[{pos:chargerPos,radius:2.6,rate:28}]}); // 2026-08-02：班級難度倍率，無設定＝1.0、行為不變
+
+/* ── 引導（單步驟，HUD 文字用） ── */
+const guide=new Guide([
+  { text:'觀察移動障礙的節奏，抓準空隙依序穿過 6 個檢查點', done:s=>s.checkpointIndex>=checkpoints.length },
+],hud,engine.scene);
+
+let flightTime=0, altitudeDeviationSum=0, altitudeSampleCount=0, finished=false;
+
+/* ── 視角／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(({arcade:'街機',angle:'角度',pro:'專業'})[drone.mode],CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'動態障礙',
+    html:`<p>🔶 本關障礙物不再靜止——它們會持續移動！</p>
+      <p>↔️ <b>左右擺動</b>：在通道內來回移動<br>
+      ↕️ <b>上下振動</b>：在你的飛行高度附近震動<br>
+      🔄 <b>圓形軌道</b>：繞著中心點旋轉</p>
+      <p>🟢 依序穿越 6 個綠色檢查點・⏳ 觀察節奏，在安全空隙出現時快速通過<br>
+      🔋 留意電量，充電站在地圖中央</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-go',label:'🔶 開始動態障礙訓練',onClick:startGame}].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  ch.apply(drone); syncModes(); hud.showAttitude(drone.mode!=='arcade');
+  guide.start();
+  hud.setOffscreenTarget(checkpoints[0].position);
+  hud.toast('起飛！觀察節奏再穿越','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>已穿越 ${checkpointIndex}/${checkpoints.length}・已飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null);
+  const avgDeviation=altitudeSampleCount>0?(altitudeDeviationSum/altitudeSampleCount):0;
+  const stabilityScore=Math.round(THREE.MathUtils.clamp(100-avgDeviation*20,0,100));
+  const finalBattery=Math.round(battery.pct);
+  /* 分數以高度穩定度為基底，撞到移動障礙扣分較重（比 t05 靜態障礙扣分高，
+     呼應「觀察節奏」是本關核心考驗，撞到代表節奏沒抓對） */
+  const score=Math.round(THREE.MathUtils.clamp(stabilityScore-obstacleHits*10,0,100));
+  progress.record('t09',{completed:true,score,
+    metrics:{flightTime:Math.round(flightTime),obstacleHits,stabilityScore,finalBattery},...ch.recordFields()});
+  ui.showModal({title:'🔶 動態障礙 完成！',
+    html:`<p>⏱ 飛行時間：${flightTime.toFixed(1)} 秒　📊 高度穩定度：${stabilityScore}/100</p>
+      <p>💥 動態碰撞次數：${obstacleHits} 次　🔋 完賽電量：${finalBattery}%</p>
+      <p>碰撞次數為零代表你已掌握觀察移動障礙節奏的技巧。成績已記錄（nd.progress.t09）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('動態障礙：觀察節奏・依序穿環');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 測試/除錯 hook ── */
+window.ndDebug=()=>({checkpointIndex,total:checkpoints.length,obstacleHits,
+  batteryPct:battery.pct,dronePos:drone.pos.clone(),flightTime,finished});
+window.ndTest={
+  forceFinish:()=>{
+    checkpoints.forEach(r=>r.userData.passed=true);
+    checkpointIndex=checkpoints.length;
+    finishLevel();
+  },
+  /* warp 到「檢查點前方一小段」而非直接判定成功，讓接下來一小段真實飛行
+     仍要真的觸發 checkRingPass——同系列 warp 慣例的用意 */
+  warpBeforeCheckpoint:(i)=>{
+    const r=checkpoints[i]; if(!r)return false;
+    drone.pos.set(r.position.x,r.position.y,r.position.z+3);
+    drone.vel.set(0,0,0);
+    for(let k=0;k<i;k++)checkpoints[k].userData.passed=true;
+    checkpointIndex=i;
+    paintRing(checkpoints[i],0x22c55e);
+    hud.setOffscreenTarget(checkpoints[i].position);
+    return true;
+  }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted&&!finished){
+    flightTime+=dt;
+    altitudeDeviationSum+=Math.abs(drone.pos.y-HOVER_Y); altitudeSampleCount++;
+    prevPos.copy(drone.pos);
+    ch.update(dt,drone,engine.camera);
+    drone.update(dt,p);
+    battery.update(dt,drone.pos,true);
+    if(battery.empty) drone.vel.y-=5.9*dt;   // 電量耗盡：緩緩下沉但不強制中斷（承基本版）
+    updateDynamicObstacles(flightTime);
+
+    // 動態障礙碰撞（門檻沿用基本版：水平 1.3、垂直 2.8，是針對這關「節奏躲避」
+    // 特別調校過的數值，比 t05 靜態障礙的門檻更緊，呼應障礙本身會動、判定
+    // 需要更貼近實際圓柱形體才公平）
+    if(invulnTObstacle>0) invulnTObstacle-=dt;
+    else for(const {mesh:ob} of obstacles){
+      const dx=drone.pos.x-ob.position.x, dz=drone.pos.z-ob.position.z;
+      if(Math.hypot(dx,dz)<1.3&&Math.abs(drone.pos.y-ob.position.y)<2.8){
+        obstacleHits++; invulnTObstacle=1.2; sfx.play('fail');
+        drone.vel.addScaledVector(new THREE.Vector3(dx,0.5,dz).normalize(),5.0);
+        hud.toast(`撞到動態障礙！(${obstacleHits})`,'fail');
+        break;
+      }
+    }
+    // 依序穿環
+    const target=checkpoints[checkpointIndex];
+    if(target&&checkRingPass(target,drone.pos,prevPos)){
+      paintRing(target,0x64748b,0.3);
+      checkpointIndex++; sfx.play('ring');
+      hud.toast(`檢查點 ${checkpointIndex}/${checkpoints.length}`,'ok');
+      if(checkpointIndex>=checkpoints.length){
+        finishLevel();
+      } else {
+        paintRing(checkpoints[checkpointIndex],0x22c55e);
+        hud.setOffscreenTarget(checkpoints[checkpointIndex].position);
+      }
+    }
+    guide.update(dt,{checkpointIndex});
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setBattery(battery.pct);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(engine.simStarted?`檢查點 ${checkpointIndex}/${checkpoints.length}`:'');
+  const mapTargets=checkpoints.map((r,i)=>({pos:r.position,done:i<checkpointIndex}));
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets,{route:true});
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

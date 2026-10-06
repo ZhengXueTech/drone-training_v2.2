@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🛡️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>第三關 緊急處置教學｜newdrone T03</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  /* 通用進度條——危險倒數（kill 階段）與穩定持有（collision 階段）共用一組元件，
+     只是顏色/文字不同：不需要各關卡各刻一份。 */
+  #prog-wrap{display:none;position:fixed;left:50%;bottom:120px;transform:translateX(-50%);
+    width:70%;max-width:320px;z-index:25;pointer-events:none;text-align:center;}
+  #prog-track{height:10px;background:rgba(15,23,42,.85);border:1px solid rgba(148,163,184,.3);
+    border-radius:999px;overflow:hidden;}
+  #prog-fill{height:100%;width:100%;transition:width .1s linear;}
+  #prog-label{font-size:10px;color:#f87171;margin-bottom:4px;}
+  #prog-label.pulse{animation:pw .6s ease-in-out infinite;}
+  @keyframes pw{0%,100%{opacity:1}50%{opacity:.55}}
+  /* 全螢幕事件橫幅（訊號遺失／遭到擦撞）——bespoke，HUD 目前沒有對應元件 */
+  #event-banner{display:none;position:fixed;inset:0;z-index:24;pointer-events:none;
+    align-items:center;justify-content:center;flex-direction:column;gap:10px;
+    background:rgba(10,4,4,.28);}
+  #event-banner .t{font-size:clamp(20px,5vw,34px);font-weight:900;color:#f87171;
+    text-shadow:0 0 12px rgba(239,68,68,.85);letter-spacing:.06em;text-align:center;padding:0 24px;
+    animation:pw .6s ease-in-out infinite;}
+  #event-banner .s{font-size:12px;color:#cbd5e1;text-align:center;padding:0 24px;font-family:'Share Tech Mono',monospace;}
+  /* 緊急停止鈕——bespoke（教學核心互動，HUD 沒有對應按鈕） */
+  /* 2026-09-30 修正（使用者回報：緊急按鈕位置跟小地圖疊在一起）：
+     ①原本 right:18px;bottom:120px 剛好壓在右下角小地圖上 → 改放畫面正中下方、警示條正上方，
+       跟「看警示條見底前按下」的教學動線一致；
+     ②原本基底同時寫了 display:none 與後面的 display:flex，後者蓋掉前者，按鈕其實一直顯示
+       → 基底只留 none，只有 .show 才顯示。 */
+  #kill-btn{display:none;position:fixed;left:50%;bottom:150px;margin-left:-42px;z-index:26;
+    width:84px;height:84px;border-radius:50%;
+    background:linear-gradient(180deg,rgba(239,68,68,.35),rgba(127,29,29,.5));
+    border:2px solid rgba(239,68,68,.75);color:#fca5a5;font-weight:900;font-size:11px;
+    align-items:center;justify-content:center;text-align:center;line-height:1.3;
+    cursor:pointer;touch-action:none;box-shadow:0 0 18px rgba(239,68,68,.35);}
+  #kill-btn.show{display:flex;flex-direction:column;}
+  #kill-btn:active{transform:scale(.92);background:linear-gradient(180deg,#f87171,#b91c1c);color:#1e0a0a;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="event-banner"><div class="t" id="event-banner-t"></div><div class="s" id="event-banner-s"></div></div>
+<div id="prog-wrap"><div id="prog-label"></div><div id="prog-track"><div id="prog-fill"></div></div></div>
+<div id="kill-btn"><span>⛔</span><span id="kill-key">SPACE</span></div>
+<div id="ver">NEWDRONE T03 EMERGENCY v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { checkRingPass } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('t03');
+progress.migrateLegacy();
+
+/* ── 引擎與系統（沿用 t02/t06 同一套） ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const hud=new HUD(LEVEL.hud);
+const ui=new UI(input);
+const rig=new CameraRig(engine.camera,{pilotPositions:[
+  new THREE.Vector3(9,1.7,10), new THREE.Vector3(-9,1.7,10), new THREE.Vector3(0,1.7,14)]});
+/* BOUND 需同時包住①牆面 z=-18（撞牆判定在 remaining<=1.2，即 z≈-16.8）、
+   ②訊號失靈降落環 z=-10、③擦撞入侵機 x=±10，且每一個都要留出「真的飛得過去/穿得過去」
+   的裕度——這是 t02「最後一圈碰不到」踩過的坑，這次先把數字都對過一遍：
+   z 方向最遠 18、留 8 裕度 → 26；x 方向最遠 10、留 10 裕度足夠 → 沿用同一個 BOUND。 */
+const BOUND=26, HOVER_Y=4.0;
+buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19});
+
+/* ── 機體（樣式可在開場畫面切換，見 showIntro 的 b-style 按鈕）── */
+const teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  const inner=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  inner.castShadow=true;
+  mesh=new THREE.Group(); mesh.add(inner);
+  Object.assign(mesh.userData,inner.userData);
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const SPAWN=new THREE.Vector3(0,1.5,5);
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},spawn:SPAWN});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+const _eTmp=new THREE.Euler();
+
+/* ── 三個教學階段：緊急停止／訊號失靈／擦撞失控——每階段內部有自己的子階段狀態機
+   （承基本版 training-stage3 設計，物理改用 core/physics.js 的 Drone；
+   純劇本演出的片段——衝牆自動前飛／自由落體／失控保護懸停／亂流翻滾——
+   維持關卡本地手刻，因為這些不是「玩家操作」而是演出，physics.js 的 Drone.update()
+   本來就不是設計來表達這些的。真正需要玩家操作的子階段一律呼叫 drone.update(dt,input)。） */
+const STAGE_NAMES=['kill','signal','collision'];
+const WALL_Z=-18, KILL_SPEED=4.0, KILL_CRASH_MARGIN=1.2;
+const SIGNAL_WAIT_T=2.0, SIGNAL_BLACKOUT_T=4.0;
+const PAD_POS=new THREE.Vector3(0,HOVER_Y,-10);
+const COLLISION_WAIT_T=1.6, COLLISION_TUMBLE_T=1.5, STABLE_HOLD_REQUIRED=1.5;
+
+let subPhase='', subTimer=0, holdTimer=0;
+let killAttempts=0, killLandTimer=0;
+let calmWindowCount=0, calmPressesTotal=0, prevAxisActive=false;
+let stageDone={kill:false,signal:false,collision:false};
+let stageObjs={};
+let lastGuideIdx=-2;
+let flightTime=0, finished=false;
+
+const guide=new Guide([
+  { text:'牆快到了，立刻緊急停止！', done:s=>s.killDone },
+  { text:'保持冷靜，等待訊號恢復', done:s=>s.signalDone },
+  { text:'擦撞後冷靜穩住機身', done:s=>s.collisionDone },
+],hud,engine.scene);
+
+function clearStageObjs(){
+  Object.values(stageObjs).forEach(o=>{ if(o instanceof THREE.Object3D) engine.scene.remove(o); });
+  stageObjs={};
+}
+function setProg(frac,kind){
+  const wrap=document.getElementById('prog-wrap');
+  if(frac==null){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  const fill=document.getElementById('prog-fill'), label=document.getElementById('prog-label');
+  fill.style.width=Math.max(0,Math.min(100,frac*100))+'%';
+  if(kind==='danger'){
+    fill.style.background='linear-gradient(90deg,#facc15,#ef4444)';
+    label.textContent='⚠️ 前方障礙物，即將發生碰撞！'; label.classList.add('pulse');
+  } else {
+    fill.style.background='linear-gradient(90deg,#facc15,#4ade80)';
+    label.textContent='保持穩定持續達標'; label.classList.remove('pulse');
+  }
+}
+function showBanner(title,sub){
+  document.getElementById('event-banner-t').textContent=title;
+  document.getElementById('event-banner-s').textContent=sub;
+  document.getElementById('event-banner').style.display='flex';
+}
+function hideBanner(){ document.getElementById('event-banner').style.display='none'; }
+function setKillBtn(on){ document.getElementById('kill-btn').classList.toggle('show',!!on); }
+/* 2026-09-30 新增（使用者回報：搖桿玩家沒有提示）：緊急停止的按鍵依目前裝置顯示。
+   鍵盤＝SPACE、手把＝A 鍵（主迴圈本來就接受 confirm 鍵）、觸控＝點紅色按鈕。 */
+let curDevice='keyboard';
+function killKey(){ return curDevice==='gamepad'?'手把 A 鍵':curDevice==='touch'?'紅色按鈕':'SPACE'; }
+function refreshKillLabel(){
+  document.getElementById('kill-key').textContent=curDevice==='gamepad'?'A 鍵':curDevice==='touch'?'點我':'SPACE';
+  if(STAGE_NAMES[guide.idx]==='kill'&&subPhase==='approaching')hud.setGuide('牆快到了，按 '+killKey()+' 煞停');
+}
+
+/* ── ①緊急停止 ── */
+function enterKill(){
+  subPhase='approaching'; subTimer=0;
+  drone.reset(SPAWN);
+  const wall=new THREE.Mesh(new THREE.PlaneGeometry(16,8),
+    new THREE.MeshStandardMaterial({color:0xef4444,transparent:true,opacity:0.35,
+      emissive:0xef4444,emissiveIntensity:0.5,side:THREE.DoubleSide}));
+  wall.position.set(0,4,WALL_Z);
+  engine.scene.add(wall); stageObjs.wall=wall;
+  stageObjs.startZ=drone.pos.z;
+  hud.toast('①緊急停止：見底前按 '+killKey(),'warn');
+  hud.setGuide('牆快到了，按 '+killKey()+' 煞停');
+  setKillBtn(true);
+}
+function attemptKillSwitch(){
+  if(STAGE_NAMES[guide.idx]!=='kill'||subPhase!=='approaching')return;
+  subPhase='killed'; subTimer=0; killLandTimer=0;
+  setProg(null); setKillBtn(false); sfx.play('warn');
+  hud.setGuide('動力已切斷，自由落體中');
+  hud.toast('✅ 動力已切斷','ok');
+}
+function updateKillApproaching(dt){
+  drone.pos.z-=KILL_SPEED*dt;
+  const totalDist=stageObjs.startZ-WALL_Z, remaining=drone.pos.z-WALL_Z;
+  setProg(THREE.MathUtils.clamp(remaining/totalDist,0,1),'danger');
+  if(remaining<=KILL_CRASH_MARGIN){
+    killAttempts++;
+    setProg(null); setKillBtn(false); sfx.play('fail');
+    engine.paused=true;
+    ui.showModal({title:'撞牆了！',
+      html:`<p>這次沒有及時按下緊急停止。下次警示條快見底之前，就要果斷按 ${killKey()}。</p>`,
+      buttons:[{id:'b-retry-kill',label:'🔄 重新挑戰',onClick:()=>{ui.closeModal();engine.paused=false;enterKill();}}]});
+  }
+}
+function updateKillFalling(dt){
+  drone.vel.z*=(1-Math.min(dt*2,1));
+  drone.vel.y-=9.81*dt;
+  drone.pos.addScaledVector(drone.vel,dt);
+  if(drone.pos.y<0.6){
+    drone.pos.y=0.6; drone.vel.set(0,0,0);
+    killLandTimer+=dt;
+    if(killLandTimer>1.0){ killLandTimer=0; stageDone.kill=true; }
+  }
+}
+
+/* ── ②訊號失靈 ── */
+function enterSignal(){
+  subPhase='wait'; subTimer=0;
+  drone.reset(new THREE.Vector3(0,HOVER_Y,5));
+  hud.toast('②訊號失靈：正常飛行中','warn');
+  hud.setGuide('保持冷靜，等待訊號恢復');
+}
+function trackCalm(p){
+  const active=Math.abs(p.throttle)+Math.abs(p.yaw)+Math.abs(p.pitch)+Math.abs(p.roll)>0.5;
+  if(active&&!prevAxisActive)calmWindowCount++;
+  prevAxisActive=active;
+}
+function updateFailsafeHover(dt){
+  const yErr=HOVER_Y-drone.pos.y;
+  const targetVy=THREE.MathUtils.clamp(yErr*1.5,-3,3);
+  drone.vel.y+=(targetVy-drone.vel.y)*Math.min(1,6*dt);
+  const keep=Math.pow(0.05,dt);
+  drone.vel.x*=keep; drone.vel.z*=keep;
+  drone.pos.addScaledVector(drone.vel,dt);
+  drone.tilt.pitch+=(0-drone.tilt.pitch)*Math.min(1,6*dt);
+  drone.tilt.roll+=(0-drone.tilt.roll)*Math.min(1,6*dt);
+  _eTmp.set(drone.tilt.pitch,drone.yaw,drone.tilt.roll,'YXZ');
+  drone.q.setFromEuler(_eTmp);
+}
+function enterBlackout(){
+  subPhase='blackout'; subTimer=0; calmWindowCount=0; prevAxisActive=false;
+  showBanner('📡 訊號遺失','保持冷靜，不要瘋狂按鍵，無人機會自動觸發失控保護懸停');
+  hud.setGuide('訊號中斷，等待恢復');
+}
+function enterRecover(){
+  subPhase='recover'; subTimer=0;
+  calmPressesTotal+=calmWindowCount;
+  hideBanner();
+  const msg=calmWindowCount<=2?`✅ 冷靜應對！中斷期間只按了 ${calmWindowCount} 次鍵`
+    :`⚠️ 中斷期間按了 ${calmWindowCount} 次鍵——下次先觀察再行動`;
+  hud.toast(msg,calmWindowCount<=2?'ok':'warn');
+  hud.setGuide('飛向綠色光環安全降落');
+  const pad=makeRing(PAD_POS,{radius:2.0,color:0x22c55e});
+  engine.scene.add(pad); stageObjs.pad=pad;
+  hud.setOffscreenTarget(pad.position);
+}
+
+/* ── ③擦撞失控 ── */
+function enterCollision(){
+  subPhase='wait'; subTimer=0;
+  drone.reset(new THREE.Vector3(0,HOVER_Y,5));
+  const intruder=new THREE.Mesh(new THREE.SphereGeometry(0.4,12,12),
+    new THREE.MeshStandardMaterial({color:0xf87171,emissive:0xf87171,emissiveIntensity:1.2}));
+  intruder.position.set(-10,HOVER_Y-1.5,-2);
+  engine.scene.add(intruder); stageObjs.intruder=intruder;
+  hud.toast('③擦撞失控：注意左側接近的無人機','warn');
+  hud.setGuide('注意左側接近的無人機');
+}
+function enterTumble(){
+  subPhase='tumble'; subTimer=0; calmWindowCount=0; prevAxisActive=false;
+  if(stageObjs.intruder){ engine.scene.remove(stageObjs.intruder); delete stageObjs.intruder; }
+  drone.vel.x+=(Math.random()-0.5)*6; drone.vel.y+=1.5; drone.vel.z+=(Math.random()-0.5)*6;
+  showBanner('💥 遭到擦撞！','姿態暫時失控，冷靜等待可以重新操控的時機');
+  hud.setGuide('姿態失控中，稍等一下');
+}
+function updateTumble(dt){
+  drone.tilt.pitch+=(Math.random()-0.5)*8*dt;
+  drone.tilt.roll+=(Math.random()-0.5)*8*dt;
+  _eTmp.set(drone.tilt.pitch,drone.yaw,drone.tilt.roll,'YXZ');
+  drone.q.setFromEuler(_eTmp);
+  drone.vel.y-=9.81*dt;
+  drone.vel.multiplyScalar(1-Math.min(dt*0.8,1));
+  drone.pos.addScaledVector(drone.vel,dt);
+  if(drone.pos.y<0.8)drone.pos.y=0.8;
+}
+function enterStabilize(){
+  subPhase='stabilize'; subTimer=0; holdTimer=0;
+  calmPressesTotal+=calmWindowCount;
+  hideBanner();
+  hud.setGuide('慢慢穩住機身，保持水平懸停');
+  setProg(0,'stabilize');
+}
+
+/* ── 階段切換 ── */
+function enterStage(idx){
+  clearStageObjs(); hud.setOffscreenTarget(null); setProg(null); hideBanner(); setKillBtn(false);
+  const name=STAGE_NAMES[idx];
+  if(name==='kill') enterKill();
+  else if(name==='signal') enterSignal();
+  else if(name==='collision') enterCollision();
+}
+
+/* ── 視角／蹲姿（沿用 t02/t06） ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes('街機',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;
+  if(e.code==='Escape')togglePause();
+  if(e.code==='Space'&&!e.repeat)attemptKillSwitch();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+document.getElementById('kill-btn').addEventListener('pointerdown',e=>{e.preventDefault();attemptKillSwitch();});
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=1){
+  engine.simStarted=false;
+  const bg=ui.showModal({
+    title:'緊急處置教學',
+    html:`<p>🛡️ 這一關練習三種真實飛行中可能遇到的危急狀況：</p>
+      <p><b>①緊急停止（Kill Switch）</b>：按 <b>SPACE</b>（手把 <b>A 鍵</b>、觸控點<b>紅色按鈕</b>）立刻切斷動力，是萬不得已才用的最後手段。<br>
+      <b>②訊號突然失靈</b>：學習在訊號中斷時保持冷靜，不要瘋狂按鍵。<br>
+      <b>③被其他無人機擦撞失控</b>：學習在姿態失控後，冷靜等待並重新穩定機身。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
+      {id:'b-go',label:'開始第一項：緊急停止教學',onClick:startGame}],align:'top'});
+  ui.gpSetFocus(['b-style','b-go'],focusIdx);
+}
+function startGame(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  guide.start(); lastGuideIdx=-2;
+  hud.toast('訓練開始！','ok');
+}
+function togglePause(){
+  if(!engine.simStarted||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>目前階段：${guide.idx+1}/3・已飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishLevel(){
+  if(finished)return;
+  finished=true; sfx.play('finish');
+  hud.setOffscreenTarget(null); hud.setGuide(null); setProg(null); setKillBtn(false); hideBanner();
+  const score=Math.round(flightTime);
+  progress.record('t03',{completed:true,score,
+    metrics:{flightTime:score,killAttempts,calmPresses:calmPressesTotal}});
+  ui.showModal({title:'緊急處置教學 完成！',
+    html:`<p>⏱ 總時間：${flightTime.toFixed(1)} 秒　🚨 緊急停止重試：${killAttempts} 次</p>
+      <p>你已經學會緊急停止的正確時機，也體驗過訊號中斷與碰撞失控的應對方式。成績已記錄（nd.progress.t03）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再挑戰',onClick:()=>location.reload()},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('緊急處置：停止→訊號失靈→擦撞失控');
+hud.showAttitude(true);
+syncModes();
+
+/* ── 測試/除錯 hook（承專案慣例 window.ndDebug/window.ndTest） ── */
+window.ndDebug=()=>({stageIdx:guide.idx,stageName:STAGE_NAMES[Math.max(0,guide.idx)],subPhase,
+  subTimer,holdTimer,killAttempts,calmWindowCount,calmPressesTotal,
+  dronePos:drone.pos.clone(),droneVel:drone.vel.clone(),tilt:{...drone.tilt},finished});
+window.ndTest={
+  /* 直接判定「當前這個巨集階段」達標——headless 快速迭代用，不模擬真實操作。
+     ⚠ 這一關的核心風險（撞牆邊界、降落環、翻滾後座標）已经在下方每個
+     真實子階段各自驗證過一次可達性，這裡只是加速跳關，不是取代真實測試。 */
+  forceStageDone:()=>{
+    const name=STAGE_NAMES[guide.idx];
+    if(name==='kill')stageDone.kill=true;
+    else if(name==='signal')stageDone.signal=true;
+    else if(name==='collision')stageDone.collision=true;
+  },
+  triggerKill:()=>attemptKillSwitch(),
+  /* 直接把無人機傳送到降落環正前方一小段距離，讓接下來的真實前飛能真的
+     觸發 checkRingPass（同 t02 warpBeforeRing 的用意：驗證位置本身到不到得了）。 */
+  warpBeforePad:()=>{
+    if(!stageObjs.pad)return false;
+    drone.pos.set(PAD_POS.x,PAD_POS.y,PAD_POS.z+3);
+    drone.vel.set(0,0,0); drone.yaw=0;
+    return true;
+  }
+};
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt); ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  if(p.device!==curDevice){ curDevice=p.device; refreshKillLabel(); }
+  hud.setGpBar(p.device,{keyboard:'<kbd>SPACE</kbd>緊急停止',gamepad:'<kbd>A</kbd>緊急停止',touch:'👆紅色按鈕緊急停止'});
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+      /* A 鍵＝緊急停止的替代按鍵（沿用 InputManager 既有 confirm 語意，不必新增按鍵映射） */
+      if(STAGE_NAMES[guide.idx]==='kill'&&subPhase==='approaching'&&p.fnEdge('confirm'))attemptKillSwitch();
+    }
+  }
+  if(simStarted&&!finished){
+    flightTime+=dt;
+    const stageName=STAGE_NAMES[Math.max(0,guide.idx)];
+    const fullInput={throttle:p.throttle,yaw:p.yaw,pitch:p.pitch,roll:p.roll};
+    prevPos.copy(drone.pos);
+
+    if(stageName==='kill'){
+      if(subPhase==='approaching')updateKillApproaching(dt);
+      else if(subPhase==='killed')updateKillFalling(dt);
+    } else if(stageName==='signal'){
+      if(subPhase==='wait'){
+        drone.update(dt,fullInput); subTimer+=dt;
+        if(subTimer>=SIGNAL_WAIT_T)enterBlackout();
+      } else if(subPhase==='blackout'){
+        trackCalm(p); updateFailsafeHover(dt); subTimer+=dt;
+        if(subTimer>=SIGNAL_BLACKOUT_T)enterRecover();
+      } else if(subPhase==='recover'){
+        drone.update(dt,fullInput);
+        if(stageObjs.pad&&checkRingPass(stageObjs.pad,drone.pos,prevPos))stageDone.signal=true;
+      }
+    } else if(stageName==='collision'){
+      if(subPhase==='wait'){
+        drone.update(dt,fullInput); subTimer+=dt;
+        if(stageObjs.intruder){
+          const t=Math.min(subTimer/COLLISION_WAIT_T,1);
+          stageObjs.intruder.position.x=THREE.MathUtils.lerp(-10,10,t);
+        }
+        if(subTimer>=COLLISION_WAIT_T)enterTumble();
+      } else if(subPhase==='tumble'){
+        trackCalm(p); updateTumble(dt); subTimer+=dt;
+        if(subTimer>=COLLISION_TUMBLE_T)enterStabilize();
+      } else if(subPhase==='stabilize'){
+        drone.update(dt,fullInput);
+        const stable=drone.vel.length()<1.2&&Math.abs(drone.tilt.pitch)<0.18&&Math.abs(drone.tilt.roll)<0.18;
+        holdTimer=stable?holdTimer+dt:Math.max(0,holdTimer-dt*1.5);
+        setProg(holdTimer/STABLE_HOLD_REQUIRED,'stabilize');
+        if(holdTimer>=STABLE_HOLD_REQUIRED)stageDone.collision=true;
+      }
+    }
+
+    guide.update(dt,{killDone:stageDone.kill,signalDone:stageDone.signal,collisionDone:stageDone.collision});
+    if(guide.idx!==lastGuideIdx){
+      lastGuideIdx=guide.idx;
+      if(guide.finished) finishLevel();
+      else enterStage(guide.idx);
+    }
+  }
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setAttitude(drone.tilt.pitch,drone.tilt.roll);
+  hud.setProgress(engine.simStarted?`階段 ${Math.max(0,guide.idx)+1}/3・${subPhase}`:'');
+  const mapTargets=stageObjs.pad?[{pos:stageObjs.pad.position,done:false}]:[];
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,mapTargets,{route:false});
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🏆</text></svg>">
+<title>newdrone｜排行榜</title>
+<!-- ============================================================
+     leaderboard.html — 排行榜（Phase 9 第二輪，2026-10-05）
+     資料＝雲端 progress 的每人每關最佳分數；要登入雲端才看得到。
+     範圍（關閉／班級／全校／跨校）與姓名（遮名／本名）由老師在試算表 settings 決定，
+     遮名在雲端做，這一頁拿不到別人的本名。同一份榜雲端快取 60 秒。
+     不 import three.js，開得快。
+     ============================================================ -->
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas','Microsoft JhengHei',monospace;
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 16px;box-sizing:border-box;}
+  .wrap{width:100%;max-width:640px;}
+  .back a{color:#7aa3b8;text-decoration:none;font-size:12px;}
+  .back a:hover{color:#00eeff;}
+  h1{font-size:24px;color:#00eeff;letter-spacing:3px;margin:14px 0 4px;}
+  p.sub{font-size:12px;color:#7aa3b8;margin:0 0 18px;line-height:1.7;}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
+  select,button{font-family:inherit;font-size:13px;background:#0b1626;color:#cfefff;border:1px solid rgba(0,238,255,.4);
+    border-radius:8px;padding:8px 10px;}
+  select{flex:1;min-width:0;}
+  button{cursor:pointer;}
+  button:hover{background:#0e2238;}
+  button:disabled{opacity:.5;cursor:default;}
+  .where{font-size:12px;color:#facc15;margin-bottom:8px;min-height:16px;}
+  table{width:100%;border-collapse:collapse;font-size:14px;}
+  td{padding:9px 10px;border-bottom:1px solid rgba(0,238,255,.12);}
+  td.r{width:52px;color:#7aa3b8;text-align:right;}
+  td.s{text-align:right;color:#4ade80;font-weight:bold;width:90px;}
+  tr.me td{background:rgba(250,204,21,.12);color:#fde68a;}
+  tr.me td.s{color:#facc15;}
+  tr.top1 td.r,tr.top2 td.r,tr.top3 td.r{font-size:16px;}
+  .msg{padding:26px 10px;text-align:center;color:#9fc3d8;font-size:13px;line-height:1.8;}
+  .msg.err{color:#fbbf24;}
+  .mine{margin-top:12px;font-size:13px;color:#fde68a;}
+  footer{margin-top:auto;padding-top:30px;font-size:11px;color:#3b5c7a;text-align:center;line-height:1.8;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="back"><a href="../index.html">← 回首頁</a></div>
+  <h1>🏆 排行榜</h1>
+  <p class="sub">每一關的最佳成績排名。只有登入雲端的同學會上榜。</p>
+  <div class="bar">
+    <select id="lv" aria-label="關卡"></select>
+    <button id="reload">重新整理</button>
+  </div>
+  <div class="where" id="where"></div>
+  <div id="out"><div class="msg">讀取中…（第一次可能要等十幾秒）</div></div>
+  <div class="mine" id="mine"></div>
+</div>
+<footer>排行榜大約每分鐘更新一次，剛飛完的成績可能要等一下才出現。</footer>
+
+<script type="module">
+import { LEVELS } from '../data/levels-manifest.js';
+import { cloudInit, cloudUrl, centerUrl } from '../core/cloud-api.js';
+import { board, auth } from '../data/cloud-sync.js';
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const best=id=>{ try{ return JSON.parse(localStorage.getItem('nd.progress.'+id))?.bestScore; }catch{ return undefined; } };
+const NO_RANK=['t02','t03','t04'];   // 計時關卡（成績＝秒數）：老師決定不排名（2026-10-05）；雲端 Code.gs 也有同一份
+const levels=LEVELS.filter(l=>l.id!=='sandbox'&&!NO_RANK.includes(l.id));
+const want=new URLSearchParams(location.search).get('level');
+const first=(levels.find(l=>l.id===want)||levels.find(l=>typeof best(l.id)==='number')||levels[0]).id;
+$('lv').innerHTML=levels.map(l=>`<option value="${esc(l.id)}"${l.id===first?' selected':''}>${esc((l.emoji?l.emoji+' ':'')+l.title)}${typeof best(l.id)==='number'?'　★':''}</option>`).join('');
+
+const MEDAL=['🥇','🥈','🥉'];
+const msg=(t,err)=>{ $('out').innerHTML=`<div class="msg${err?' err':''}">${t}</div>`; $('where').textContent=''; $('mine').textContent=''; };
+let seq=0;
+async function load(){
+  const my=++seq, id=$('lv').value;
+  await cloudInit();
+  if(!cloudUrl())return msg(centerUrl()?'還沒有連到老師的班級，所以沒有排行榜。<br><a href="../index.html" style="color:#00eeff">回首頁按「登入」輸入老師代碼</a>':'這台電腦沒有設定雲端，所以沒有排行榜。',true);
+  if(!auth())return msg('要先登入雲端才看得到排行榜。<br><a href="../index.html" style="color:#00eeff">回首頁登入</a>',true);
+  $('reload').disabled=true; msg('讀取中…（第一次可能要等十幾秒）');
+  const r=await board(id);
+  if(my!==seq)return;
+  $('reload').disabled=false;
+  if(!r.ok)return msg(esc(r.error||'讀取失敗')+(r.code==='pw'||r.code==='nouser'||r.code==='name'?'<br><a href="../index.html" style="color:#00eeff">回首頁重新登入</a>':''),true);
+  if(r.scope==='關閉')return msg('老師目前沒有開放排行榜。');
+  if(r.norank)return msg('這一關不排名。');
+  $('where').textContent=`範圍：${r.where||r.scope}　共 ${r.total} 人上榜`;
+  if(!r.rows.length){ $('mine').textContent=''; return void($('out').innerHTML='<div class="msg">這一關還沒有人上榜，去當第一個吧！</div>'); }
+  $('out').innerHTML='<table>'+r.rows.map(x=>`<tr class="${x.me?'me ':''}${x.rank<=3?'top'+x.rank:''}"><td class="r">${x.rank<=3?MEDAL[x.rank-1]:x.rank}</td><td>${esc(x.label)}${x.me?'　← 你':''}</td><td class="s">${esc(x.score)}</td></tr>`).join('')+'</table>';
+  $('mine').textContent=!r.me?'你這一關還沒有上榜的成績。'
+    :r.rows.some(x=>x.me)?'':`你目前第 ${r.me.rank} 名（${r.me.score} 分）。`;
+}
+$('lv').addEventListener('change',load);
+$('reload').addEventListener('click',load);
+load();
+</script>
+<script type="module" src="../core/gp-nav-boot.js"></script>   <!-- 2026-10-06 選單可用搖桿操作（有接搖桿才載入） -->
+</body>
+</html>

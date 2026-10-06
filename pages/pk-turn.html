@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🏆</text></svg>">
+<title>newdrone｜PK 輪流挑戰賽</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    min-height:100vh;padding:28px 16px 60px;box-sizing:border-box;}
+  .wrap{max-width:820px;margin:0 auto;}
+  h1{font-size:22px;color:#00eeff;letter-spacing:2px;margin:0;}
+  .topline{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:18px;}
+  .toplabel{font-size:10px;color:#7aa3b8;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;}
+  button,a.btn{background:#0b1626;color:#9fc3d8;border:1px solid rgba(0,238,255,.35);border-radius:8px;
+    font-size:12px;padding:9px 15px;font-family:inherit;cursor:pointer;text-decoration:none;display:inline-block;}
+  button:hover,a.btn:hover{background:#153a5e;color:#cfefff;}
+  button.primary{background:#0e2238;color:#00eeff;border-color:rgba(0,238,255,.6);}
+  button.danger{border-color:rgba(255,90,90,.4);color:#ff8a8a;}
+  button.danger:hover{background:#3a1414;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+
+  select,input{width:100%;box-sizing:border-box;background:#050a12;border:1px solid rgba(0,238,255,.35);
+    border-radius:7px;padding:10px 12px;color:#cfefff;font-family:inherit;font-size:14px;}
+  select:focus,input:focus{outline:none;border-color:#00eeff;}
+
+  .sect{background:#0b1626;border:1px solid rgba(0,238,255,.35);border-radius:14px;padding:18px 20px;margin-bottom:20px;}
+  .sect h2{font-size:13px;color:#00eeff;margin:0 0 10px;letter-spacing:1px;}
+  .sect .sub{font-size:11px;color:#7aa3b8;margin:0 0 14px;line-height:1.7;}
+  .field{margin-bottom:12px;}
+  .field label{display:block;font-size:11px;color:#7aa3b8;margin-bottom:5px;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;}
+  .row>*{flex:1;min-width:140px;}
+
+  .status-box{margin-top:12px;font-size:12px;padding:10px 12px;border-radius:8px;line-height:1.7;}
+  .status-wait{background:rgba(0,238,255,.06);border:1px solid rgba(0,238,255,.25);color:#9fc3d8;}
+  .status-warn{background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);color:#facc15;}
+  .status-ok{background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.3);color:#4ade80;}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{background:rgba(0,238,255,.08);color:#7aa3b8;font-size:9px;text-transform:uppercase;
+    padding:8px 10px;text-align:left;}
+  td{padding:9px 10px;border-top:1px solid rgba(0,238,255,.12);}
+  tr.rank1 td{background:rgba(250,204,21,.1);}
+  tr.rank2 td{background:rgba(200,200,200,.06);}
+  tr.rank3 td{background:rgba(205,127,50,.08);}
+  .rankcell{font-weight:900;font-size:15px;}
+  .empty{text-align:center;color:#3b5c7a;padding:24px;font-size:12px;}
+
+  /* 投影模式：放大字級、隱藏管理控制 */
+  body.kiosk .sect.admin{display:none;}
+  body.kiosk h1{font-size:32px;}
+  body.kiosk .sub{font-size:14px;}
+  body.kiosk table{font-size:22px;}
+  body.kiosk th{font-size:13px;}
+  body.kiosk .rankcell{font-size:26px;}
+
+  footer{text-align:center;font-size:10px;color:#3b5c7a;margin-top:30px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline">
+    <div>
+      <div class="toplabel">newdrone · Class PK Session</div>
+      <h1>🏆 PK 輪流挑戰賽</h1>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button id="btn-kiosk">📽 投影模式</button>
+      <a class="btn" href="../index.html">← 返回入口</a>
+    </div>
+  </div>
+
+  <div class="sect admin">
+    <h2>選擇關卡</h2>
+    <p class="sub">同一台電腦輪流上場、同一關同一組設定比成績——分數只在同一關內比較，不同關卡計分方式不同不能混排名。</p>
+    <select id="sel-level"></select>
+  </div>
+
+  <div class="sect admin">
+    <h2>下一位上場</h2>
+    <p class="sub">輸入姓名後開新分頁進關卡；玩完（或關卡自己跳出結算畫面）之後回來這頁按「記錄本輪成績」，會自動讀取剛剛那次的成績。</p>
+    <div class="row">
+      <div class="field" style="flex:2;"><label>參賽者姓名</label><input id="inp-name" placeholder="例：王小明" maxlength="20"></div>
+    </div>
+    <div class="row">
+      <button class="primary" id="btn-start">🚀 開始這一輪（開新分頁）</button>
+      <button id="btn-record" disabled>✅ 記錄本輪成績</button>
+    </div>
+    <div id="turn-status" class="status-box status-wait">選好關卡、輸入姓名後按「開始這一輪」。</div>
+  </div>
+
+  <div class="sect">
+    <h2 id="lb-title">排行榜</h2>
+    <div id="lb-empty" class="empty">還沒有任何成績，開始第一輪吧！</div>
+    <table id="lb-table" style="display:none;">
+      <thead><tr><th>名次</th><th>姓名</th><th>成績</th><th>時間</th><th class="admin-col"></th></tr></thead>
+      <tbody id="lb-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="sect admin">
+    <button class="danger" id="btn-clear">🗑 清空本關排行榜（開始新一節課用）</button>
+  </div>
+
+  <footer>NEWDRONE PK-TURN v1.0</footer>
+</div>
+
+<script type="module">
+import { progress } from '../data/progress.js';
+import { LEVELS } from '../data/levels-manifest.js';
+
+const PK_LEVELS = LEVELS.filter(l => (l.modes||[]).includes('pk-turn'));
+let curLevel = PK_LEVELS[0]?.id || null;
+let turnBaseline = null; // {attempts, lastAttempt} captured when a turn starts
+
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtDate(iso){
+  try{ const d=new Date(iso); return d.toLocaleDateString('zh-TW')+' '+d.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}); }
+  catch{ return '--'; }
+}
+
+function populateLevelSelect(){
+  const sel=document.getElementById('sel-level');
+  if(!PK_LEVELS.length){
+    sel.innerHTML='<option>（目前沒有任何關卡支援 pk-turn 模式）</option>';
+    sel.disabled=true;
+    document.getElementById('btn-start').disabled=true;
+    return;
+  }
+  sel.innerHTML=PK_LEVELS.map(l=>`<option value="${l.id}">${l.emoji||''} ${esc(l.title)}</option>`).join('');
+  sel.value=curLevel;
+  sel.onchange=()=>{ curLevel=sel.value; resetTurn(); renderLeaderboard(); };
+}
+
+function resetTurn(){
+  turnBaseline=null;
+  document.getElementById('btn-record').disabled=true;
+  document.getElementById('turn-status').className='status-box status-wait';
+  document.getElementById('turn-status').textContent='選好關卡、輸入姓名後按「開始這一輪」。';
+}
+
+document.getElementById('btn-start').onclick=()=>{
+  const name=document.getElementById('inp-name').value.trim();
+  if(!name){ alert('請先輸入參賽者姓名'); return; }
+  if(!curLevel)return;
+  const lv=PK_LEVELS.find(l=>l.id===curLevel);
+  const rec=progress.get(curLevel);
+  turnBaseline={ attempts: rec?.attempts||0 };
+  window.open('../'+lv.file, '_blank');
+  document.getElementById('btn-record').disabled=false;
+  const st=document.getElementById('turn-status');
+  st.className='status-box status-wait';
+  st.textContent=`⏳ ${name} 這一輪進行中——玩完後回這頁按「記錄本輪成績」。`;
+};
+
+document.getElementById('btn-record').onclick=()=>{
+  const name=document.getElementById('inp-name').value.trim();
+  const st=document.getElementById('turn-status');
+  if(!name||!turnBaseline){ st.className='status-box status-warn'; st.textContent='⚠ 請先按「開始這一輪」再記錄成績。'; return; }
+  const rec=progress.get(curLevel);
+  const attemptsNow=rec?.attempts||0;
+  if(!rec || attemptsNow<=turnBaseline.attempts){
+    st.className='status-box status-warn';
+    st.textContent='⚠ 還沒偵測到新的嘗試紀錄——確定這一輪已經玩完並看到結算畫面了嗎？（沒有的話先不要按這顆，避免記到上一輪的舊成績）';
+    return;
+  }
+  const score = rec.score ?? rec.bestScore ?? 0;
+  progress.leaderboardAdd(curLevel,{ name, score, metrics: rec.metrics||null });
+  st.className='status-box status-ok';
+  st.textContent=`✅ 已記錄：${name}　成績 ${score}`;
+  document.getElementById('btn-record').disabled=true;
+  document.getElementById('inp-name').value='';
+  turnBaseline=null;
+  renderLeaderboard();
+};
+
+function renderLeaderboard(){
+  const lv=PK_LEVELS.find(l=>l.id===curLevel);
+  document.getElementById('lb-title').textContent=`🏆 排行榜　${lv?lv.title:''}`;
+  const list=progress.leaderboardGet(curLevel).slice().sort((a,b)=>b.score-a.score);
+  const empty=document.getElementById('lb-empty'), table=document.getElementById('lb-table');
+  if(!list.length){ empty.style.display='block'; table.style.display='none'; return; }
+  empty.style.display='none'; table.style.display='table';
+  const medal=['🥇','🥈','🥉'];
+  document.getElementById('lb-tbody').innerHTML=list.map((e,i)=>`
+    <tr class="${i<3?'rank'+(i+1):''}">
+      <td class="rankcell">${medal[i]||(i+1)}</td>
+      <td>${esc(e.name)}</td>
+      <td>${e.score}</td>
+      <td>${fmtDate(e.at)}</td>
+    </tr>`).join('');
+}
+
+document.getElementById('btn-clear').onclick=()=>{
+  if(!curLevel)return;
+  const lv=PK_LEVELS.find(l=>l.id===curLevel);
+  if(confirm(`清空《${lv?.title}》的排行榜？（這一節課的成績會全部消失，無法復原）`)){
+    progress.leaderboardClear(curLevel);
+    renderLeaderboard();
+  }
+};
+
+document.getElementById('btn-kiosk').onclick=()=>{
+  document.body.classList.toggle('kiosk');
+};
+
+populateLevelSelect();
+renderLeaderboard();
+</script>
+</body>
+</html>

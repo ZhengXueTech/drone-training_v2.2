@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🏗️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：橋梁/電塔巡檢對戰｜newdrone Bridge-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#7ab0d8;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#4a3a10;z-index:21;}
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(255,204,0,.4) 15%,rgba(255,204,0,.55) 50%,rgba(255,204,0,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(255,204,0,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(30,26,10,.8);border:1px solid rgba(255,204,0,.35);border-radius:6px;
+    padding:4px 10px;color:#f0ecd8;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(30,26,10,.85);border:1px solid rgba(255,204,0,.4);border-radius:10px;
+    padding:8px 22px;color:#f0ecd8;font-size:12.5px;text-align:center;box-shadow:0 0 16px rgba(255,204,0,.12);
+    display:flex;gap:16px;align-items:center;}
+  #topbar b{font-size:15px;}
+  #topbar .p1{color:#38bdf8;} #topbar .p2{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(30,26,10,.85);
+    border:1px solid rgba(255,204,0,.4);color:#f0ecd8;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE BRIDGE-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone, aiMoveWorld } from '../core/systems/yaw-drone.js';
+import { renderSplit } from '../core/camera.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：橋梁/電塔巡檢對戰（x-bridge 的 pk-live 版本，規劃書 §9
+   成本表高成本第一例：「同結構搶巡檢段，先完成算誰的｜高｜段落加
+   owner＋共用情境/難度雙層選單」）
+   ------------------------------------------------------------
+   跟 agri-pk（同田搶噴）／rescue-pk（同山搶信標）同一種「同場搶X」
+   玩法家族，但比它們成本高兩個地方：①單人版本身就有「情境（橋梁/
+   電塔/高壓線）× 難度（簡單/中等/困難）」兩層選單、三套完全不同的
+   結構幾何與障礙物配置，PK 版原封不動保留這兩層選單與三套建構函式
+   （buildBridge/buildTowers/buildHighVoltage 一字不改搬過來）；
+   ②單人版的巡檢判定是「懸停累積進度條」（dwell 累加），不是 agri/
+   rescue 那種「距離內一次性觸發」，兩位玩家共用同一份節點時，需要
+   決定「兩人同時貼著同一個節點掃，進度算誰的」——這裡採用的設計是
+   「任何一方在掃描範圍內都會讓該節點的共用進度條前進（兩人同時貼著
+   會兩倍速前進），進度衝過 100% 的那一刻，讀取『當時正在貢獻進度』
+   的玩家索引當作 owner」，程式上用 forEach([0,1]) 依 i=0→1 固定順序
+   處理同一節點，兩人同幀都達成時 P1（i=0）優先鎖定，跟 agri-pk／
+   rescue-pk「同幀平手 P1 優先」的簡化原則一致，只是把「一次性觸發」
+   換成「累加觸發」的版本。
+
+   ⚠️ 關鍵設計決策——整個拿掉「精密掃描加速」（B 鍵，3× 速度，持續
+   5 秒、冷卻 15 秒）：跟 agri-pk 拿掉「開關噴藥」同一思路。讀過
+   core/input.js 後確認 InputManager.playerFor(ctl) 對鍵盤/觸控席位
+   完全沒有按鍵偵測（只有 gamepad 有）。掃描加速在單人版裡純粹是
+   「加快巡檢速度」的策略性技巧，拿掉它只會讓涵蓋所有節點多花一點
+   時間，不影響「能不能巡檢完成」這件事本身（跟 rescue-pk 保留熱成像
+   數值效果的情況不同——熱成像拿掉會讓信標幾乎找不到，是核心機制；
+   掃描加速只是省時間的加速技巧，屬於「非核心/便利性」機制，判斷
+   準則跟 agri-pk 完全一致：直接刪除，不用自動觸發取代，因為這裡
+   沒有「條件滿足就該發生」的等價效果可以自動觸發——兩位玩家分頭
+   巡檢不同節點，天生就比單人版快，某種程度上彌補了拿掉加速的損失）。
+
+   物理／AI：C1 家族（core/systems/yaw-drone.js 的 YawDrone），沿
+   agri-pk／rescue-pk 已驗證的慣例：yaw=0 機頭朝 +Z，同步 mesh 時
+   mesh.rotation.y=yaw+Math.PI。單人版沒有 AI 角色，新寫「找最近未
+   完成節點」的搶巡檢 AI，沿用 aiMoveWorld()（C1 家族既有工具）；因
+   電塔/高壓線節點高度差異很大（最高到 21m），AI 目標搜尋改用真正的
+   3D 距離（含 Y 軸），不是 agri/rescue 那種只比 X/Z 平面距離。
+
+   出生點：橋梁/電塔/高壓線三種情境的節點配置都大致以 Z=0 對稱分布
+   （橋面南北兩側、塔的南北兩側），因此兩位玩家從結構南／北兩端出生
+   （z=-20／z=+20）在三種情境下都公平，不需要像 agri-pk 補給站那樣
+   額外設計點對稱座標。
+
+   電量：沿單人版連續耗電（無補給站），歸零比照 agri-pk/rescue-pk 的
+   「停飛不停賽」原則，該玩家停飛、不結束整場比賽。
+
+   碰撞：沿單人版 box/cylinder 障礙物清單（三種情境各自的橋墩/電塔柱/
+   高壓塔柱），per-player 各自獨立的 1.5 秒冷卻計時，命中時速度
+   ×(-0.3) 反彈（沿單人版原始手感，不是 agri-pk 的「推開＋彈升」）。
+
+   相機：C1 家族，沿用 -sinθ,-cosθ 公式，考量本關場地（±50 公尺級的
+   開放空間，比 agri-pk 農田、rescue-pk 山地都更大）把偏移距離放大到
+   8.0/3.6，已用 __ndDebug 獨立驗算方向，並依專案教訓用至少 4 秒等待
+   時間讓 lerp 收斂再驗證。
+   ============================================================ */
+
+const ACT='bridge-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const PLABEL=['P1','P2'];
+const TINTS=[0x38bdf8,0xff5533];
+
+/* ── 常數（沿單人版 x-bridge.html 原值一字不改：物理、邊界、三種情境
+   的節點配置與難度倍率表，只拿掉掃描加速的兩個時間常數不用） ── */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:16,PITCHMAX:20,YAWMAX:2.6,
+  DRAG_PER_SEC:Math.pow(0.88,60),WBOUNCE:0,FBOUNCE:0};
+const BOUNDS={minX:-50,maxX:50,minY:0.5,maxY:40,minZ:-50,maxZ:50,BR:0};
+const SCENARIOS={
+  bridge:{label:'🌉 橋梁',  sections:8, build:()=>buildBridge(),
+    base:{time:180, wind:0,   scanRate:0.55, scanDist:5.0, collPen:5, batDrain:5}},
+  tower: {label:'⚡ 電塔',  sections:10,build:()=>buildTowers(),
+    base:{time:150, wind:0.8, scanRate:0.50, scanDist:4.5, collPen:4, batDrain:9}},
+  wire:  {label:'💀 高壓線',sections:12,build:()=>buildHighVoltage(),
+    base:{time:120, wind:1.8, scanRate:0.45, scanDist:3.5, collPen:3, batDrain:14}},
+};
+const DIFF_TIERS={
+  easy:{name:'簡單',timeMul:1.25,windMul:0.5,scanRateMul:1.25,scanDistMul:1.15,collPenMul:0.7,batDrainMul:0.75},
+  med: {name:'中等',timeMul:1.0, windMul:1.0,scanRateMul:1.0, scanDistMul:1.0, collPenMul:1.0,batDrainMul:1.0 },
+  hard:{name:'困難',timeMul:0.8, windMul:1.6,scanRateMul:0.8, scanDistMul:0.85,collPenMul:1.4,batDrainMul:1.3 },
+};
+function getCfg(scenarioKey,tier){
+  const s=SCENARIOS[scenarioKey], m=DIFF_TIERS[tier], b=s.base;
+  return{
+    label:s.label, sections:s.sections,
+    time:Math.round(b.time*m.timeMul),
+    wind:+(b.wind*m.windMul).toFixed(2),
+    scanRate:+(b.scanRate*m.scanRateMul).toFixed(3),
+    scanDist:+(b.scanDist*m.scanDistMul).toFixed(2),
+    collPen:+(b.collPen*m.collPenMul).toFixed(2),
+    batDrain:+(b.batDrain*m.batDrainMul).toFixed(2),
+  };
+}
+function windLabel(w){ return w<=0.05?'無風':w<1?'微風':w<1.5?'強風':'暴風'; }
+function fmtTime(t){ t=Math.max(0,Math.round(t)); return Math.floor(t/60)+':'+String(t%60).padStart(2,'0'); }
+
+/* 兩人從結構南／北兩端出生（三種情境節點配置都大致以 Z=0 對稱，見檔頭說明） */
+const PLAYER_SPAWNS=[new THREE.Vector3(0,12,-20), new THREE.Vector3(0,12,20)];
+const SPAWN_YAW=[0,Math.PI];
+const AI_SPD={easy:3.0,med:4.5,hard:6.0};
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const wind=new WindSystem();
+
+/* ── 場地（沿單人版：天空藍霧＋地面/水面雙層平面，橋梁/電塔/高壓線
+   三種造型，幾何與單人版一字不改） ── */
+engine.scene.background=new THREE.Color(0x7ab0d8);
+engine.scene.fog=new THREE.Fog(0x7ab0d8,60,140);
+const sun=new THREE.DirectionalLight(0xfff5d0,1.1);
+sun.position.set(20,40,15); sun.castShadow=true;
+sun.shadow.camera.left=sun.shadow.camera.bottom=-50;
+sun.shadow.camera.right=sun.shadow.camera.top=50;
+sun.shadow.camera.near=0.5; sun.shadow.camera.far=180;
+sun.shadow.mapSize.set(2048,2048);
+let sections=[], obstacles=[], windParticles=null;
+function clearDynamicScene(){
+  while(engine.scene.children.length>0)engine.scene.remove(engine.scene.children[0]);
+  engine.scene.add(sun);
+  engine.scene.add(new THREE.AmbientLight(0xffffff,.5));
+  engine.scene.add(new THREE.HemisphereLight(0x87ceeb,0x446655,.3));
+  sections=[]; obstacles=[]; windParticles=null;
+}
+function buildGroundAndWater(){
+  const gnd=new THREE.Mesh(new THREE.PlaneGeometry(200,200),
+    new THREE.MeshStandardMaterial({color:0x1a66aa,roughness:0.6,metalness:0.2}));
+  gnd.rotation.x=-Math.PI/2; gnd.position.y=-0.5; gnd.receiveShadow=true; engine.scene.add(gnd);
+  const wav=new THREE.Mesh(new THREE.PlaneGeometry(200,200),
+    new THREE.MeshStandardMaterial({color:0x1a88cc,transparent:true,opacity:0.55,roughness:0.1,metalness:0.5}));
+  wav.rotation.x=-Math.PI/2; wav.position.y=0.0; engine.scene.add(wav);
+}
+function makeBridgeSections(){return[
+  {pos:new THREE.Vector3(-10,6.5, 3.5),name:'西段北側',scanR:3.5},
+  {pos:new THREE.Vector3(  0,6.5, 3.5),name:'中段北側',scanR:3.5},
+  {pos:new THREE.Vector3( 10,6.5, 3.5),name:'東段北側',scanR:3.5},
+  {pos:new THREE.Vector3(-10,6.5,-3.5),name:'西段南側',scanR:3.5},
+  {pos:new THREE.Vector3(  0,6.5,-3.5),name:'中段南側',scanR:3.5},
+  {pos:new THREE.Vector3( 10,6.5,-3.5),name:'東段南側',scanR:3.5},
+  {pos:new THREE.Vector3( -6,3.0,  0), name:'西橋墩',  scanR:3.5},
+  {pos:new THREE.Vector3(  6,3.0,  0), name:'東橋墩',  scanR:3.5},
+];}
+function makeTowerSections(){return[
+  {pos:new THREE.Vector3(-12, 5,  0), name:'A塔西低',scanR:3.2},
+  {pos:new THREE.Vector3( -4, 5,  0), name:'A塔東低',scanR:3.2},
+  {pos:new THREE.Vector3( -8,12,-3.5),name:'A塔南中',scanR:3.2},
+  {pos:new THREE.Vector3( -8,12, 3.5),name:'A塔北中',scanR:3.2},
+  {pos:new THREE.Vector3( -8,21,  0), name:'A塔頂臂',scanR:3.2},
+  {pos:new THREE.Vector3(  4, 5,  0), name:'B塔西低',scanR:3.2},
+  {pos:new THREE.Vector3( 12, 5,  0), name:'B塔東低',scanR:3.2},
+  {pos:new THREE.Vector3(  8,12,-3.5),name:'B塔南中',scanR:3.2},
+  {pos:new THREE.Vector3(  8,12, 3.5),name:'B塔北中',scanR:3.2},
+  {pos:new THREE.Vector3(  8,21,  0), name:'B塔頂臂',scanR:3.2},
+];}
+function makeWireSections(){return[
+  {pos:new THREE.Vector3(-12, 7,  0), name:'左塔西低',scanR:2.8},
+  {pos:new THREE.Vector3( -4, 7,  0), name:'左塔東低',scanR:2.8},
+  {pos:new THREE.Vector3( -8,16,-3.5),name:'左塔南高',scanR:2.8},
+  {pos:new THREE.Vector3( -8,16, 3.5),name:'左塔北高',scanR:2.8},
+  {pos:new THREE.Vector3( -4,12,  0), name:'中塔西',  scanR:2.8},
+  {pos:new THREE.Vector3(  4,12,  0), name:'中塔東',  scanR:2.8},
+  {pos:new THREE.Vector3(  0,20,-3.5),name:'中塔南高',scanR:2.8},
+  {pos:new THREE.Vector3(  0,20, 3.5),name:'中塔北高',scanR:2.8},
+  {pos:new THREE.Vector3(  4, 7,  0), name:'右塔西低',scanR:2.8},
+  {pos:new THREE.Vector3( 12, 7,  0), name:'右塔東低',scanR:2.8},
+  {pos:new THREE.Vector3(  8,16,-3.5),name:'右塔南高',scanR:2.8},
+  {pos:new THREE.Vector3(  8,16, 3.5),name:'右塔北高',scanR:2.8},
+];}
+function addPowerLine(ax,az,bx,bz,y){
+  const mat=new THREE.MeshStandardMaterial({color:0x555555,metalness:0.7});
+  const dx=bx-ax,dz=bz-az,ang=Math.atan2(dx,dz),segs=8;
+  for(let i=0;i<segs;i++){
+    const t0=i/segs,t1=(i+1)/segs;
+    const x0=ax+dx*t0,z0=az+dz*t0,x1=ax+dx*t1,z1=az+dz*t1;
+    const y0=y-0.8*(t0*(1-t0)*4),y1=y-0.8*(t1*(1-t1)*4);
+    const mx=(x0+x1)/2,my=(y0+y1)/2,mz=(z0+z1)/2;
+    const sl=Math.sqrt((x1-x0)**2+(y1-y0)**2+(z1-z0)**2);
+    const cab=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,sl,4),mat.clone());
+    cab.position.set(mx,my,mz); cab.rotation.order='YXZ'; cab.rotation.y=ang;
+    cab.rotation.x=Math.atan2(y0-y1,Math.sqrt((x1-x0)**2+(z1-z0)**2)); engine.scene.add(cab);
+  }
+}
+/* 節點視覺：跟單人版一樣的環＋球＋光造型，但完成時染成 P1／P2 隊色
+   （單人版是固定綠色），owner 欄位取代單人版的純 done 布林值 */
+function addSectionIndicator(sec){
+  const g=new THREE.Group();
+  const rM=new THREE.MeshBasicMaterial({color:0xffcc00,side:THREE.DoubleSide,transparent:true,opacity:0.2,depthWrite:false});
+  const ring=new THREE.Mesh(new THREE.RingGeometry(sec.scanR*0.7,sec.scanR*0.85,32),rM);
+  ring.rotation.x=-Math.PI/2; g.add(ring);
+  const sM=new THREE.MeshStandardMaterial({color:0xffaa00,emissive:0x885500,emissiveIntensity:1.0,transparent:true,opacity:0.85});
+  const sphere=new THREE.Mesh(new THREE.SphereGeometry(0.22,10,8),sM); g.add(sphere);
+  const pl=new THREE.PointLight(0xffcc00,0.8,sec.scanR*2.2); g.add(pl);
+  g.position.copy(sec.pos); engine.scene.add(g);
+  sec.mesh=g; sec.ring=ring; sec.sphere=sphere; sec.pl=pl; sec.ringMat=rM; sec.sphereMat=sM;
+  sec.progress=0; sec.done=false; sec.owner=null;
+}
+function buildBridge(){
+  sections=makeBridgeSections();
+  const sM=new THREE.MeshStandardMaterial({color:0x889900,roughness:0.5,metalness:0.7});
+  const cM=new THREE.MeshStandardMaterial({color:0x9a9a8a,roughness:0.85});
+  const deck=new THREE.Mesh(new THREE.BoxGeometry(30,0.5,5),cM);
+  deck.position.set(0,8,0); deck.castShadow=true; deck.receiveShadow=true; engine.scene.add(deck);
+  obstacles.push({type:'box',min:new THREE.Vector3(-15,7.5,-2.5),max:new THREE.Vector3(15,8.5,2.5)});
+  [-12,-6,0,6,12].forEach(x=>{
+    const p=new THREE.Mesh(new THREE.BoxGeometry(1.2,8,2.2),cM.clone());
+    p.position.set(x,4,0); p.castShadow=true; engine.scene.add(p);
+    obstacles.push({type:'box',min:new THREE.Vector3(x-0.7,-1,-1.2),max:new THREE.Vector3(x+0.7,8,1.2)});
+  });
+  const aM=new THREE.MeshStandardMaterial({color:0x667700,roughness:0.4,metalness:0.8});
+  [-6,6].forEach(side=>{
+    const c=new THREE.Mesh(new THREE.BoxGeometry(30,0.35,0.35),aM); c.position.set(0,11.5,side); engine.scene.add(c);
+    for(let i=-12;i<=12;i+=4){const d=new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,4.5,6),sM.clone());
+      d.position.set(i,9.8,side); d.rotation.z=Math.PI/5*(i%8===0?1:-1); engine.scene.add(d);}
+  });
+  for(let x=-13;x<=13;x+=2){[-6,6].forEach(side=>{const h=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,3.5,4),sM.clone());
+    h.position.set(x,9.75,side); engine.scene.add(h);});}
+  [-2.3,2.3].forEach(side=>{const r=new THREE.Mesh(new THREE.BoxGeometry(30,0.6,0.12),cM.clone());
+    r.position.set(0,8.55,side); engine.scene.add(r);});
+  sections.forEach(sec=>addSectionIndicator(sec));
+}
+function buildTowers(){
+  sections=makeTowerSections();
+  const mM=new THREE.MeshStandardMaterial({color:0xaaaaaa,roughness:0.4,metalness:0.8});
+  [-8,8].forEach(tx=>{
+    const H=26;
+    const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.4,H,8),mM.clone());
+    pole.position.set(tx,H/2,0); pole.castShadow=true; engine.scene.add(pole);
+    obstacles.push({type:'cyl',x:tx,z:0,r:0.45,ylo:0,yhi:H});
+    [8,14,20].forEach(y=>{
+      const arm=new THREE.Mesh(new THREE.BoxGeometry(5,0.2,0.2),mM.clone()); arm.position.set(tx,y,0); engine.scene.add(arm);
+      [-1.5,1.5].forEach(ax=>{const d=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,3,5),mM.clone());
+        d.position.set(tx+ax,y-1.0,0); d.rotation.z=ax>0?Math.PI/4:-Math.PI/4; engine.scene.add(d);});
+    });
+    for(let y=4;y<H;y+=4){[-2.5,2.5].forEach(ox=>{const len=Math.sqrt(ox*ox+y*y);
+      const cab=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,len,4),new THREE.MeshStandardMaterial({color:0x888888,metalness:0.6}));
+      cab.position.set(tx+ox/2,y/2,0); cab.rotation.z=Math.atan2(ox,y); engine.scene.add(cab);});}
+    [[-1.5,-1.5],[1.5,-1.5],[1.5,1.5],[-1.5,1.5]].forEach(([lx,lz])=>{
+      const leg=new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.2,3.5,6),mM.clone());
+      leg.position.set(tx+lx,1.75,lz); leg.rotation.z=Math.atan2(lx,3.5)*0.6; leg.rotation.x=Math.atan2(lz,3.5)*0.6; engine.scene.add(leg);});
+  });
+  addPowerLine(-8,0,8,0,22);
+  sections.forEach(sec=>addSectionIndicator(sec));
+}
+function buildHighVoltage(){
+  sections=makeWireSections();
+  const mM=new THREE.MeshStandardMaterial({color:0x999999,roughness:0.45,metalness:0.75});
+  [-8,0,8].forEach(tx=>{
+    const H=28; const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.35,H,6),mM.clone());
+    pole.position.set(tx,H/2,0); engine.scene.add(pole);
+    obstacles.push({type:'cyl',x:tx,z:0,r:0.4,ylo:0,yhi:H});
+    [10,18,26].forEach(y=>{const arm=new THREE.Mesh(new THREE.BoxGeometry(6,0.15,0.15),mM.clone()); arm.position.set(tx,y,0); engine.scene.add(arm);});
+  });
+  [[-8,0],[0,8],[-8,8]].forEach(([ax,bx])=>{[24,18,10].forEach(y=>addPowerLine(ax,0,bx,0,y));});
+  sections.forEach(sec=>addSectionIndicator(sec));
+}
+function buildWindParticles(){
+  const count=60,R=40,positions=new Float32Array(count*3);
+  for(let i=0;i<count;i++){positions[i*3]=(Math.random()-.5)*R*2;positions[i*3+1]=Math.random()*30+0.5;positions[i*3+2]=(Math.random()-.5)*R*2;}
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  const pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0xb0d8ff,size:0.2,transparent:true,opacity:0.45,sizeAttenuation:true}));
+  engine.scene.add(pts); return pts;
+}
+function tickWindParticles(dt){
+  if(!windParticles||wind.vec.lengthSq()<0.01)return;
+  const pos=windParticles.geometry.attributes.position,R=40;
+  for(let i=0;i<pos.count;i++){
+    pos.array[i*3]+=wind.vec.x*dt*3.5; pos.array[i*3+1]-=dt*0.15; pos.array[i*3+2]+=wind.vec.z*dt*3.5;
+    if(pos.array[i*3]>R)pos.array[i*3]-=R*2; if(pos.array[i*3]<-R)pos.array[i*3]+=R*2;
+    if(pos.array[i*3+2]>R)pos.array[i*3+2]-=R*2; if(pos.array[i*3+2]<-R)pos.array[i*3+2]+=R*2;
+    if(pos.array[i*3+1]<0.3)pos.array[i*3+1]=Math.random()*30+0.5;
+  }
+  pos.needsUpdate=true;
+}
+function buildScene(scenarioKey,windVal=0){
+  clearDynamicScene(); buildGroundAndWater();
+  SCENARIOS[scenarioKey].build();
+  if(windVal>0)windParticles=buildWindParticles();
+  engine.scene.add(meshes[0]); engine.scene.add(meshes[1]);
+}
+
+/* ── 兩台真機體（都是 C1 家族 YawDrone；機體樣式改用可染色的
+   trainer-orb——單人版固定用「橋檢機」bridge-probe，PK 版需要清楚
+   隊色識別，沿用 agri-pk/rescue-pk 的做法：捨棄情境造型、改用泛用
+   可染色機體） ── */
+const drones=[0,1].map(i=>new YawDrone({spawn:PLAYER_SPAWNS[i].clone(),yaw:SPAWN_YAW[i],bounds:BOUNDS,phys:PHYS}));
+const meshes=[0,1].map(i=>{
+  const m=buildDroneStyle('trainer-orb',{tint:TINTS[i],scale:1});
+  m.castShadow=true; return m;
+});
+
+/* ── 分割畫面：C1 家族，沿用 -sinθ,-cosθ 公式，偏移距離放大到適合
+   ±50 公尺開放結構場地的量級（比 agri-pk/rescue-pk 都再大一些）。
+   仍會用 __ndDebug 獨立驗算一次。 ── */
+const cams=[new THREE.PerspectiveCamera(60,1,0.05,150),new THREE.PerspectiveCamera(60,1,0.05,150)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x-sy*8.0,y+3.6,z-cy*8.0),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── 賽局狀態：P[0]/P[1] 各自獨立的資源／狀態，共用同一份節點清單
+   （sec.owner 決定歸屬，不是各自一份） ── */
+let pScenario='bridge', pTier='med', curCfg=getCfg('bridge','med');
+let timer=180, totalTime=180, playing=false, finished=false;
+function freshP(){ return {battery:100,outOfPower:false,collisions:0,lastCollisionT:-2,nearestDist:Infinity}; }
+const P=[freshP(),freshP()];
+const scannedCount=[0,0];
+
+function startBuildScene(scenarioKey,tier){
+  pScenario=scenarioKey; pTier=tier; curCfg=getCfg(scenarioKey,tier);
+  scannedCount[0]=0; scannedCount[1]=0;
+  buildScene(scenarioKey,curCfg.wind);
+  wind.randomize(curCfg.wind);
+}
+
+/* ── 結構碰撞（沿單人版 box/cylinder 障礙，DR 緩衝半徑，per-player
+   各自獨立冷卻計時） ── */
+function checkStructureCollision(i){
+  const d=drones[i], p=P[i];
+  const now=performance.now()/1000; let hit=false; const DR=0.2;
+  obstacles.forEach(ob=>{
+    if(ob.type==='box'){
+      if(d.pos.x>ob.min.x-DR&&d.pos.x<ob.max.x+DR&&
+         d.pos.y>ob.min.y-DR&&d.pos.y<ob.max.y+DR&&
+         d.pos.z>ob.min.z-DR&&d.pos.z<ob.max.z+DR)hit=true;
+    }else if(ob.type==='cyl'){
+      const dx=d.pos.x-ob.x, dz=d.pos.z-ob.z;
+      if(Math.sqrt(dx*dx+dz*dz)<ob.r+DR&&d.pos.y>ob.ylo&&d.pos.y<ob.yhi)hit=true;
+    }
+  });
+  if(hit&&now-p.lastCollisionT>1.5){
+    p.lastCollisionT=now; p.collisions++;
+    d.vel.multiplyScalar(-0.3);
+    toast(`💥 ${PLABEL[i]} 碰撞！`); sfx.play('fail');
+  }
+}
+
+/* ── 巡檢掃描（懸停在節點附近累積共用進度，沿單人版距離累加自算法，
+   拿掉掃描加速——見檔頭決策說明。同結構搶段：任何一方在掃描範圍內
+   都會讓該節點的共用進度前進，衝過 100% 那一刻正在貢獻進度的玩家
+   （固定依 i=0→1 順序判定，同幀平手 P1 優先）永久鎖定該節點） ── */
+function checkScan(dt){
+  const pulse=0.5+0.5*Math.sin(performance.now()/500);
+  P[0].nearestDist=Infinity; P[1].nearestDist=Infinity;
+  sections.forEach(sec=>{
+    if(sec.done)return;
+    let anyNear=false;
+    [0,1].forEach(i=>{
+      if(P[i].outOfPower)return;
+      const dist=drones[i].pos.distanceTo(sec.pos);
+      if(dist<P[i].nearestDist)P[i].nearestDist=dist;
+      if(dist<curCfg.scanDist){
+        anyNear=true;
+        sec.progress=Math.min(1,sec.progress+curCfg.scanRate*dt);
+        if(sec.progress>=1&&!sec.done){
+          sec.done=true; sec.owner=i; scannedCount[i]++;
+          sec.sphereMat.color.setHex(TINTS[i]); sec.sphereMat.emissiveIntensity=2.0;
+          sec.ringMat.color.setHex(TINTS[i]); sec.ringMat.opacity=0.5;
+          sec.pl.color.setHex(TINTS[i]); sec.pl.intensity=2.0;
+          toast(`✅ ${PLABEL[i]} 完成 ${sec.name}！`); sfx.play('ring');
+        }
+      }
+    });
+    if(sec.done)return;
+    if(anyNear){
+      sec.sphereMat.color.setHex(0xffee00); sec.sphereMat.emissiveIntensity=1.5+pulse;
+      sec.ringMat.opacity=0.35+pulse*0.2; sec.pl.intensity=1.2+pulse*0.5;
+      sec.ring.scale.setScalar(1+sec.progress*0.3);
+    }else{
+      sec.sphereMat.color.setHex(0xddaa00); sec.sphereMat.emissiveIntensity=0.5;
+      sec.ringMat.opacity=0.12; sec.pl.intensity=0.4;
+    }
+  });
+  if(scannedCount[0]+scannedCount[1]>=sections.length)finishGame();
+}
+
+/* ── 資源系統（沿單人版連續耗電，這關沒有充電站；電量歸零＝該玩家
+   停飛，不結束整場比賽——比照 agri-pk/rescue-pk 的「停飛不停賽」原則） ── */
+function tickResources(i,dt){
+  const p=P[i];
+  if(p.outOfPower)return;
+  p.battery=Math.max(0,p.battery-curCfg.batDrain*dt/60);
+  if(p.battery<=0&&!p.outOfPower){
+    p.outOfPower=true;
+    toast(`⚠️ ${PLABEL[i]} 電量耗盡，已停飛！`); sfx.play('warn');
+  }
+}
+
+/* ── AI 席位：搶巡檢節點（單人版沒有這個角色，新寫的最近未完成節點
+   導航，沿用 aiMoveWorld()——因節點高度差異很大（塔頂最高21m），
+   目標搜尋改用真正的 3D 距離，不只比 X/Z 平面） ── */
+function nearestActiveSection(i){
+  const d=drones[i]; let best=null, bestD2=Infinity;
+  sections.forEach(sec=>{
+    if(sec.done)return;
+    const dx=sec.pos.x-d.pos.x, dy=sec.pos.y-d.pos.y, dz=sec.pos.z-d.pos.z;
+    const d2=dx*dx+dy*dy+dz*dz;
+    if(d2<bestD2){bestD2=d2;best=sec;}
+  });
+  return best;
+}
+function updateBridgeAI(i,dt,diff){
+  const d=drones[i], p=P[i];
+  if(p.outOfPower)return;
+  const spd=AI_SPD[diff]??AI_SPD.med;
+  const sec=nearestActiveSection(i);
+  const tgt=sec?sec.pos.clone():PLAYER_SPAWNS[i];
+  aiMoveWorld(d,tgt,dt,spd,BOUNDS,PHYS);
+}
+
+/* ── Intro／暫停／結算 ── */
+function seatDesc(){
+  return [0,1].map(i=>{
+    const c=seatList[i].controller;
+    const who=c?.type==='ai'?`AI（${({easy:'簡單',med:'中等',hard:'困難'})[c.diff||'med']}）`:
+      c?.type==='gamepad'?`手把[${c.gpIndex}]`:c?.type==='keyboard'?`鍵盤${c.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showModal({title,html,buttons}){
+  closeModal();
+  const wrap=document.createElement('div');
+  wrap.className='nd-modal';
+  wrap.style.cssText='position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(6,8,10,.55);';
+  wrap.innerHTML=`<div style="background:rgba(30,26,10,.95);border:1px solid rgba(255,204,0,.4);
+    border-radius:14px;padding:22px 26px;max-width:520px;color:#f0ecd8;font-size:13px;line-height:1.6;">
+    <h2 style="margin:0 0 10px;font-size:18px;color:#facc15;">${title}</h2>
+    ${html}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;"></div></div>`;
+  const btnWrap=wrap.querySelector('div > div:last-child');
+  buttons.forEach(b=>{
+    const el=document.createElement('button');
+    el.id=b.id; el.textContent=b.label;
+    el.style.cssText='background:rgba(250,204,21,.15);border:1px solid rgba(250,204,21,.5);color:#facc15;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;font-family:inherit;';
+    el.onclick=b.onClick;
+    btnWrap.appendChild(el);
+  });
+  document.body.appendChild(wrap);
+}
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+
+function showIntro(){
+  engine.simStarted=false; playing=false;
+  showModal({title:'情境體驗 · 橋梁/電塔巡檢對戰',
+    html:`<p>P1／P2 在同一座結構共同巡檢，飛到節點附近<strong>懸停</strong>
+      累積掃描進度，先完成的節點永久算誰的，時間到或全部節點掃描完成，
+      比誰完成得多！</p>
+      <p>⚠️ 注意避開橋墩/鋼纜/電塔等結構物！電量持續消耗，歸零該玩家會
+      停飛（比賽不會因此結束）。先選情境，下一步再選難度。</p>
+      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-bridge',label:'🌉 橋梁（8段）',onClick:()=>showDiffPicker('bridge')},
+      {id:'b-tower', label:'⚡ 電塔（10段）',onClick:()=>showDiffPicker('tower')},
+      {id:'b-wire',  label:'💀 高壓線（12段）',onClick:()=>showDiffPicker('wire')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+}
+function showDiffPicker(scenarioKey){
+  engine.simStarted=false; playing=false;
+  const s=SCENARIOS[scenarioKey];
+  showModal({title:'情境體驗 · '+s.label+' 對戰',
+    html:`<p>選擇本次巡檢對戰的難度（影響時間、風力、掃描速度、碰撞懲罰、耗電）：</p>`,
+    buttons:[
+      {id:'b-back',label:'← 返回情境選擇',onClick:showIntro},
+      ...['easy','med','hard'].map(tier=>{
+        const cfg=getCfg(scenarioKey,tier);
+        return{id:'b-diff-'+tier,
+          label:`${DIFF_TIERS[tier].name}（${fmtTime(cfg.time)}・${windLabel(cfg.wind)}）`,
+          onClick:()=>startGame(scenarioKey,tier)};
+      }),
+    ]});
+}
+function startGame(scenarioKey,tier){
+  P[0]=freshP(); P[1]=freshP();
+  drones.forEach((d,i)=>d.reset(PLAYER_SPAWNS[i].clone(),SPAWN_YAW[i]));
+  startBuildScene(scenarioKey,tier);
+  timer=curCfg.time; totalTime=timer;
+  closeModal(); sfx.play('click');
+  pkc.apply(drones,seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始巡檢對戰！');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else closeModal();
+}
+function showPauseModal(){
+  showModal({title:'暫停',
+    html:`<p>${SCENARIOS[pScenario].label}・${DIFF_TIERS[pTier].name}　剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>
+      <p>P1 完成 ${scannedCount[0]} 段　P2 完成 ${scannedCount[1]} 段　（共 ${sections.length} 段）</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const winner=scannedCount[0]>scannedCount[1]?'P1':scannedCount[1]>scannedCount[0]?'P2':'tie';
+  progress.record(ACT,{completed:true,score:Math.max(scannedCount[0],scannedCount[1]),
+    ...pkc.recordFields(),metrics:{p1Scanned:scannedCount[0],p2Scanned:scannedCount[1],totalSections:sections.length,
+      scenario:pScenario,diff:pTier,winner,humanCount}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner} 獲勝！`;
+  showModal({title:'挑戰結束 · '+resText,
+    html:`<p>P1：<b>${scannedCount[0]} 段</b>（碰撞 ${P[0].collisions} 次）<br>
+      P2：<b>${scannedCount[1]} 段</b>（碰撞 ${P[1].collisions} 次）<br>
+      共完成 ${scannedCount[0]+scannedCount[1]}/${sections.length} 段</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pScenario,pTier)},
+      {id:'b-diff',label:'換情境/難度',onClick:showIntro},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    wind.update(dt);
+    [0,1].forEach(i=>{
+      const d=drones[i], p=P[i];
+      if(!p.outOfPower){
+        if(seatList[i].controller?.type==='ai'){
+          updateBridgeAI(i,dt,seatList[i].controller.diff||'med');
+        }else{
+          const ip=input.playerFor(seatList[i].controller);
+          d.step(dt,ip);
+        }
+        if(wind.enabled)d.vel.addScaledVector(wind.vec,dt*4.0);
+      }
+      checkStructureCollision(i);
+    });
+    checkScan(dt);
+    [0,1].forEach(i=>tickResources(i,dt));
+    tickWindParticles(dt);
+
+    timer-=dt;
+    if(timer<=0&&!finished){timer=0;finishGame();}
+  }
+
+  drones.forEach((d,i)=>{
+    meshes[i].position.copy(d.pos);
+    meshes[i].rotation.y=d.yaw+Math.PI; // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  });
+  cams.forEach((cam,i)=>updatePaneCam(cam,drones[i]));
+
+  const distTxt=v=>(v===Infinity?'－':v.toFixed(0)+'m');
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="p1">P1 <b>${scannedCount[0]}</b> 📡${distTxt(P[0].nearestDist)} 🔋${Math.round(P[0].battery)}%</span>`+
+    `<span>${pkc.topTag()}${SCENARIOS[pScenario].label}・${DIFF_TIERS[pTier].name}　完成${scannedCount[0]+scannedCount[1]}/${sections.length}　剩${Math.max(0,Math.ceil(timer))}秒</span>`+
+    `<span class="p2">P2 <b>${scannedCount[1]}</b> 📡${distTxt(P[1].nearestDist)} 🔋${Math.round(P[1].battery)}%</span>`;
+});
+
+startBuildScene('bridge','med'); // intro 畫面預覽用的預設場景，startGame() 會依選擇的情境/難度重建
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

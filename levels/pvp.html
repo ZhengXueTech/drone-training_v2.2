@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🤼</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>無人機足球 PVP｜newdrone PVP v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#040810;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  /* GOAL 特效疊層 */
+  #goal-ov{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    flex-direction:column;gap:8px;pointer-events:none;z-index:35;}
+  #goal-word{font-size:64px;font-weight:900;letter-spacing:6px;animation:gpop .5s ease-out;}
+  #goal-sub{font-size:15px;color:#cfefff;}
+  @keyframes gpop{0%{transform:scale(.3);opacity:0}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+  /* 分割畫面分隔線（humanCount>=2 時動態產生：team A / team B 各佔一邊，
+     同邊多人再用水平線細分——見 renderDividers()） */
+  #split-dividers{position:fixed;inset:0;z-index:22;pointer-events:none;}
+  .sdiv{position:absolute;pointer-events:none;}
+  .sdiv.v{top:0;bottom:0;width:2px;left:50%;transform:translateX(-50%);
+    background:linear-gradient(to bottom,transparent,rgba(34,211,238,.4) 15%,rgba(34,211,238,.55) 50%,rgba(34,211,238,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(34,211,238,.3)}
+  .sdiv.h{left:0;right:0;height:2px;
+    background:linear-gradient(to right,transparent,rgba(34,211,238,.4) 15%,rgba(34,211,238,.55) 50%,rgba(34,211,238,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(34,211,238,.3)}
+  /* 共用頂部狀態列（humanCount!==1 時使用；humanCount===1 沿用 core/hud.js 全套 HUD） */
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:none;justify-content:center;
+    padding-top:10px;pointer-events:none;}
+  #topbar .pill{background:rgba(11,22,38,.85);border:1px solid rgba(0,238,255,.4);border-radius:10px;
+    padding:8px 20px;color:#cfefff;font-size:14px;text-align:center;box-shadow:0 0 16px rgba(0,238,255,.12);}
+  #topbar .pill b{color:#00eeff;font-size:18px;}
+  #seatchips{position:fixed;bottom:6px;left:0;right:0;z-index:20;display:none;
+    justify-content:center;gap:6px;flex-wrap:wrap;pointer-events:none;padding:0 8px;}
+  #seatchips span{font-size:10px;background:rgba(11,22,38,.8);border:1px solid rgba(0,238,255,.3);
+    border-radius:6px;padding:3px 8px;color:#9fc3d8;}
+  #seatchips span.human{border-color:rgba(74,222,128,.6);color:#4ade80;}
+  /* 分割畫面每格標籤（quad 模式：席位/隊伍/裝置；pilot 模式：隊伍共用視角提示） */
+  #split-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #split-labels .plabel{position:absolute;margin:6px;font-size:10px;
+    background:rgba(11,22,38,.8);border:1px solid rgba(0,238,255,.35);border-radius:6px;
+    padding:3px 8px;color:#9fc3d8;white-space:nowrap;}
+  /* 多人視角切換（Q 鍵）提示 */
+  #group-toast{position:fixed;left:50%;top:14%;transform:translateX(-50%);z-index:24;
+    font-size:15px;color:#facc15;text-shadow:0 0 12px rgba(250,204,21,.6);pointer-events:none;
+    opacity:0;transition:opacity .3s;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE PVP v1.0</div>
+<div id="split-dividers"></div>
+<div id="split-labels"></div>
+<div id="group-toast"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="seatchips"></div>
+<div id="goal-ov"><div id="goal-word">GOAL!</div><div id="goal-sub"></div></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { HUD, DENSITY_LABELS, attachTouchSeat } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { renderSplit } from '../core/camera.js';
+import { buildDroneStyle } from '../core/drone-styles.js';
+import { FIELD, TA, SOCCER_SEATS, SoccerDrone, buildSoccerField,
+         resolveCollisions, checkGoal } from '../core/systems/soccer.js';
+import { updateSoccerAI } from '../core/systems/ai.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+
+const ACT='soccer-pvp';
+const LEVEL=getLevel(ACT);
+progress.migrateLegacy();
+const F=FIELD;
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派——這關天生多人，
+   不像單人關卡有「跳過 pairing 用預設值」的特例（規劃書 5.2.2）。 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,SOCCER_SEATS.length);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+/* 席位表無效（尚未經過大廳指派）：只做導轉，其餘遊戲邏輯整段包在 boot() 裡
+   完全不執行——避免對 null 資料操作噴例外，也避免「即將導頁」期間的殘留
+   執行被 headless 稽核誤判成真的 console 錯誤。 */
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+const refIdx=humanIdx[0]??0;   // AI ctx.player 參考對象；全 AI 時退回席0（觀賽模式）
+/* 多人分割畫面（humanCount>=2）時，觸控席位要各自綁定 input.touchSeat(i)（見 core/input.js
+   playerFor 的 touch 分支），才不會兩支觸控互相干擾；單人模式（humanCount<=1）維持原樣
+   不帶 seat（沿用 input.touch＝touchSeat(0)，跟 hud.attachTouch(input) 掛的是同一份），
+   行為與這個欄位加入前完全相同。 */
+const ctlFor=(i)=> humanCount>=2 ? {...seatList[i].controller,seat:i} : seatList[i].controller;
+
+/* ── 引擎與系統 ── */
+const engine=new Engine(document.getElementById('c'),{lowQuality:innerWidth<600});
+const input=new InputManager();
+const ui=new UI(input);
+const goals=buildSoccerField(engine.scene);
+
+/* ── 六席無人機：isPlayer 依「這席是不是人類」決定（不再寫死 i===0）── */
+const drones=SOCCER_SEATS.map((cfg,i)=>{
+  const d=new SoccerDrone(i);
+  const isHuman=seatList[i].controller?.type!=='ai';
+  d.isPlayer=isHuman;
+  // scale:1 明確蓋掉使用者的全域機體視覺大小偏好——多人分割/共用畫面固定標準大小，
+  // 避免同一螢幕裡因為裝置端 localStorage 偏好造成大小不一致（見 index.html 顯示設定）。
+  d.mesh=buildDroneStyle('soccer-cage',{tc:cfg.tc,sc:cfg.sc,isPlayer:isHuman,scale:1});
+  d.mesh.position.copy(d.pos);
+  engine.scene.add(d.mesh);
+  return d;
+});
+const refDrone=drones[refIdx];
+
+/* ── HUD：1 人沿用單人版全套 HUD；2+ 人改用輕量共用頂部列（core/hud.js 是
+   單人視角設計，split-screen/共用俯視不適合套用同一份 minimap/telemetry）。 ── */
+const hud = humanCount<=1 ? new HUD(LEVEL.hud||{minimap:true,telemetry:true,gpbar:true}) : null;
+if(humanCount!==1){
+  document.getElementById('topbar').style.display='flex';
+  document.getElementById('seatchips').style.display='flex';
+  document.getElementById('seatchips').innerHTML=seatList.map((s,i)=>
+    `<span class="${s.controller?.type!=='ai'?'human':''}">${i+1}.${SOCCER_SEATS[i].role==='striker'?'前鋒':SOCCER_SEATS[i].role==='support'?'中場':'後衛'}${
+      s.controller?.type==='ai'?'🤖':s.controller?.type==='gamepad'?'🎮':s.controller?.type==='keyboard'?'⌨️':'📱'}</span>`).join('');
+}
+
+/* ── 賽局狀態 ── */
+let phase='intro'; // intro|playing|set_end|match_end
+let curSet=1, setTimer=F.SET_DUR;
+let scores={A:0,B:0}, setsWon={A:0,B:0}, setGoals={A:0,B:0}, setLog=[];
+let cageSpin=false, crouch=false, returnWarned=false;
+let SF=progress.setting('pvpSF',1.0);
+let strict=progress.setting('pvpStrict',false);
+const SF_OPTS=[{label:'慢速有刷',v:0.55},{label:'標準',v:1.0},{label:'競速無刷',v:1.8}];
+
+/* ── 相機：依人類席位數分兩大類（規劃書 5.3／7-8；2026-07-23 依實機回饋修正，
+   2026-07-23 second pass 再依使用者提供的基本版截圖修正分割「軸向」與加回
+   共用飛手模式）：
+   ① humanCount<=1：跟單人版 soccer-match.html 完全同款，tpv/fpv/tac/pilot 四選一。
+   ② humanCount>=2：quad／hex 個人視角模式——同一隊的人類永遠分在畫面同一塊：
+      每隊最多 2 人時比照基本版 soccer-match-4p.html，主分割線是「垂直」的
+      （A 隊佔左半、B 隊佔右半），每隊內部再用水平線往上下分；
+      任一隊有 3 人時比照基本版 soccer-match-6p.html，主分割線改成「水平」的
+      （A 隊佔上半、B 隊佔下半，各自滿版寬），每隊內部改用垂直線往左右分欄——
+      3 人分成 3 條窄直欄在 16:9 螢幕上會太窄，比照基本版做法改成滿版寬的橫向
+      3 欄更好用。若只有一隊有人類，該隊獨佔整個畫面（1～3 欄）。
+      另外比照基本版 4p/6p 的 'q' 鍵，加回「共用飛手視角」模式（groupCamMode）：
+      不管每隊幾人，固定切成左右各一顆共用鏡頭（站在己方底線後方，跟單人版
+      pilot 模式同一組座標），整隊共用一個視角而不是每人一格。 ── */
+const CAM_MODES=['tpv','fpv','tac','pilot'];
+const CAM_LABELS={tpv:'追蹤',fpv:'FPV',tac:'俯視',pilot:'飛手'};
+const PILOT_SIDES=['left','mid','right'];
+let camMode='tpv', pilotSide='right';
+const camTgt=new THREE.Vector3(), _v=new THREE.Vector3();
+let groupCams=null, groupBuilt=null, groupCamMode='quad'; // humanCount>=2 時使用；'quad'=每人一格、'pilot'=每隊共用一顆
+let pilotCamA=null, pilotCamB=null; // 'pilot' 群組模式的共用鏡頭（固定站位，設定一次不需每幀更新）
+
+function updateSingleCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  if(camMode==='tpv'){
+    cam.position.lerp(_v.set(x-sy*1.9,y+.85,z-cy*1.9),.11);
+    camTgt.lerp(_v.set(x,y+.08,z),.11); cam.lookAt(camTgt);
+  }else if(camMode==='fpv'){
+    cam.position.set(x+sy*.08,y+.015,z+cy*.08);
+    cam.lookAt(x+sy*5,y,z+cy*5);
+  }else if(camMode==='tac'){
+    cam.position.lerp(_v.set(0,6,.01),.05); cam.lookAt(0,0,0);
+  }else{ // pilot（依該機所屬隊伍站在己方底線後；A 隊在 -Z 底線，B 隊在 +Z 底線，鏡像 left/right）
+    const teamSign=d.team===TA?1:-1;
+    const sx=(pilotSide==='left'?-.55:pilotSide==='right'?.55:0)*teamSign;
+    const sz=d.team===TA?(pilotSide==='mid'?-F.HL-1.5:-F.HL-1.3):(pilotSide==='mid'?F.HL+1.5:F.HL+1.3);
+    cam.position.lerp(_v.set(sx,crouch?0.82:1.65,sz),.08);
+    cam.lookAt(0,crouch?1.0:1.5,0);
+  }
+}
+function updateSplitCam(cam,d){
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x-sy*1.9,y+.85,z-cy*1.9),.14);
+  cam.lookAt(x,y+.08,z);
+}
+function cycleCam(){ if(humanCount!==1)return;
+  camMode=CAM_MODES[(CAM_MODES.indexOf(camMode)+1)%CAM_MODES.length];
+  hud.toast('視角：'+CAM_LABELS[camMode],'ok'); syncModes(); }
+function cyclePilot(){ if(humanCount!==1||camMode!=='pilot')return;
+  pilotSide=PILOT_SIDES[(PILOT_SIDES.indexOf(pilotSide)+1)%PILOT_SIDES.length];
+  hud.toast('站位：'+({left:'← 左',mid:'正中',right:'右 →'})[pilotSide],'ok'); }
+function syncModes(){ if(hud)hud.setModes('PVP足球',CAM_LABELS[camMode]); }
+function groupToast(msg){
+  const el=document.getElementById('group-toast'); if(!el)return;
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(groupToast._t); groupToast._t=setTimeout(()=>{el.style.opacity=0;},1500);
+}
+
+/* 依「哪些人類席位在 A/B 隊」建立 quad/hex 個人視角配置：
+   同隊永遠分在畫面同一塊；只有單邊有人類時該邊佔滿全螢幕；
+   任一隊 3 人時主軸改水平（比照基本版 6p），其餘情況主軸為垂直（比照 4p）。 */
+function buildGroupPanes(){
+  const teamA=humanIdx.filter(i=>i<3), teamB=humanIdx.filter(i=>i>=3);
+  const panes=[];
+  if(!(teamA.length&&teamB.length)){
+    const only=teamA.length?teamA:teamB;
+    only.forEach((idx,c)=>panes.push({idx,rect:{x:c/only.length,y:0,w:1/only.length,h:1}}));
+    return {panes,teamA,teamB,axis:'single'};
+  }
+  if(Math.max(teamA.length,teamB.length)<=2){
+    teamA.forEach((idx,r)=>panes.push({idx,rect:{x:0,y:r/teamA.length,w:0.5,h:1/teamA.length}}));
+    teamB.forEach((idx,r)=>panes.push({idx,rect:{x:0.5,y:r/teamB.length,w:0.5,h:1/teamB.length}}));
+    return {panes,teamA,teamB,axis:'col'};
+  }
+  // 任一隊 3 人：主軸改水平——A 隊佔上半（滿版寬，內部左右分欄），B 隊佔下半
+  teamA.forEach((idx,c)=>panes.push({idx,rect:{x:c/teamA.length,y:0.5,w:1/teamA.length,h:0.5}}));
+  teamB.forEach((idx,c)=>panes.push({idx,rect:{x:c/teamB.length,y:0,w:1/teamB.length,h:0.5}}));
+  return {panes,teamA,teamB,axis:'row3'};
+}
+function renderDividers(teamA,teamB,axis){
+  const wrap=document.getElementById('split-dividers');
+  wrap.innerHTML='';
+  const add=(cls,style)=>{ const d=document.createElement('div'); d.className='sdiv '+cls;
+    Object.assign(d.style,style); wrap.appendChild(d); };
+  if(axis==='single'){
+    const n=teamA.length||teamB.length;
+    for(let c=1;c<n;c++) add('v',{left:(c/n*100)+'%',transform:'none'});
+    return;
+  }
+  if(axis==='row3'){
+    add('h',{top:'50%'});
+    if(teamA.length>1) for(let c=1;c<teamA.length;c++)
+      add('v',{left:(c/teamA.length*100)+'%',top:'0%',bottom:'50%',transform:'none'});
+    if(teamB.length>1) for(let c=1;c<teamB.length;c++)
+      add('v',{left:(c/teamB.length*100)+'%',top:'50%',bottom:'0%',transform:'none'});
+    return;
+  }
+  // axis==='col'
+  add('v',{});
+  if(teamA.length>1) for(let r=1;r<teamA.length;r++)
+    add('h',{top:(r/teamA.length*100)+'%',left:'0%',width:'50%'});
+  if(teamB.length>1) for(let r=1;r<teamB.length;r++)
+    add('h',{top:(r/teamB.length*100)+'%',left:'50%',width:'50%'});
+}
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('split-labels'); if(!wrap)return;
+  wrap.innerHTML='';
+  const add=(rect,text)=>{ const d=document.createElement('div'); d.className='plabel';
+    d.style.left=(rect.x*100)+'%'; d.style.top=((1-rect.y-rect.h)*100)+'%'; // rect.y 是由畫面底部起算（WebGL viewport 慣例），換算成 CSS 由頂部起算
+    d.textContent=text; wrap.appendChild(d); };
+  if(groupCamMode==='quad'&&groupBuilt){
+    groupBuilt.panes.forEach(p=>{
+      const role=SOCCER_SEATS[p.idx].role==='striker'?'前鋒':SOCCER_SEATS[p.idx].role==='support'?'中場':'後衛';
+      add(p.rect,`${p.idx<3?'A':'B'}隊${role} ${seatDeviceIcon(seatList[p.idx].controller)}`);
+    });
+  } else {
+    add({x:0,y:0,w:0.5,h:1},'A隊（共用飛手視角）');
+    add({x:0.5,y:0,w:0.5,h:1},'B隊（共用飛手視角）');
+  }
+}
+function setupGroupRender(){
+  groupBuilt=buildGroupPanes();
+  if(groupCamMode==='quad'){
+    renderDividers(groupBuilt.teamA,groupBuilt.teamB,groupBuilt.axis);
+  } else {
+    // 'pilot' 模式固定是左右各一顆共用鏡頭，跟 quad 模式的個人分格配置無關，
+    // 分隔線也要跟著換成單純一條置中垂直線，不能沿用 quad 的分格線。
+    const wrap=document.getElementById('split-dividers'); wrap.innerHTML='';
+    const d=document.createElement('div'); d.className='sdiv v'; wrap.appendChild(d);
+  }
+  renderPaneLabels();
+  if(groupCamMode==='quad'){
+    groupCams=groupBuilt.panes.map(()=>new THREE.PerspectiveCamera(66,1,0.04,60));
+    engine.setRenderFn((renderer,scene)=>{
+      const rp=groupBuilt.panes.map((p,k)=>{ updateSplitCam(groupCams[k],drones[p.idx]); return {camera:groupCams[k],rect:p.rect}; });
+      renderSplit(renderer,scene,rp);
+    });
+  } else { // 'pilot'：每隊固定一顆共用鏡頭，跟人數無關，跟單人版 pilot 站位同一組座標
+    if(!pilotCamA){
+      pilotCamA=new THREE.PerspectiveCamera(72,1,0.04,150); pilotCamA.position.set(0,1.65,-(F.HL+1.3)); pilotCamA.lookAt(0,1.5,0);
+      pilotCamB=new THREE.PerspectiveCamera(72,1,0.04,150); pilotCamB.position.set(0,1.65,F.HL+1.3); pilotCamB.lookAt(0,1.5,0);
+    }
+    engine.setRenderFn((renderer,scene)=>{
+      renderSplit(renderer,scene,[
+        {camera:pilotCamA,rect:{x:0,y:0,w:0.5,h:1}},
+        {camera:pilotCamB,rect:{x:0.5,y:0,w:0.5,h:1}},
+      ]);
+    });
+  }
+}
+function toggleGroupMode(){ if(humanCount<2)return;
+  groupCamMode=groupCamMode==='quad'?'pilot':'quad';
+  setupGroupRender();
+  syncTouchSeats();
+  groupToast('多人視角：'+(groupCamMode==='quad'?'個人分格':'共用飛手'));
+}
+/* 多人分割畫面觸控虛擬搖桿：依 buildGroupPanes() 算出的每席畫面矩形，
+   對 controller.type==='touch' 的席位各疊一組（見 core/hud.js attachTouchSeat）；
+   quad／pilot 兩種鏡頭模式下 groupBuilt.panes 的版面配置相同（差別只在鏡頭共用與否），
+   所以兩種模式都直接沿用同一份 rect，玩家操控區不會因切換視角而跳動。 */
+function syncTouchSeats(){
+  if(!groupBuilt)return;
+  groupBuilt.panes.forEach(p=>{
+    const ctl=seatList[p.idx].controller;
+    if(ctl?.type!=='touch')return;
+    const role=SOCCER_SEATS[p.idx].role==='striker'?'前鋒':SOCCER_SEATS[p.idx].role==='support'?'中場':'後衛';
+    attachTouchSeat(input,p.idx,p.rect,`${p.idx<3?'A':'B'}隊${role} 📱`);
+  });
+}
+
+if(humanCount>=2){
+  setupGroupRender();
+  syncTouchSeats();
+} else {
+  engine.camera.fov=68; engine.camera.near=0.04; engine.camera.updateProjectionMatrix();
+  engine.camera.position.set(0,2.5,-5.5); engine.camera.lookAt(0,1.5,0);
+}
+
+/* ── 鍵盤（僅全域快捷鍵；每席自己的飛行輸入走 input.playerFor()） ── */
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV')cyclePilot();
+  if(e.code==='KeyQ')toggleGroupMode();
+  if(e.code==='KeyZ')crouch=true;
+  if(e.code==='KeyF'){cageSpin=!cageSpin;if(hud)hud.toast('保護籠旋轉：'+(cageSpin?'開':'關'),'ok');}
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')crouch=false; });
+if(hud){ hud.onCamButton(cycleCam); hud.onPauseButton(togglePause); hud.attachTouch(input); }
+
+/* ── 賽制（與 solo 版 soccer-match.html 完全共用同一套 core/systems/soccer.js 判定邏輯） ── */
+function triggerGoal(team){
+  if(phase!=='playing')return;
+  scores[team]++; setGoals[team]++;
+  drones.forEach(d=>{if((d.team===TA?'A':'B')===team)d.mustReturn=true;});
+  const ov=document.getElementById('goal-ov'), wd=document.getElementById('goal-word');
+  wd.style.color=team==='A'?'#00eeff':'#ff4422';
+  wd.style.textShadow=`0 0 40px ${wd.style.color},0 0 80px ${wd.style.color}`;
+  document.getElementById('goal-sub').textContent=team==='A'?'🔵 A隊得分！':'🔴 B隊得分！';
+  ov.style.display='flex';
+  sfx.play(team==='A'?'finish':'warn');
+  if(team===(refDrone.team===TA?'A':'B')){hud&&hud.toast('進球後全隊退回己方半場！','warn');returnWarned=true;}
+  setTimeout(()=>ov.style.display='none',1600);
+}
+function endSet(){
+  phase='set_end'; sfx.play('warn');
+  setLog.push({A:setGoals.A,B:setGoals.B});
+  if(setGoals.A>setGoals.B)setsWon.A++; else if(setGoals.B>setGoals.A)setsWon.B++;
+  if(setsWon.A>=2||setsWon.B>=2||curSet>=F.N_SETS){showMatchEnd();return;}
+  const res=setGoals.A>setGoals.B?'✅ A隊贏得本節！':setGoals.B>setGoals.A?'❌ B隊贏得本節！':'🤝 本節平局';
+  ui.showModal({title:`第 ${curSet} 節結束`,
+    html:`<p style="text-align:center;font-size:26px">${setGoals.A} : ${setGoals.B}</p>
+      <p style="text-align:center">${res}</p><p style="text-align:center">節勝紀錄　A ${setsWon.A}｜B ${setsWon.B}</p>`,
+    buttons:[{id:'b-next',label:`開始第 ${curSet+1} 節`,onClick:nextSet}]});
+}
+function nextSet(){
+  curSet++; setGoals={A:0,B:0}; setTimer=F.SET_DUR;
+  drones.forEach(d=>{d.reset();d.mesh.position.copy(d.pos);});
+  ui.closeModal(); phase='playing';
+  if(hud)hud.setMission(`⚽ 第 ${curSet} 節`);
+}
+function showMatchEnd(){
+  phase='match_end';
+  const win=setsWon.A>setsWon.B, tie=setsWon.A===setsWon.B;
+  sfx.play(win?'finish':'fail');
+  progress.record(ACT,{completed:true,score:scores.A,
+    metrics:{goalsA:scores.A,goalsB:scores.B,setsA:setsWon.A,setsB:setsWon.B,
+      humanCount, result:win?'A':tie?'tie':'B',rule:strict?'fai':'practice'}});
+  ui.showModal({title:win?'🏆 A隊獲勝！':tie?'🤝 平局':'💔 B隊獲勝',
+    html:`<p style="text-align:center">節勝　A ${setsWon.A}：${setsWon.B} B</p>
+      <p style="text-align:center">${setLog.map((s,i)=>`第${i+1}節 ${s.A}:${s.B}`).join('　')}</p>
+      <p style="text-align:center">成績已記錄（nd.progress['${ACT}']）</p>`,
+    buttons:[
+      {id:'b-again',label:'再賽一場',onClick:()=>location.reload()},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
+}
+
+/* ── Intro／暫停 ── */
+function showIntro(focusIdx=2){
+  engine.simStarted=false;
+  const sfCur=SF_OPTS.find(o=>o.v===SF)||SF_OPTS[1];
+  const seatDesc=seatList.map((s,i)=>{
+    const role=SOCCER_SEATS[i].role==='striker'?'前鋒':SOCCER_SEATS[i].role==='support'?'中場':'後衛';
+    const team=i<3?'A':'B';
+    const who=s.controller?.type==='ai'?`AI(${s.controller.diff||'med'})`:
+      s.controller?.type==='gamepad'?`手把[${s.controller.gpIndex}]`:
+      s.controller?.type==='keyboard'?`鍵盤${s.controller.layout}`:'觸控';
+    return `${team}隊${role}：${who}`;
+  }).join('　');
+  ui.showModal({title:'無人機足球 PVP',
+    html:`<p>⚽ FAI 規則：只有 <b>前鋒（striker）</b>穿過對面球門環才得分；進球後全隊須退回己方半場才能再進攻。</p>
+      <p>每節 ${F.SET_DUR/60} 分鐘、共 ${F.N_SETS} 節，先拿 2 節勝出。</p>
+      <p style="font-size:11px;color:#7aa3b8">${seatDesc}</p>
+      <p>${humanCount<=1?'C 視角（追蹤/FPV/俯視/飛手）・V 切換飛手站位・':humanCount>=2?'Q 切換多人視角（個人分格／共用飛手）・':''}Z/LB 蹲・F 保護籠旋轉</p>`,
+    buttons:[
+      {id:'b-sf',label:'機速：'+sfCur.label,onClick:()=>{
+        const i=(SF_OPTS.indexOf(sfCur)+1)%SF_OPTS.length;
+        SF=SF_OPTS[i].v; progress.setSetting('pvpSF',SF); showIntro(0);}},
+      {id:'b-rule',label:'判定：'+(strict?'正式 FAI':'練習寬鬆'),onClick:()=>{
+        strict=!strict; progress.setSetting('pvpStrict',strict); showIntro(1);}},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-go',label:'開賽！',onClick:startMatch}]});
+  ui.gpSetFocus(['b-sf','b-rule','b-pairing','b-go'],focusIdx);
+}
+function startMatch(){
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; phase='playing';
+  if(hud){hud.setMission('⚽ 第 1 節');hud.toast('開賽！','ok');}
+}
+function togglePause(){
+  if(!engine.simStarted||phase==='match_end')return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>第 ${curSet} 節　A ${setGoals.A}:${setGoals.B} B　剩 ${Math.ceil(setTimer)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重新開賽',onClick:()=>location.reload()}]});
+}
+
+if(hud){ hud.setMission('⚽ PVP足球'); syncModes(); }
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+
+  if(hud){
+    const p=input.playerFor(seatList[refIdx].controller);
+    hud.setGpBar(p.device);
+    if(p.device==='gamepad'){
+      const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+      crouch=p.btn('crouch');
+      if(simStarted&&!ui.modalOpen){ if(camE)cycleCam(); if(pilotE)cyclePilot(); }
+    }
+  }
+
+  if(simStarted&&phase==='playing'){
+    // 人類席位：各自讀自己的控制器輸入
+    humanIdx.forEach(i=>{
+      const inp=input.playerFor(ctlFor(i));
+      drones[i].step(dt,inp,SF);
+    });
+    // AI 席位：各自沿用自己在大廳選的難度
+    seatList.forEach((s,i)=>{
+      if(s.controller?.type==='ai') updateSoccerAI(drones[i],dt,{drones,player:refDrone,SF,diff:s.controller.diff||'med'});
+    });
+    drones.forEach(d=>{
+      if(!d.mustReturn)return;
+      if(d.team===TA?d.pos.z<-0.05:d.pos.z>0.05){
+        d.mustReturn=false;
+        if(d===refDrone&&returnWarned){returnWarned=false;hud&&hud.toast('可以再進攻了！','ok');}
+      }
+    });
+    resolveCollisions(drones);
+    for(const d of drones){const g=checkGoal(d,{strict});if(g){triggerGoal(g);break;}}
+    setTimer-=dt;
+    if(setTimer<=0){setTimer=0;endSet();}
+  }
+
+  for(const d of drones){
+    d.mesh.position.copy(d.pos);
+    d.mesh.rotation.y=d.yaw+Math.PI;
+    if(cageSpin&&d.mesh.userData.spin){
+      d.mesh.userData.spin.rotation.x+=dt*1.1;
+      d.mesh.userData.spin.rotation.z+=dt*.6;
+    }
+  }
+  goals.forEach((g,i)=>{g.mesh.rotation.z+=dt*(i?.25:.2);
+    g.light.intensity=1.2+Math.sin(performance.now()*.001*(1.1+i*.3))*.5;});
+
+  if(humanCount>=2){
+    // 每一格的鏡頭在 engine.setRenderFn() 的 renderFn 內每幀呼叫 updateSplitCam()，這裡不需要重複更新
+  } else {
+    updateSingleCam(engine.camera,refDrone);
+    refDrone.mesh.visible=(camMode!=='fpv');
+  }
+
+  if(hud){
+    hud.setTelemetry(refDrone.pos.y,refDrone.vel.length());
+    hud.setProgress(`A ${setGoals.A}:${setGoals.B} B${refDrone.mustReturn?'　⚠ 回防':''}`);
+    hud.setTimer(engine.simStarted?setTimer:null);
+    const mapTargets=[
+      {pos:goals[0].mesh.position,color:'#3c64ff'},{pos:goals[1].mesh.position,color:'#ff321e'},
+      ...drones.filter(d=>d!==refDrone).map(d=>({pos:d.pos,color:'#'+(d.team===TA?0x2266ff:0xff5533).toString(16).padStart(6,'0')})),
+    ];
+    hud.drawMinimap(refDrone.pos,refDrone.yaw+Math.PI,F.HL,mapTargets);
+    hud.update(dt,engine.camera,refDrone.pos);
+  } else {
+    document.getElementById('topbar-text').innerHTML=
+      `第 ${curSet} 節　<b>${setGoals.A} : ${setGoals.B}</b>　剩 ${Math.max(0,Math.ceil(setTimer))} 秒`;
+  }
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+window.ndDebug=()=>({phase,curSet,setTimer:+setTimer.toFixed(1),scores:{...scores},humanCount,humanIdx,
+  setsWon:{...setsWon},paused:engine.paused,sim:engine.simStarted,
+  drones:drones.map(d=>({i:d.i,role:d.role,team:d.team,isPlayer:d.isPlayer,st:d.aiState,
+    pos:d.pos.toArray().map(v=>+v.toFixed(2)),mustReturn:d.mustReturn})),
+  /* 2026-07-23 除錯用：多人分割畫面實際套用的設定，懷疑「畫面沒切換」是分格
+     沒有真的各自渲染時，先看這裡確認 groupCamMode／panes 矩形／canvas 尺寸 */
+  groupDebug: humanCount>=2 ? {
+    groupCamMode, axis: groupBuilt?.axis, paneCount: groupBuilt?.panes?.length,
+    panes: groupBuilt?.panes?.map(p=>({idx:p.idx,rect:p.rect})),
+    groupCamCount: groupCams?.length||0,
+    canvasCSS: [engine.renderer.domElement.clientWidth, engine.renderer.domElement.clientHeight],
+    canvasBuffer: [engine.renderer.domElement.width, engine.renderer.domElement.height],
+    devicePixelRatio,
+  } : null});
+window.ndTest={goal:t=>triggerGoal(t),endSet:()=>{setTimer=0;}};
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🏔️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：山區搜救｜newdrone X-Rescue v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#7ab0d8;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;transition:filter .3s;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#4a3a10;z-index:21;}
+  /* 熱成像疊層：跟基本版一樣用暖色調 radial overlay，配合 #c 的 filter 一起切換 */
+  #rs-thermal-overlay{position:fixed;inset:0;pointer-events:none;z-index:4;opacity:0;transition:opacity .4s;
+    background:radial-gradient(ellipse at center,rgba(255,60,0,.18) 0%,rgba(255,30,0,.08) 100%);}
+  /* 熱成像開關鈕：獨立於 hud.js 既有雙搖桿之外的第三顆觸控按鈕（僅本關需要） */
+  #rs-thermal-btn{display:none;position:fixed;right:24px;bottom:120px;z-index:22;
+    width:64px;height:64px;border-radius:50%;background:rgba(248,113,113,.45);
+    border:2px solid rgba(248,113,113,.9);color:#fff;font-size:20px;line-height:1;
+    align-items:center;justify-content:center;flex-direction:column;gap:1px;
+    pointer-events:auto;touch-action:none;-webkit-tap-highlight-color:transparent;}
+  #rs-thermal-btn span{font-size:8px;opacity:.85;}
+  #rs-thermal-btn.active{transform:scale(.88);opacity:.7;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="rs-thermal-overlay"></div>
+<button id="rs-thermal-btn">🔥<span>熱成像</span></button>
+<div id="ver">NEWDRONE X-RESCUE v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone } from '../core/systems/yaw-drone.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { WindSystem } from '../core/systems/wind.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   情境體驗：山區搜救（移植自基本版 exp/exp-rescue.html）
+   ------------------------------------------------------------
+   移植決策（C1 家族第三關）：
+   - 玩家物理沿用 core/systems/yaw-drone.js 的 YawDrone，phys 參數
+     取自基本版原始碼（THRMAX16/PITCHMAX20/YAWMAX2.6/DRAG0.88/
+     HOVER9.81），阻尼公式基本版已自己 dt 化，跟 bridge 一樣不需要
+     修正，只是改用共用模組的參數化寫法表達。
+   - 地形是連續起伏山地（程序化 terrainH(x,z) 函式），不是 bridge
+     那種離散障礙物清單，YawDrone 內建的平面 minY 邊界不適用（地形
+     高度隨 XZ 變化）。做法：BOUNDS.minY 設一個極低值（-20，低於
+     terrainH() 理論最小值 2.1，永遠不會被觸發，等於停用內建平面
+     地板判定），改在主迴圈每幀呼叫自訂的 checkTerrainCollision()
+     用 terrainH() 即時算出腳下地形高度來判斷碰撞／反彈，天花板
+     （y>35）與 X/Z 邊界（±24，即基本版 TW/2-1）維持「停死不彈」
+     （WBOUNCE=0，跟 bridge 同一個决策：邊界座標比照基本版原始碼
+     直接採用，不夾機身半徑 BR:0，維持原始飛行手感）。
+   - 相機沿用 bridge 的決策：這關場地是 50 公尺級開放山地，跟守門
+     籠小場地量級不同，用 core/camera.js 的 CameraRig（camProxy
+     轉接 yaw+PI 補償），飛手站位取自基本版 PILOT_POSITIONS。
+   - 搜救偵測是「距離內一次性尋獲」（不是 bridge 的懸停累積、也不是
+     goalkeeper 的重複判定），比兩者都單純：每個目標各自維護
+     found 旗標，飛近閾值內（普通 1.5m／熱成像模式 curCfg.detectR）
+     就直接標記尋獲，不需要 scoring.checkRingPass()（那是穿越判定
+     語意，這裡是「進入範圍」判定，且同一目標只會觸發一次不會重複）。
+   - 難度（初級/中級/高級）純粹是數值難度（人數/偵測距離/風力/耗電/
+     時間），跟 bridge v1.0 不同，這關的三個按鈕沒有把「情境」跟
+     「難度」混在一起（場地/地形/目標池永遠相同，只有數量與參數
+     隨難度變化），所以維持基本版原本的單軸三選一設計即可，不需要
+     像 bridge 那樣拆成兩層選單。
+   - 機體樣式固定使用本關主題「救援機」（rescue-search，drone-styles.js
+     已預先註冊），不吃全域 droneStyleGet() 裝備設定，比照 x-bridge
+     使用者實機回饋修正後、套用到全部情境體驗關卡的統一慣例：
+     styleIdx 初始化直接寫死本關代號，機體樣式鈕只改本地變數不寫回
+     droneStyleSet()，避免跨關卡互相污染外觀。
+   - HUD 用 core/hud.js 既有語彙：setGuide() 顯示訊號強度文字列（用
+     Unicode 方塊字元組出長條，不重建基本版自訂的 8 格 DOM signalBars），
+     setBattery/setWind/setTimer/setScore 沿用既有介面，toast 取代
+     基本版的螢幕閃光特效彈字。
+   - 熱成像（B 鍵/鈕）是本關專屬機制，比照 bridge 的精密掃描加速：
+     觸控版另外加一顆獨立按鈕（#rs-thermal-btn），canvas 濾鏡＋
+     疊層直接沿用基本版視覺效果（sepia+hue-rotate+overlay）；
+     gamepad 版直接讀 buttons[1]（沿用基本版寫法）。
+   - 本關沒有 AI 移動物件（倖存者是靜止目標），不會踩到「AI mesh
+     忘記每幀同步」的坑，但玩家 mesh 仍比照慣例每幀無條件同步。
+   ============================================================ */
+
+const LEVEL=getLevel('x-rescue');
+progress.migrateLegacy();
+
+/* ── 常數（沿基本版原始碼原值）── */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:16,PITCHMAX:20,YAWMAX:2.6,
+  DRAG_PER_SEC:Math.pow(0.88,60),WBOUNCE:0,FBOUNCE:0};
+const BOUNDS={minX:-24,maxX:24,minY:-20,maxY:35,minZ:-24,maxZ:24,BR:0};
+const DIFF_CFG={
+  easy:{label:'🌿 初級',time:180,targetCount:5,detectR:7.0,wind:0,  signalR:22,batDrain:5 },
+  med: {label:'⚡ 中級',time:150,targetCount:6,detectR:5.5,wind:0.8,signalR:18,batDrain:9 },
+  hard:{label:'💀 高級',time:120,targetCount:8,detectR:4.0,wind:1.8,signalR:14,batDrain:14},
+};
+const THERMAL_DURATION=15, THERMAL_COOLDOWN=20;
+const TW=50, TD=50, TSEGS=50;
+const ALL_TARGET_XZ=[
+  [-8,-6],[6,9],[-4,13],[11,-4],[-13,3],
+  [8,-14],[-7,-16],[15,10],[-16,-8],[4,-8],
+];
+
+/* ── 地形（程序化起伏山地，沿基本版公式原值）── */
+function terrainH(x,z){
+  const h=
+    3.0*Math.sin(x*0.20)*Math.cos(z*0.17)+
+    2.2*Math.sin(x*0.42+0.9)*Math.sin(z*0.38-0.4)+
+    1.5*Math.cos(x*0.28+1.3)*Math.sin(z*0.25+0.8)+
+    1.0*Math.sin(x*0.60)*Math.cos(z*0.55+0.5)+
+    0.5*Math.sin(x*1.10+0.3)*Math.cos(z*0.90-0.7);
+  return Math.max(0.1,h+2.0);
+}
+const PLAYER_SPAWN=new THREE.Vector3(0,terrainH(0,-20)+3,-20);
+const PILOT_POSITIONS=[new THREE.Vector3(0,2,-24),new THREE.Vector3(-18,2,0),
+  new THREE.Vector3(0,2,18),new THREE.Vector3(18,2,0)];
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-rescue',input});
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:PILOT_POSITIONS});
+const wind=new WindSystem();
+
+/* ── 場地（山地地形＋岩石＋樹木＋倖存者標記，沿基本版原始幾何） ── */
+engine.scene.background=new THREE.Color(0x7ab0d8);
+engine.scene.fog=new THREE.Fog(0x7ab0d8,40,100);
+const sun=new THREE.DirectionalLight(0xfff5d0,1.1);
+sun.position.set(15,30,10); sun.castShadow=true;
+sun.shadow.camera.left=sun.shadow.camera.bottom=-40;
+sun.shadow.camera.right=sun.shadow.camera.top=40;
+sun.shadow.camera.near=0.5; sun.shadow.camera.far=150;
+sun.shadow.mapSize.set(2048,2048);
+let targets=[], windParticles=null;
+function clearDynamicScene(){
+  while(engine.scene.children.length>0)engine.scene.remove(engine.scene.children[0]);
+  engine.scene.add(sun);
+  engine.scene.add(new THREE.AmbientLight(0xffffff,.5));
+  engine.scene.add(new THREE.HemisphereLight(0x87ceeb,0x4a7a30,.35));
+  targets=[]; windParticles=null;
+}
+function buildTerrain(){
+  const geo=new THREE.PlaneGeometry(TW,TD,TSEGS,TSEGS);
+  geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position;
+  for(let i=0;i<pos.count;i++){pos.setY(i,terrainH(pos.getX(i),pos.getZ(i)));}
+  geo.computeVertexNormals();
+  const tMesh=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:0x4a8a3a,roughness:0.9}));
+  tMesh.receiveShadow=true; engine.scene.add(tMesh);
+}
+function addRocks(){
+  const rMat=new THREE.MeshStandardMaterial({color:0x888880,roughness:0.95});
+  [[-10,10],[8,8],[12,-5],[-5,15],[0,-12],[15,2],[-14,-3],[6,-15],[10,13],[-8,-10]].forEach(([rx,rz])=>{
+    const ry=terrainH(rx,rz); if(ry<3)return;
+    const sz=0.4+Math.random()*0.8;
+    const m=new THREE.Mesh(new THREE.DodecahedronGeometry(sz,0),rMat.clone());
+    m.position.set(rx,ry+sz*0.3,rz);
+    m.rotation.set(Math.random(),Math.random()*2,Math.random());
+    m.castShadow=true; engine.scene.add(m);
+  });
+}
+function addTrees(){
+  const trM=new THREE.MeshStandardMaterial({color:0x5a3a1a,roughness:0.9});
+  const lfM=new THREE.MeshStandardMaterial({color:0x2d7030,roughness:0.8});
+  [[-2,5],[3,7],[7,4],[-6,2],[4,-6],[-9,-5],[1,11],[-3,-9],[9,-8],[-11,7],
+   [5,14],[-13,0],[8,-11],[0,3],[-5,9],[12,5],[-8,12],[6,-3],[-1,-14],[11,-2]].forEach(([tx,tz])=>{
+    const ty=terrainH(tx,tz); if(ty>5.5)return;
+    const h=1.2+Math.random()*0.8;
+    const trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.12,h,6),trM.clone());
+    trunk.position.set(tx,ty+h/2,tz); trunk.castShadow=true; engine.scene.add(trunk);
+    const leaf=new THREE.Mesh(new THREE.ConeGeometry(0.5+Math.random()*0.3,h*0.9,7),lfM.clone());
+    leaf.position.set(tx,ty+h+0.3,tz); leaf.castShadow=true; engine.scene.add(leaf);
+  });
+}
+function addTarget(tx,ty,tz){
+  const g=new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.5,0.08,12),
+    new THREE.MeshStandardMaterial({color:0x2a1a06,emissive:0x000000,emissiveIntensity:0,roughness:0.95})));
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,1.5,6),
+    new THREE.MeshStandardMaterial({color:0x1e1206,emissive:0x000000,emissiveIntensity:0}));
+  pole.position.y=0.75; g.add(pole);
+  const topMesh=new THREE.Mesh(new THREE.SphereGeometry(0.12,8,6),
+    new THREE.MeshStandardMaterial({color:0x1a1400,emissive:0x000000,emissiveIntensity:0}));
+  topMesh.position.y=1.55; g.add(topMesh);
+  const pl=new THREE.PointLight(0xffaa00,0.04,8);
+  pl.position.y=1.6; g.add(pl);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(0.7,0.9,24),
+    new THREE.MeshBasicMaterial({color:0xff8800,side:THREE.DoubleSide,transparent:true,opacity:0.04}));
+  ring.rotation.x=-Math.PI/2; ring.position.y=0.05; g.add(ring);
+  g.position.set(tx,ty,tz); g.castShadow=true; engine.scene.add(g);
+  targets.push({pos:new THREE.Vector3(tx,ty,tz),found:false,mesh:g,ring,light:pl,topMesh});
+}
+function buildWindParticles(){
+  const count=60,R=28,positions=new Float32Array(count*3);
+  for(let i=0;i<count;i++){positions[i*3]=(Math.random()-.5)*R*2;positions[i*3+1]=Math.random()*20+0.5;positions[i*3+2]=(Math.random()-.5)*R*2;}
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  const pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0xb0d8ff,size:0.2,transparent:true,opacity:0.5,sizeAttenuation:true}));
+  engine.scene.add(pts); return pts;
+}
+function tickWindParticles(dt){
+  if(!windParticles||wind.vec.lengthSq()<0.01)return;
+  const pos=windParticles.geometry.attributes.position,R=28;
+  for(let i=0;i<pos.count;i++){
+    pos.array[i*3]+=wind.vec.x*dt*3.5; pos.array[i*3+1]-=dt*0.2; pos.array[i*3+2]+=wind.vec.z*dt*3.5;
+    if(pos.array[i*3]>R)pos.array[i*3]-=R*2; if(pos.array[i*3]<-R)pos.array[i*3]+=R*2;
+    if(pos.array[i*3+2]>R)pos.array[i*3+2]-=R*2; if(pos.array[i*3+2]<-R)pos.array[i*3+2]+=R*2;
+    if(pos.array[i*3+1]<0.3)pos.array[i*3+1]=Math.random()*20+0.5;
+  }
+  pos.needsUpdate=true;
+}
+function buildScene(diff){
+  clearDynamicScene(); buildTerrain(); addRocks(); addTrees();
+  const cfg=DIFF_CFG[diff];
+  ALL_TARGET_XZ.slice(0,cfg.targetCount).forEach(([tx,tz])=>addTarget(tx,terrainH(tx,tz),tz));
+  if(cfg.wind>0)windParticles=buildWindParticles();
+  engine.scene.add(mesh);
+}
+
+/* ── 玩家機體（固定用本關主題「救援機」，不吃全域裝備設定） ── */
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='rescue-search'));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const probe=new YawDrone({spawn:PLAYER_SPAWN,yaw:0,bounds:BOUNDS,phys:PHYS});
+const camProxy={pos:probe.pos,yaw:0};
+buildScene('easy'); // intro 畫面預覽用的預設場景，startGame() 會依選擇的難度重建
+
+/* ── 地形碰撞（連續地形高度判定，取代 bridge 的離散障礙物清單） ── */
+let collisionCount=0, lastCollisionT=-2;
+function checkTerrainCollision(){
+  const th=terrainH(probe.pos.x,probe.pos.z);
+  if(probe.pos.y<th+0.2){
+    probe.pos.y=th+0.2;
+    probe.vel.y=Math.max(0,probe.vel.y*-0.2);
+    const now=performance.now()/1000;
+    if(now-lastCollisionT>1.5){
+      lastCollisionT=now; collisionCount++;
+      hud.toast('💥 地形碰撞！','fail'); sfx.play('fail');
+    }
+  }
+}
+
+/* ── 熱成像（本關專屬機制，沿基本版狀態機） ── */
+let thermalOn=false, thermalTimer=0, thermalCooldown=0;
+function setThermalVisual(on){
+  document.getElementById('c').style.filter=on?'sepia(0.6) saturate(2.5) hue-rotate(-20deg) brightness(0.85)':'';
+  document.getElementById('rs-thermal-overlay').style.opacity=on?'1':'0';
+  targets.forEach(tgt=>{
+    if(tgt.found)return;
+    tgt.light.intensity=on?5.0:0.04;
+    tgt.light.distance=on?20:8;
+    tgt.topMesh.material.color.setHex(on?0xffff00:0x1a1400);
+    tgt.topMesh.material.emissive.setHex(on?0xffcc00:0x000000);
+    tgt.topMesh.material.emissiveIntensity=on?4.0:0;
+    tgt.ring.material.opacity=on?0.6:0.04;
+  });
+}
+function toggleThermal(){
+  if(!playing||finished)return;
+  if(thermalOn){thermalOn=false;thermalCooldown=THERMAL_COOLDOWN;setThermalVisual(false);sfx.play('click');}
+  else{
+    if(thermalCooldown>0){hud.toast('🔥 熱成像充能中，尚未就緒','warn');return;}
+    thermalOn=true; thermalTimer=THERMAL_DURATION; setThermalVisual(true); sfx.play('charge');
+    hud.toast('🔥 熱成像啟動！','ok');
+  }
+}
+function tickThermal(dt){
+  if(thermalOn){
+    thermalTimer-=dt;
+    if(thermalTimer<=0){thermalTimer=0;thermalOn=false;thermalCooldown=THERMAL_COOLDOWN;setThermalVisual(false);sfx.play('click');}
+  }else if(thermalCooldown>0){
+    thermalCooldown=Math.max(0,thermalCooldown-dt);
+  }
+}
+
+/* ── 目標閃爍動畫（沿基本版：一般模式微弱脈動，熱成像模式強烈脈動） ── */
+function animateTargets(t){
+  targets.forEach(tgt=>{
+    if(tgt.found)return;
+    const pulse=0.5+0.5*Math.sin(t*3.0);
+    if(thermalOn){
+      tgt.ring.material.opacity=0.3+pulse*0.5; tgt.ring.scale.setScalar(1+pulse*0.18);
+      tgt.light.intensity=2.0+pulse*3.0;
+    }else{
+      tgt.ring.material.opacity=0.02+pulse*0.03; tgt.ring.scale.setScalar(1.0);
+    }
+  });
+}
+
+/* ── 搜救偵測（距離內一次性尋獲，非懸停累積、非穿越判定） ── */
+let foundCount=0, _nearestDist=Infinity;
+function checkRescue(){
+  _nearestDist=Infinity;
+  targets.forEach(tgt=>{
+    if(tgt.found)return;
+    const dist=probe.pos.distanceTo(tgt.pos);
+    if(dist<_nearestDist)_nearestDist=dist;
+    const activeR=thermalOn?curCfg.detectR:1.5;
+    if(dist<activeR){
+      tgt.found=true; foundCount++;
+      tgt.mesh.traverse(obj=>{
+        if(obj.isMesh&&obj.material){
+          obj.material=obj.material.clone();
+          obj.material.color.setHex(0x00ff44);
+          if(obj.material.emissive)obj.material.emissive.setHex(0x004422);
+          obj.material.emissiveIntensity=2.0;
+        }
+      });
+      tgt.light.color.setHex(0x00ff88); tgt.light.intensity=2.0;
+      hud.toast('✅ 尋獲倖存者！','ok'); sfx.play('ring');
+      if(foundCount>=curCfg.targetCount)finishGame();
+    }
+  });
+}
+/* 訊號強度：用文字方塊長條取代基本版自訂的 8 格 DOM signalBars，
+   沿用既有 hud.setGuide() 語彙，不重建一套獨立 DOM。 */
+function signalGuideText(){
+  if(_nearestDist>curCfg.signalR)return '📡 訊號：－－ 搜尋中…';
+  const ratio=Math.max(0,1-_nearestDist/curCfg.signalR);
+  const filled=Math.round(ratio*8);
+  const bar='█'.repeat(filled)+'░'.repeat(8-filled);
+  return `📡 訊號 ${bar} ${_nearestDist.toFixed(1)}m${thermalOn?'　🔥熱成像中':''}`;
+}
+
+/* ── 遊戲狀態 ── */
+let pDiff='easy', curCfg=DIFF_CFG.easy;
+let gameTimer=180, totalTime=180, batteryPct=100;
+let playing=false, finished=false;
+
+/* ── 視角／飛手站位／暫停 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(ch.hold?'街機':'手動油門',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyB')toggleThermal();
+  if(e.code==='Escape')togglePause();
+});
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── 熱成像觸控鈕（獨立於 hud.js 雙搖桿之外，只有觸控裝置顯示） ── */
+(function(){
+  const btn=document.getElementById('rs-thermal-btn');
+  const isTouch=navigator.maxTouchPoints>0||matchMedia('(pointer:coarse)').matches;
+  const showIfTouch=()=>{ btn.style.display=(isTouch&&!(navigator.getGamepads&&[...navigator.getGamepads()].some(g=>g)))?'flex':'none'; };
+  showIfTouch();
+  addEventListener('gamepadconnected',showIfTouch); addEventListener('gamepaddisconnected',showIfTouch);
+  btn.addEventListener('pointerdown',e=>{e.preventDefault();toggleThermal();btn.classList.add('active');});
+  btn.addEventListener('pointerup',()=>btn.classList.remove('active'));
+  btn.addEventListener('pointercancel',()=>btn.classList.remove('active'));
+})();
+let _gpThermalPrev=false;
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 山區搜救',
+    html:`<p>山難發生！操控無人機在崎嶇山區搜尋倖存者，飛到 <strong>1.5m</strong> 內即可尋獲。</p>
+      <p>按 <b>B</b>／畫面右下角按鈕開啟<b>熱成像</b>，偵測距離大幅提升，限時 15 秒，冷卻 20 秒。<br>
+      注意避開地形碰撞！</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-easy',label:'🌿 初級（5人・3分・熱成像7m）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'⚡ 中級（6人・2:30・熱成像5.5m）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'💀 高級（8人・2分・熱成像4m・強風）',onClick:()=>startGame('hard')},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff; curCfg=DIFF_CFG[diff];
+  gameTimer=curCfg.time; totalTime=curCfg.time; foundCount=0; collisionCount=0; lastCollisionT=-2;
+  batteryPct=100; thermalOn=false; thermalTimer=0; thermalCooldown=0;
+  wind.randomize(curCfg.wind);
+  probe.reset(PLAYER_SPAWN,0);
+  buildScene(diff);
+  setThermalVisual(false);
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  ch.apply(probe); syncModes();
+  hud.setMission(curCfg.label+' 搜救任務');
+  hud.setGuide('開始搜救，注意訊號強度');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${curCfg.label}</p>
+      <p>已尋獲 ${foundCount}/${curCfg.targetCount} 人・地形碰撞 ${collisionCount} 次・剩餘 ${Math.max(0,gameTimer).toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function calcScore(){
+  const cov=Math.round((foundCount/curCfg.targetCount)*70);
+  const tim=Math.round(Math.max(0,gameTimer/totalTime)*20);
+  const saf=Math.max(0,10-collisionCount*3);
+  const tot=Math.min(100,cov+tim+saf);
+  return{cov,tim,saf,tot,grade:tot>=90?'S':tot>=75?'A':tot>=55?'B':tot>=35?'C':'D'};
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false;
+  if(thermalOn){thermalOn=false;setThermalVisual(false);}
+  const{cov,tim,saf,tot,grade}=calcScore();
+  sfx.play('finish');
+  progress.record('x-rescue',{completed:true,score:tot,
+    metrics:{foundCount,totalTargets:curCfg.targetCount,collisionCount,grade,diff:pDiff},...ch.recordFields()});
+  ui.showModal({title:grade+' 級　'+({S:'🏆',A:'🥇',B:'🥈',C:'🥉',D:'💪'}[grade]),
+    html:`<p>尋獲倖存者：${foundCount}/${curCfg.targetCount} 人（+${cov}pt）<br>
+      剩餘時間：${Math.max(0,Math.ceil(gameTimer))} 秒（+${tim}pt）<br>
+      安全分：${saf}/10（地形碰撞 ${collisionCount} 次）<br>
+      <b>總計：${tot} / 100</b></p>
+      <p>成績已記錄（nd.progress.x-rescue）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再試一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(ch.any?2:1)},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇難度後開始搜救');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device,{keyboard:'<kbd>B</kbd>熱成像',gamepad:'<kbd>{action}</kbd>熱成像',touch:'👆右下角鈕熱成像'});
+  if(p.device==='gamepad'){
+    const gp=[...(navigator.getGamepads?.()||[])].find(g=>g);
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    const thermalBtn=gp?input.gpBtn(gp,'action'):false;   // 沿基本版：B 鈕＝gamepad button[1]
+    if(thermalBtn&&!_gpThermalPrev&&simStarted&&!ui.modalOpen)toggleThermal();
+    _gpThermalPrev=thermalBtn;
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    ch.update(dt,probe,engine.camera);
+    probe.step(dt,p);
+    if(wind.enabled)probe.vel.addScaledVector(wind.vec,dt*4.0); // 沿基本版風力比例（見檔頭說明）
+    wind.update(dt);
+    checkTerrainCollision();
+    checkRescue();
+    tickThermal(dt);
+    tickWindParticles(dt);
+    animateTargets(performance.now()/1000);
+    gameTimer-=dt;
+    hud.setTimer(Math.max(0,gameTimer));
+    hud.setScore(foundCount);
+    hud.setProgress(`尋獲 ${foundCount}/${curCfg.targetCount}・碰撞 ${collisionCount}`);
+    hud.setGuide(signalGuideText());
+    const drain=curCfg.batDrain*(thermalOn?2:1);
+    batteryPct=Math.max(0,batteryPct-drain*dt/60);
+    hud.setBattery(batteryPct);
+    if(gameTimer<=0||batteryPct<=0)finishGame();
+  }
+  mesh.position.copy(probe.pos);
+  mesh.rotation.y=probe.yaw+Math.PI;               // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  mesh.visible=(rig.mode!=='fpv');
+  camProxy.yaw=probe.yaw+Math.PI;
+  rig.portrait=hud.portrait;
+  rig.update(dt,camProxy,mesh);
+  hud.setTelemetry(probe.pos.y,probe.speed());
+  hud.setWind(playing?wind.hudInfo():null,playing?wind.screenArrowDeg(probe.pos,engine.camera):null);
+  const mapTargets=targets.map(tgt=>({pos:tgt.pos,color:tgt.found?0x4ade80:0xff8800,done:tgt.found}));
+  hud.drawMinimap(probe.pos,probe.yaw+Math.PI,52,mapTargets,{route:false});
+  hud.setAnomaly(probe.anomalyT>0);
+  hud.update(dt,engine.camera,probe.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

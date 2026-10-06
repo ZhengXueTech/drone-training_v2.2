@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🥅</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：守門挑戰｜newdrone X-Goalkeeper v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#060a14;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#7a3040;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE X-GOALKEEPER v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone, aiMoveWorld, blockImpact, tumbleStep } from '../core/systems/yaw-drone.js';
+import { CAM_LABELS, CAMERA_SPEC } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { makeHeadingBeacon } from '../core/world.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   情境體驗：守門挑戰（移植自基本版 exp/exp-goalkeeper.html）
+   ------------------------------------------------------------
+   移植決策（C1 家族第一關——最先移植，物理最接近已驗證的 soccer.js）：
+   - 玩家＋AI 前鋒物理改用新抽出的共用模組 core/systems/yaw-drone.js
+     （YawDrone/aiMoveWorld，見該檔頭註解），取代基本版自帶的
+     physicsDrone()/aiMoveWorld()；阻尼比照 soccer.js 已驗證的做法
+     dt 化（基本版 DRAG=0.92 是「每幀」假設，換算為 0.92^60 每秒存速比）。
+   - 座標慣例沿 soccer.js／基本版：yaw=0 機頭朝 +Z，與 drone-styles
+     機頭 -Z 規範相反，故每幀同步視覺都要 mesh.rotation.y = yaw + PI
+     （基本版原始碼其實忘記加這個補償，機體視覺朝向跟飛行方向反了
+     180°——這裡直接修正，不沿用這個小瑕疵，比照本專案「阻尼 dt 化」
+     一貫的修正優先原則）；小地圖機頭箭頭（hud.drawMinimap）同理也要
+     餵補償後的 yaw，該函式內部假設的是 drone-styles 慣例。
+   - 相機改比照 soccer-match.html 的做法，不用 core/camera.js 的
+     CameraRig——CameraRig 的 follow 模式偏移量（規劃書 5.3 凍結表
+     offset:(0,2.4,7.0)）是給開放訓練場調的，套在這關 6×3×3 公尺的
+     小型封閉守門籠會整個場景被拉得又小又遠（實測畫面機體只剩芝麻大）。
+     這裡直接沿用基本版 updateCamera() 的近距離 follow/fpv/ground 三態
+     算式（跟 soccer-match.html 处理小場地同一個決策），只重用
+     core/camera.js 的 CAM_LABELS 文字與 CAMERA_SPEC 的 FOV 數值，
+     保持跟其他關卡用語與視野感一致；相機數學直接用物理 yaw（機頭 +Z
+     慣例），不需要 +PI 補償——補償只有「同步視覺機體 mesh」才需要。
+   - 場地／球門造型維持基本版原尺寸（小型封閉守門籠，跟訓練場/足球場
+     風格不同），沿用 soccer.js 的做法在關卡內自建 buildField()／
+     buildGoal()，不共用 core/world.js 的戶外訓練場建構器。
+   - 球門判定沿用基本版「prevZ 跨越 + 半徑」自算法，不用
+     core/systems/scoring.js 的 checkRingPass()——場上同一顆球門會被
+     多台前鋒重複穿越判定，checkRingPass 的「一次性 passed 旗標」
+     語意是給單人穿環路線用的，不適合這裡的重複判定情境。
+   - 前鋒機體改重用 drone-styles.js 現有的 exp-gk-red 樣式（跟玩家
+     同一顆 builder），用 tint 上黃/橘配色取代基本版另外手刻一份
+     makeDroneMesh()，避免重複程式碼。
+   - HUD 由基本版自訂 DOM（#hud-time/#hud-conceded/#hud-blocked／
+     goal-fx 動畫）改用 core/hud.js 既有語彙：setTimer/setScore/
+     setProgress 顯示倒數與比數，hud.toast() 取代進球特效彈字。
+   - 星等結算（無數字排名，改看擋下率）比照基本版 rate=blocked/
+     (blocked+conceded) 門檻 .8/.5 給 3/2/1 星，維持原設計。
+   ============================================================ */
+
+const LEVEL=getLevel('x-goalkeeper');
+progress.migrateLegacy();
+
+/* ── 場地常數（沿基本版 exp-goalkeeper.html 原值）── */
+const FL=6, FW=3, FH=3, HL=FL/2, HW=FW/2, BR=0.11;
+const GR=0.20, GI=GR-0.01, GT=0.025;
+const GZ=HL-0.70, GY=1.5;
+const GAME_TIME=60;
+const ATK_COLORS=[0xffdd00,0xff8800,0xffaa00];
+const ATK_SPD={easy:2.2,med:3.8,hard:6.5};
+const ATK_CNT={easy:1,med:2,hard:3};
+const DIFF_LABEL={easy:'😊 簡單（1台・慢速）',med:'⚡ 中等（2台・中速）',hard:'💀 困難（3台・高速）'};
+
+/* 玩家與前鋒共用邊界（沿基本版：地板/天花板/左右牆，Z 方向不夾——
+   前鋒需要飛越球門縱深，AI 移動只夾 X/Y，見 yaw-drone.js aiMoveWorld） */
+const BOUNDS={minX:-HW,maxX:HW,minY:0,maxY:FH,minZ:-HL,maxZ:HL,BR};
+/* 物理參數（沿基本版：THRMAX/YAWMAX 與 soccer.js 相同，PITCHMAX/阻尼/
+   彈性係數為守門關卡專屬手感——[FIX] 阻尼 dt 化，0.92 換算每秒存速比） */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:14,PITCHMAX:18,YAWMAX:2.8,
+  DRAG_PER_SEC:Math.pow(0.92,60),WBOUNCE:0.45,FBOUNCE:0.3};
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-goalkeeper',input});
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+
+/* ── 相機（沿基本版近距離三態，不用 CameraRig——見檔頭決策說明） ── */
+const PILOT_POSITIONS=[
+  new THREE.Vector3(0,1.8,GZ+1.5), new THREE.Vector3(-HW-0.4,1.4,GZ+0.4),
+  new THREE.Vector3(HW+0.4,1.4,GZ+0.4), new THREE.Vector3(0,3.0,GZ+2.0)];
+const GROUND_CAM_POS=PILOT_POSITIONS[0].clone();
+let pilotIdx=0;
+const CAM_MODES=['follow','fpv','ground'];
+let camModeIdx=0;
+const camTarget=new THREE.Vector3(0,GY,0);
+let camInit=false;
+function cyclePilot(){ pilotIdx=(pilotIdx+1)%PILOT_POSITIONS.length; GROUND_CAM_POS.copy(PILOT_POSITIONS[pilotIdx]); }
+function updateCamera(dt){
+  const cam=engine.camera, mode=CAM_MODES[camModeIdx];
+  const k=Math.min(1,8*dt); // 沿基本版 lerp 係數（基本版無 dt 化，這裡比照全系統慣例補上）
+  if(mode==='ground'){
+    if(!camInit){cam.position.copy(GROUND_CAM_POS);camTarget.copy(gkDrone.pos);camInit=true;}
+    cam.position.lerp(GROUND_CAM_POS,k*0.65);
+    camTarget.lerp(gkDrone.pos,k*0.65);
+    cam.lookAt(camTarget);
+  }else if(mode==='fpv'){
+    const fwd=new THREE.Vector3(Math.sin(gkDrone.yaw),0,Math.cos(gkDrone.yaw));
+    cam.position.copy(gkDrone.pos).addScaledVector(fwd,0.05);
+    cam.position.y=gkDrone.pos.y+0.03;
+    cam.lookAt(gkDrone.pos.clone().addScaledVector(fwd,2));
+  }else{
+    const back=new THREE.Vector3(-Math.sin(gkDrone.yaw),0,-Math.cos(gkDrone.yaw));
+    const tPos=gkDrone.pos.clone().addScaledVector(back,1.2);
+    tPos.y=gkDrone.pos.y+0.6;
+    if(!camInit){cam.position.copy(tPos);camTarget.copy(gkDrone.pos);camInit=true;}
+    cam.position.lerp(tPos,k*0.8);
+    camTarget.lerp(gkDrone.pos,k*0.8);
+    cam.lookAt(camTarget);
+  }
+}
+function setCamFov(mode){ engine.camera.fov=CAMERA_SPEC[mode]?.fov??60; engine.camera.updateProjectionMatrix(); }
+engine.camera.position.copy(PILOT_POSITIONS[0]); camTarget.set(0,GY,0); engine.camera.lookAt(camTarget);
+setCamFov('follow');
+
+/* ── 場地建構（沿基本版 buildField，小型封閉守門籠，紅色主題） ── */
+function buildField(){
+  const scene=engine.scene;
+  scene.background=new THREE.Color(0x060a14);
+  scene.fog=new THREE.FogExp2(0x060a14,.06);
+  scene.add(new THREE.AmbientLight(0x334466,0.9));
+  const dl=new THREE.DirectionalLight(0xffffff,0.8); dl.position.set(2,6,2); scene.add(dl);
+  const redPt=new THREE.PointLight(0xff2244,1.8,6); redPt.position.set(0,GY,GZ+0.5); scene.add(redPt);
+
+  const flr=new THREE.Mesh(new THREE.PlaneGeometry(FW,FL),
+    new THREE.MeshStandardMaterial({color:0x080010,roughness:.95}));
+  flr.rotation.x=-Math.PI/2; flr.receiveShadow=true; scene.add(flr);
+  const grid=new THREE.GridHelper(Math.max(FL,FW),12,0x220033,0x110022);
+  grid.position.y=0.001; scene.add(grid);
+
+  const wallM=new THREE.MeshBasicMaterial({color:0x221133,wireframe:true,transparent:true,opacity:.25});
+  [[FW,FH,0.02,0,FH/2,HL],[FW,FH,0.02,0,FH/2,-HL],
+   [0.02,FH,FL,HW,FH/2,0],[0.02,FH,FL,-HW,FH/2,0],
+   [FW,0.02,FL,0,FH,0]].forEach(([w,h,d,x,y,z])=>{
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),wallM);
+    m.position.set(x,y,z); scene.add(m);
+  });
+
+  const pilM=new THREE.MeshStandardMaterial({color:0x1a0030,metalness:.8,roughness:.3});
+  const pilG=new THREE.CylinderGeometry(0.04,0.04,FH,6);
+  [[-HW,-HL],[HW,-HL],[-HW,HL],[HW,HL]].forEach(([x,z])=>{
+    const p=new THREE.Mesh(pilG,pilM); p.position.set(x,FH/2,z); scene.add(p);
+  });
+
+  const cl=new THREE.Mesh(new THREE.PlaneGeometry(FW,0.015),
+    new THREE.MeshBasicMaterial({color:0x441133,transparent:true,opacity:.6}));
+  cl.rotation.x=-Math.PI/2; cl.position.y=0.002; scene.add(cl);
+
+  const spawn=new THREE.Mesh(new THREE.PlaneGeometry(FW,0.5),
+    new THREE.MeshBasicMaterial({color:0xffdd00,transparent:true,opacity:.15}));
+  spawn.rotation.x=-Math.PI/2; spawn.position.set(0,0.003,-HL+0.25); scene.add(spawn);
+}
+let goalMesh;
+function buildGoal(){
+  const scene=engine.scene;
+  goalMesh=new THREE.Mesh(new THREE.TorusGeometry(GR,GT,8,32),
+    new THREE.MeshStandardMaterial({color:0xff2244,emissive:0xff0022,emissiveIntensity:1.2,metalness:.5,roughness:.2}));
+  goalMesh.position.set(0,GY,GZ);
+  scene.add(goalMesh); // 不加 rotation.x——環孔預設朝 ±Z（跟機身飛行方向一致）
+  const glow=new THREE.Mesh(new THREE.TorusGeometry(GR+0.03,0.008,6,32),
+    new THREE.MeshBasicMaterial({color:0xff2244,transparent:true,opacity:.4}));
+  glow.position.copy(goalMesh.position); scene.add(glow);
+  const wire=new THREE.Mesh(new THREE.CylinderGeometry(0.004,0.004,FH-GY,4),
+    new THREE.MeshBasicMaterial({color:0x334455}));
+  wire.position.set(0,(GY+FH)/2,GZ); scene.add(wire);
+}
+buildField(); buildGoal();
+
+/* ── 玩家機體（樣式可選——沿用 nd.settings.droneStyle 全關卡通用偏好，
+   預設 exp-gk-red，守門挑戰版專屬樣式） ── */
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='exp-gk-red')); // 情境體驗關卡固定用自己的主題機體，不吃全域裝備設定（t02-t11／template／showroom 才共用 droneStyleGet）
+let beaconOn=progress.setting('headingBeacon',true);
+let mesh=null, beacon=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+
+const PLAYER_SPAWN=new THREE.Vector3(0,GY,GZ-0.4);
+const gkDrone=new YawDrone({spawn:PLAYER_SPAWN,yaw:Math.PI,bounds:BOUNDS,phys:PHYS});
+
+/* ── 前鋒（AI 攻擊方，重用 exp-gk-red 樣式＋黃/橘 tint） ── */
+let attackers=[];
+function getSpawnPos(i,total){
+  const configs=[{x:0,z:-HL+0.3},{x:-0.7,z:-HL+1.0},{x:0.7,z:-HL+1.0}];
+  const c=configs[i%3];
+  return new THREE.Vector3(c.x, GY+(Math.random()*.2-.1), c.z);
+}
+const ATK_AIMS=[
+  new THREE.Vector3(0, GY, GZ),
+  new THREE.Vector3(-GR*.6, GY+GR*.4, GZ),
+  new THREE.Vector3( GR*.6, GY-GR*.4, GZ),
+];
+function initAttackers(){
+  attackers.forEach(a=>{ if(a.mesh)engine.scene.remove(a.mesh); });
+  attackers=[];
+  const cnt=ATK_CNT[pDiff];
+  for(let i=0;i<cnt;i++){
+    const spawnPos=getSpawnPos(i,cnt);
+    const a={pos:spawnPos.clone(),vel:new THREE.Vector3(),yaw:0,prevZ:spawnPos.z,
+      cooldown:i*1.5,resetTimer:0,scored:false};
+    a.mesh=buildDroneStyle('exp-gk-red',{tint:ATK_COLORS[i%ATK_COLORS.length]});
+    a.mesh.position.copy(a.pos);
+    engine.scene.add(a.mesh);
+    attackers.push(a);
+  }
+}
+function resetAttacker(atk,idx){
+  const cnt=ATK_CNT[pDiff];
+  const spawnIdx=(idx+Math.floor(Math.random()*3))%3;
+  atk.pos.copy(getSpawnPos(spawnIdx,cnt));
+  atk.vel.set(0,0,0); atk.yaw=0;
+  atk.mesh.position.copy(atk.pos);
+  atk.scored=false; atk.resetTimer=0; atk.cooldown=0.8; atk.tumble=false;
+}
+function updateAttacker(atk,idx,dt){
+  if(atk.cooldown>0){atk.cooldown-=dt;return;}
+  if(atk.resetTimer>0){
+    atk.resetTimer-=dt;
+    if(atk.tumble)tumbleStep(atk,dt,BOUNDS,PHYS);   // 被擋下後彈開翻滾，不再凍結在原地
+    if(atk.resetTimer<=0)resetAttacker(atk,idx);
+    return;
+  }
+  const spd=ATK_SPD[pDiff];
+  const aim=ATK_AIMS[idx%ATK_AIMS.length].clone();
+  if(pDiff==='easy')       aim.x+=Math.sin(simTime*0.8+idx*2.1)*0.15;
+  else if(pDiff==='med')   aim.x+=Math.sin(simTime*1.2+idx*1.7)*0.06;
+  aiMoveWorld(atk,aim,dt,spd,BOUNDS,PHYS);
+}
+
+/* ── 碰撞／攔截／進球判定（沿基本版邏輯，HUD 改走 core 語彙） ── */
+let goalsConceded=0, blockedCount=0;
+function resolveInterceptions(){
+  const INTERCEPT_R=BR*2.2;
+  for(const a of attackers){
+    if(a.cooldown>0||a.resetTimer>0||a.scored)continue;
+    const diff=gkDrone.pos.clone().sub(a.pos);
+    const d2=diff.lengthSq();
+    if(d2<INTERCEPT_R*INTERCEPT_R&&d2>1e-4){
+      blockedCount++;
+      a.scored=true; a.resetTimer=1.5; a.tumble=true;
+      const dist=Math.sqrt(d2), n=diff.divideScalar(dist);
+      // 2026-10-03：撞擊結果改機率分段（彈開／定桿／守門被撞飛），見 yaw-drone.js blockImpact()
+      const tier=blockImpact(gkDrone,a,n);
+      if(tier==='knock'){ hud.toast('💥 擋下，但被撞飛了！快回防','warn'); sfx.play('fail'); }
+      else { hud.toast('✋ 擋下！','ok'); sfx.play('ok'); }
+    }
+  }
+  for(let i=0;i<attackers.length;i++)for(let j=i+1;j<attackers.length;j++){
+    const a=attackers[i], b=attackers[j];
+    const diff=a.pos.clone().sub(b.pos);
+    const d2=diff.lengthSq(), md=BR*2;
+    if(d2<md*md&&d2>1e-4){
+      const dist=Math.sqrt(d2), n=diff.divideScalar(dist);
+      const ov=(md-dist)*.5;
+      a.pos.addScaledVector(n,ov); b.pos.addScaledVector(n,-ov);
+    }
+  }
+}
+function checkAttackerGoals(){
+  attackers.forEach((atk,idx)=>{
+    if(atk.cooldown>0||atk.resetTimer>0||atk.scored)return;
+    if(atk.prevZ<GZ&&atk.pos.z>=GZ){
+      const dx=atk.pos.x, dy=atk.pos.y-GY;
+      const r=Math.sqrt(dx*dx+dy*dy);
+      if(r<=GI){
+        atk.scored=true; goalsConceded++;
+        hud.toast('🥅 失守！','fail'); sfx.play('fail');
+        atk.resetTimer=1.8;
+      }else{
+        blockedCount++;
+        hud.toast('✋ 擋下！','ok'); sfx.play('ok');
+        atk.resetTimer=1.2;
+      }
+    }
+    if(atk.pos.z>HL-BR){
+      if(!atk.scored)blockedCount++;
+      atk.scored=true; atk.resetTimer=1.0;
+    }
+  });
+}
+
+/* ── 遊戲狀態 ── */
+let pDiff='med', timeLeft=GAME_TIME, simTime=0;
+let playing=false, finished=false;
+
+/* ── 視角／飛手站位／暫停 ── */
+function cycleCam(){
+  camModeIdx=(camModeIdx+1)%CAM_MODES.length; camInit=false;
+  setCamFov(CAM_MODES[camModeIdx]);
+  hud.toast('視角：'+CAM_LABELS[CAM_MODES[camModeIdx]],'ok'); syncModes();
+}
+function syncModes(){ hud.setModes(ch.hold?'街機':'手動油門',CAM_LABELS[CAM_MODES[camModeIdx]]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){cyclePilot();
+    if(CAM_MODES[camModeIdx]==='ground')hud.toast(`飛手站位 ${pilotIdx+1}/${PILOT_POSITIONS.length}`,'ok');}
+  if(e.code==='Escape')togglePause();
+});
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?3:2)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 守門挑戰',
+    html:`<p>操控守門無人機防守球門，阻擋 <strong>AI 前鋒</strong> 衝鋒穿越。</p>
+      <p>🤖 AI 前鋒會從對面全速衝來，靠近攔截或撞偏它們可以擋下！<br>
+      🥅 前鋒若穿過球門中心圈算失守，撞偏／擦身則算擋下。<br>
+      ⏱ 限時 <b>60 秒</b>，擋越多越好！</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-easy',label:DIFF_LABEL.easy,onClick:()=>startGame('easy')},
+      {id:'b-med', label:DIFF_LABEL.med, onClick:()=>startGame('med')},
+      {id:'b-hard',label:DIFF_LABEL.hard,onClick:()=>startGame('hard')},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff;
+  timeLeft=GAME_TIME; goalsConceded=0; blockedCount=0; simTime=0;
+  gkDrone.reset(PLAYER_SPAWN,Math.PI);
+  initAttackers();
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  ch.apply(gkDrone); syncModes();
+  hud.setMission('攔截前鋒・守住球門');
+  hud.toast('開始守門！注意來球方向','ok');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}（難度：${DIFF_LABEL[pDiff]}）</p>
+      <p>✋ 擋下 ${blockedCount}・🥅 失守 ${goalsConceded}・剩餘 ${Math.max(0,timeLeft).toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-beacon',label:'機頭指示：'+(beaconOn?'開':'關'),
+        onClick:()=>{beaconOn=!beaconOn;progress.setSetting('headingBeacon',beaconOn);
+          beacon.visible=beaconOn;showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  hud.setOffscreenTarget(null);
+  const total=blockedCount+goalsConceded;
+  const rate=total>0?blockedCount/total:1;
+  const stars=rate>=.8?3:rate>=.5?2:1;
+  const grade=stars===3?'完美守門！':stars===2?'不錯的守門':'繼續練習！';
+  const emoji=stars===3?'🏆':stars===2?'🥅':'💪';
+  progress.record('x-goalkeeper',{completed:true,score:blockedCount,
+    metrics:{blockedCount,goalsConceded,stars,diff:pDiff},...ch.recordFields()});
+  ui.showModal({title:emoji+' '+grade,
+    html:`<p>✋ 成功擋下：<b>${blockedCount}</b> 次　🥅 失守次數：<b>${goalsConceded}</b> 次<br>
+      共攻門 ${total} 次　${'⭐'.repeat(stars)+'☆'.repeat(3-stars)}</p>
+      <p>成績已記錄（nd.progress.x-goalkeeper）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再試一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(ch.any?3:2)},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇難度後開始守門');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){cyclePilot();
+        if(CAM_MODES[camModeIdx]==='ground')hud.toast(`飛手站位 ${pilotIdx+1}/${PILOT_POSITIONS.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    simTime+=dt;
+    ch.update(dt,gkDrone,engine.camera);
+    gkDrone.step(dt,p);
+    attackers.forEach((a,i)=>updateAttacker(a,i,dt));
+    resolveInterceptions();
+    checkAttackerGoals();
+    timeLeft-=dt;
+    hud.setTimer(Math.max(0,timeLeft));
+    hud.setScore(blockedCount);
+    hud.setProgress(`✋ 擋下 ${blockedCount}・🥅 失守 ${goalsConceded}`);
+    if(goalMesh)goalMesh.rotation.z+=dt*0.4;
+    attackers.forEach(a=>{
+      a.mesh.position.copy(a.pos);              // [FIX] aiMoveWorld() 只更新 a.pos，不碰 mesh
+      a.mesh.rotation.y=a.yaw+Math.PI;          // （物理模組刻意跟渲染解耦）——這裡才是視覺同步點，
+      if(a.mesh.userData?.spin)a.mesh.userData.spin.rotation.y+=dt*2; // 漏掉這行會讓前鋒視覺凍結在
+    });                                          // 出生點，直到下次重生才「瞬移」到新位置。
+    if(timeLeft<=0)finishGame();
+  }
+  mesh.position.copy(gkDrone.pos);
+  mesh.rotation.y=gkDrone.yaw+Math.PI;         // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  mesh.visible=(CAM_MODES[camModeIdx]!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*1.5;
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(gkDrone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  updateCamera(dt);
+  hud.setTelemetry(gkDrone.pos.y,gkDrone.speed());
+  const mapTargets=[{pos:new THREE.Vector3(0,GY,GZ),color:0xff2244},
+    ...attackers.filter(a=>a.resetTimer<=0&&a.cooldown<=0&&!a.scored).map(a=>({pos:a.pos,color:0xffdd00}))];
+  hud.drawMinimap(gkDrone.pos,gkDrone.yaw+Math.PI,HL+0.5,mapTargets);
+  hud.setAnomaly(gkDrone.anomalyT>0);
+  hud.update(dt,engine.camera,gkDrone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

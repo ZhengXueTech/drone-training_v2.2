@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🚁</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>輸入公平性驗收站</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono',monospace;padding:18px;}
+  h1{font-size:18px;color:#00eeff;letter-spacing:2px;margin:0 0 4px;}
+  p.sub{font-size:12px;color:#7aa3b8;margin:0 0 16px;}
+  .dev{background:#0b1626;border:1px solid rgba(0,238,255,.35);border-radius:10px;
+    padding:12px 16px;margin-bottom:14px;}
+  .dev h2{font-size:13px;color:#facc15;margin:0 0 8px;}
+  .axrow{display:flex;align-items:center;gap:10px;font-size:12px;margin:4px 0;}
+  .axrow .name{width:56px;color:#9fc3d8;}
+  .bar{flex:1;height:14px;background:#123;border-radius:7px;position:relative;overflow:hidden;}
+  .bar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#2a5c7f;}
+  .bar i{position:absolute;top:2px;bottom:2px;left:50%;background:#00eeff;border-radius:5px;min-width:2px;}
+  .axrow .val{width:52px;text-align:right;}
+  .time{font-size:12px;color:#4ade80;margin-top:6px;}
+  .note{font-size:11px;color:#5b7f95;margin-top:14px;line-height:1.7;}
+</style>
+</head>
+<body>
+<!-- 2026-10-05：這一頁原本沒有回首頁的路（老師回饋） -->
+<a href="../index.html" id="nd-home-link" style="position:fixed;top:8px;right:12px;z-index:40;color:#7aa3b8;text-decoration:none;font:12px Consolas,'Microsoft JhengHei',monospace;background:rgba(10,15,26,.85);border:1px solid rgba(0,238,255,.35);border-radius:8px;padding:5px 10px;">← 回首頁</a>
+<h1>輸入公平性驗收站 <span id="ver" style="font-size:11px;color:#facc15">輸入層：載入中…</span></h1>
+<p class="sub">所有裝置經正規化管線輸出 -1 ~ +1。「0→滿舵」時間應各裝置相近（鍵盤 ≈ 0.15 秒 ramp）。開賽前當器材檢查站用：把每支搖桿的每支桿打滿一圈即完成校準。</p>
+<div style="margin:0 0 14px;display:flex;gap:10px;flex-wrap:wrap">
+  <button id="btn-rest" style="background:#0e2238;color:#4ade80;border:1px solid rgba(74,222,128,.5);border-radius:8px;font-family:inherit;font-size:13px;padding:9px 16px;cursor:pointer">🎯 歸零校準（先放開所有搖桿再按）</button>
+  <button id="btn-clear" style="background:#0e2238;color:#f87171;border:1px solid rgba(248,113,113,.5);border-radius:8px;font-family:inherit;font-size:13px;padding:9px 16px;cursor:pointer">🗑 清除校準資料（歸出廠）</button>
+  <span id="cal-msg" style="align-self:center;font-size:12px;color:#4ade80"></span>
+</div>
+<div id="devices"></div>
+<div class="note">
+  ・搖桿數值若不到 ±1.00：把桿子往該方向打滿即自動校準（動態全程校準會記住極值）。<br>
+  ・<b style="color:#facc15">搖桿沒碰卻有數值？</b>先放開所有搖桿，按上方「🎯 歸零校準」即修正；仍異常就按「🗑 清除校準資料」重來。<br>
+  ・鍵盤按住 W 應在約 0.15 秒平滑到 +1.00，放開約 0.10 秒回 0——不需連點。Shift＝半舵。<br>
+  ・任一裝置滿舵速度都相同——速度上限由物理層決定，輸入層無權決定跑速。
+</div>
+<script type="module">
+import { InputManager, INPUT_VERSION } from '../core/input.js';
+const input=new InputManager();
+document.getElementById('ver').textContent=
+  `輸入層 v${INPUT_VERSION||'?'} ✓`;
+const msg=document.getElementById('cal-msg');
+document.getElementById('btn-rest').onclick=()=>{
+  const n=input.captureRest();
+  msg.textContent=n?`✓ 已把 ${n} 個軸的當前值設為靜止位`:'（沒有偵測到搖桿）';
+  setTimeout(()=>msg.textContent='',3000);
+};
+document.getElementById('btn-clear').onclick=()=>{
+  input.clearCalibration();
+  msg.textContent='✓ 校準資料已清除，回到出廠狀態';
+  setTimeout(()=>msg.textContent='',3000);
+};
+const AXES=['throttle','yaw','pitch','roll'];
+const AXN={throttle:'油門',yaw:'偏航',pitch:'俯仰',roll:'翻滾'};
+const wrap=document.getElementById('devices');
+const timers={}; // dev+axis → {t0,measured}
+
+function devRow(key,title){
+  let el=document.getElementById('dev-'+key);
+  if(el)return el;
+  el=document.createElement('div');el.className='dev';el.id='dev-'+key;
+  el.innerHTML=`<h2>${title}</h2>`+AXES.map(a=>`
+    <div class="axrow"><span class="name">${AXN[a]}</span>
+      <div class="bar"><div class="mid"></div><i id="b-${key}-${a}"></i></div>
+      <span class="val" id="v-${key}-${a}">0.00</span>
+      <span class="raw" id="r-${key}-${a}" style="width:190px;font-size:10px;color:#5b7f95"></span></div>`).join('')+
+    `<div class="time" id="t-${key}">0→滿舵時間：—</div>`;
+  wrap.appendChild(el);
+  return el;
+}
+function setBar(key,a,v){
+  const b=document.getElementById(`b-${key}-${a}`);
+  const val=document.getElementById(`v-${key}-${a}`);
+  if(!b)return;
+  const pct=Math.abs(v)*50;
+  b.style.width=pct+'%';
+  b.style.left=v>=0?'50%':(50-pct)+'%';
+  b.style.background=Math.abs(v)>0.97?'#4ade80':'#00eeff';
+  val.textContent=v.toFixed(2);
+  // 0→滿舵計時
+  const tk=key+a, tm=timers[tk]??(timers[tk]={});
+  if(Math.abs(v)<0.05){tm.t0=performance.now();}
+  else if(Math.abs(v)>0.95&&tm.t0&&!tm.hold){
+    tm.last=((performance.now()-tm.t0)/1000).toFixed(2); tm.hold=true;
+    document.getElementById('t-'+key).textContent=
+      `0→滿舵時間：${tm.last} 秒（${AXN[a]}）`;
+  }
+  if(Math.abs(v)<0.05)tm.hold=false;
+}
+let prev=performance.now();
+function loop(){
+  const now=performance.now(), dt=Math.min(0.1,(now-prev)/1000); prev=now;
+  input.update(dt);
+  // 鍵盤列（永遠顯示）
+  devRow('kb','⌨ 鍵盤（ramp 類比化）');
+  AXES.forEach(a=>setBar('kb',a,input.keyboard.axes[a]));
+  // 每支搖桿一列（含原始值診斷：raw=硬體回報值、rest=靜止位、[min,max]=已學習極值）
+  input.gamepads().forEach((gp,i)=>{
+    devRow('gp'+i,`🎮 ${gp.id.slice(0,50)}`);
+    AXES.forEach(a=>{
+      const d=input.axisDebug(gp,a);
+      setBar('gp'+i,a,d.out);
+      const r=document.getElementById(`r-gp${i}-${a}`);
+      if(r)r.textContent=`raw ${d.raw.toFixed(2)}｜rest ${d.rest.toFixed(2)}｜[${d.min.toFixed(2)},${d.max.toFixed(2)}]`;
+    });
+  });
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🏢</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：建築外牆巡檢｜newdrone X-Inspection v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#89bce8;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#1a2a40;z-index:21;}
+  /* 確認異常鈕：獨立於 hud.js 既有雙搖桿之外的第三顆觸控按鈕（僅本關需要） */
+  #insp-confirm-btn{display:none;position:fixed;right:24px;bottom:120px;z-index:22;
+    width:64px;height:64px;border-radius:50%;background:rgba(251,146,60,.45);
+    border:2px solid rgba(251,146,60,.9);color:#fff;font-size:20px;line-height:1;
+    align-items:center;justify-content:center;flex-direction:column;gap:1px;
+    pointer-events:auto;touch-action:none;-webkit-tap-highlight-color:transparent;}
+  #insp-confirm-btn span{font-size:8px;opacity:.85;}
+  #insp-confirm-btn.active{transform:scale(.88);opacity:.7;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="insp-confirm-btn">🔴<span>確認異常</span></button>
+<div id="ver">NEWDRONE X-INSPECTION v1.0</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { YawDrone } from '../core/systems/yaw-drone.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { WindSystem } from '../core/systems/wind.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+/* ============================================================
+   情境體驗：建築外牆巡檢（移植自基本版 exp/exp-inspection.html）
+   ------------------------------------------------------------
+   移植決策（C1 家族第四關，沿用 bridge/rescue/goalkeeper 已驗證的慣例）：
+   - 玩家物理改用 core/systems/yaw-drone.js 的 YawDrone，phys 參數取自
+     基本版原始碼（THRMAX16/PITCHMAX20/YAWMAX2.6/DRAG0.88/HOVER9.81）
+     ——跟 bridge 同一組數值，基本版這關的阻尼公式一樣已經是 dt 化寫法
+     （`vel*=Math.pow(DRAG,dt*60)`），不需要修正，只是換共用模組的
+     參數化表達。邊界是「撞牆即停、不反彈」（地板/天花板/X/Z 牆撞到
+     都直接把對應速度分量歸零），WBOUNCE/FBOUNCE 皆設 0 即等價。
+   - 難度檢查（教訓 2）：基本版 DIFF_CFG 的初級/中級/高級純粹是數值
+     難度（列數/欄數/時間/風力/掃描速度/耗電/異常面板數），場地（同一棟
+     建築＋周邊城市背景）完全不變，沒有「情境造型」這個維度，維持
+     基本版單軸三選一設計，不拆兩層選單（跟 rescue 是同一種情況）。
+   - 碰撞判定：建築本體是離散的固定方塊（非連續地形），沿用 bridge
+     checkStructureCollision() 的 box 障礙物設計，只是這裡只有一個
+     方塊障礙物（建築本體），DR 緩衝值沿基本版原值 0.12（比 bridge
+     的 0.2 小，因為巡檢面板貼牆很近，需要較小的緩衝區才不會誤觸）。
+   - 座標慣例／視覺補償跟其他 C1 關卡同一套：yaw=0 機頭朝 +Z，同步
+     mesh 與小地圖箭頭都要 yaw+Math.PI。
+   - 相機：這關場地跟 bridge/rescue 一樣是開放大場景（玩家可在
+     ±55 公尺範圍飛行，飛手站位在建築外圍約 12 公尺處），改用
+     core/camera.js 的 CameraRig（透過 camProxy 轉接補償後的 yaw）。
+   - 巡檢判定分兩種（本關特有，過去三關都只有一種）：
+     (a) 一般面板＝懸停在面板前累積進度條（跟 bridge 的
+         `progress+=rate*dt` 同一種 dwell 累加模式）；
+     (b) 異常面板（橘色警示）＝距離門檻判定「在範圍內」後，還要玩家
+         主動按 B 鍵／鈕才算確認（confirmAnomaly()）——沿用基本版
+         設計，不是純距離自動觸發，是「距離門檻 + 顯式按鍵確認」的
+         第五種判定模式，比 rescue 的「距離內即時觸發」多了一道玩家
+         主動確認的手續（訓練學生對異常保持警覺、主動回報，而非
+         自動記錄）。小地圖只畫「牆面」代表點（4 面各一點，依完成度
+         上色），不逐格畫 36 個面板點——因為小地圖是空拍視角，同一面牆
+         上不同樓層的面板在小地圖上會重疊在同一個 X/Z 點（高度差在
+         俯視圖看不出來），沿用基本版 `updateDistBar` 的「當前面對牆
+         距離」概念用 hud.setGuide() 文字呈現，不重建自訂 DOM。
+   - HUD：沿用 core/hud.js 既有語彙（setMission/setGuide/setScore/
+     setProgress/setBattery/setTimer/setWind/setTelemetry/drawMinimap/
+     setGpBar），不重建基本版自訂的逐牆面板計數 DOM／鍵盤按鍵高亮 DOM
+     （跟其他 migrated 關卡一致）。
+   - 確認異常（B 鍵/鈕）是本關專屬機制，觸控版另外加一顆獨立按鈕
+     （#insp-confirm-btn），gamepad 版直接讀 buttons[1]（沿用基本版
+     寫法）；主迴圈一開始就用 hud.setGpBar(device,{keyboard/gamepad/
+     touch}) 帶上「確認異常」提示（吸收 x-bridge/x-rescue 使用者
+     實機回饋後才補上提示的教訓，這關從第一版就直接做對，且 gamepad
+     一律用字母「B」而非圈圈數字，跟鍵盤/其他關卡慣例一致）。
+   - 機體樣式固定使用本關主題「巡檢機」（inspect-cam），不吃全域
+     裝備設定，「機體樣式」按鈕只改本地 styleIdx，不寫回 localStorage
+     （跟其他情境體驗關卡一致，教訓 1）。
+   ============================================================ */
+
+const LEVEL=getLevel('x-inspection');
+progress.migrateLegacy();
+
+/* ── 常數（沿基本版原始碼原值）── */
+const PHYS={GRAVITY:-9.81,HOVER:9.81,THRMAX:16,PITCHMAX:20,YAWMAX:2.6,
+  DRAG_PER_SEC:Math.pow(0.88,60),WBOUNCE:0,FBOUNCE:0};
+const BWIDTH=6, BDEPTH=6, BHEIGHT=6, HALF_W=BWIDTH/2, HALF_D=BDEPTH/2;
+const BOUNDS={minX:-55,maxX:55,minY:0.15,maxY:30,minZ:-55,maxZ:55,BR:0};
+const DR=0.12; // 建築碰撞緩衝半徑（沿基本版原值，比 bridge 的 0.2 小——面板貼牆很近）
+/* 純數值難度（教訓 2：場地/建築永遠相同，不混雜情境造型，維持單軸三選一） */
+const DIFF_CFG={
+  easy:{label:'🏢 初級',time:180,rows:2,cols:3,minDist:0.9,maxDist:5.5,wind:0,   scanRate:0.6,  batDrain:5,  anomalies:3},
+  med: {label:'⚡ 中級',time:150,rows:3,cols:3,minDist:0.9,maxDist:4.5,wind:0.8, scanRate:0.55, batDrain:9,  anomalies:5},
+  hard:{label:'💀 高級',time:120,rows:3,cols:3,minDist:0.9,maxDist:3.5,wind:1.5, scanRate:0.50, batDrain:14, anomalies:6},
+};
+const PLAYER_SPAWN=new THREE.Vector3(0,2.5,-HALF_D-4);
+const PILOT_POSITIONS=[new THREE.Vector3(0,1.5,-12),new THREE.Vector3(-12,1.5,0),
+  new THREE.Vector3(0,1.5,12),new THREE.Vector3(12,1.5,0)];
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const ch=new Challenge({levelId:'x-inspection',input});
+const hud=new HUD(ch.hudFeatures(LEVEL.hud));
+const ui=new UI(input);
+ch.ui=ui; ch.setHud(hud);
+const rig=new CameraRig(engine.camera,{pilotPositions:PILOT_POSITIONS});
+const wind=new WindSystem();
+
+/* ── 場地（沿基本版：天空藍霧＋地面＋建築本體＋周邊城市剪影） ── */
+engine.scene.background=new THREE.Color(0x89bce8);
+engine.scene.fog=new THREE.Fog(0x89bce8,60,150);
+const sun=new THREE.DirectionalLight(0xfff5e0,1.1);
+sun.position.set(20,40,20); sun.castShadow=true;
+sun.shadow.camera.left=sun.shadow.camera.bottom=-50;
+sun.shadow.camera.right=sun.shadow.camera.top=50;
+sun.shadow.camera.near=0.5; sun.shadow.camera.far=200;
+sun.shadow.mapSize.set(2048,2048);
+let walls=[], panels=[], obstacles=[], windParticles=null;
+let scannedCount=0, totalPanels=36, anomalyTotal=0, anomalyConfirmed=0;
+function clearDynamicScene(){
+  while(engine.scene.children.length>0)engine.scene.remove(engine.scene.children[0]);
+  engine.scene.add(sun);
+  engine.scene.add(new THREE.AmbientLight(0xffffff,.55));
+  engine.scene.add(new THREE.HemisphereLight(0x87ceeb,0x445533,.3));
+  walls=[]; panels=[]; obstacles=[]; windParticles=null;
+}
+function buildGround(){
+  const gGeo=new THREE.PlaneGeometry(200,200,40,40);
+  const gMat=new THREE.MeshStandardMaterial({color:0x888888,roughness:0.85,metalness:0.05});
+  const ground=new THREE.Mesh(gGeo,gMat);
+  ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; engine.scene.add(ground);
+  const gridH=new THREE.GridHelper(200,40,0x777777,0x777777);
+  gridH.position.y=0.01; gridH.material.opacity=0.3; gridH.material.transparent=true; engine.scene.add(gridH);
+}
+function buildBuilding(){
+  const bMat=new THREE.MeshStandardMaterial({color:0xb0b0b0,roughness:0.8,metalness:0.05});
+  const building=new THREE.Mesh(new THREE.BoxGeometry(BWIDTH,BHEIGHT,BDEPTH),bMat);
+  building.position.set(0,BHEIGHT/2,0); building.castShadow=true; building.receiveShadow=true; engine.scene.add(building);
+  obstacles.push({type:'box',
+    min:new THREE.Vector3(-HALF_W-DR,-DR,-HALF_D-DR),
+    max:new THREE.Vector3( HALF_W+DR,BHEIGHT+DR,HALF_D+DR)});
+
+  const roofMat=new THREE.MeshStandardMaterial({color:0x888888,roughness:0.6});
+  const roof=new THREE.Mesh(new THREE.BoxGeometry(BWIDTH+0.1,0.25,BDEPTH+0.1),roofMat);
+  roof.position.set(0,BHEIGHT+0.12,0); engine.scene.add(roof);
+
+  const pillarMat=new THREE.MeshStandardMaterial({color:0x909090,roughness:0.9});
+  [[-HALF_W,-HALF_D],[HALF_W,-HALF_D],[HALF_W,HALF_D],[-HALF_W,HALF_D]].forEach(([x,z])=>{
+    const p=new THREE.Mesh(new THREE.BoxGeometry(0.35,BHEIGHT,0.35),pillarMat);
+    p.position.set(x,BHEIGHT/2,z); p.castShadow=true; engine.scene.add(p);
+  });
+
+  const winMat=new THREE.MeshStandardMaterial({color:0x336699,transparent:true,opacity:0.55,metalness:0.7,roughness:0.2});
+  const wallDefs=[
+    {axis:'z',wallV:-HALF_D-0.01,normal:new THREE.Vector3(0,0,-1)},
+    {axis:'z',wallV: HALF_D+0.01,normal:new THREE.Vector3(0,0, 1)},
+    {axis:'x',wallV: HALF_W+0.01,normal:new THREE.Vector3( 1,0,0)},
+    {axis:'x',wallV:-HALF_W-0.01,normal:new THREE.Vector3(-1,0,0)},
+  ];
+  wallDefs.forEach(wd=>{
+    const isZ=wd.axis==='z';
+    [-BWIDTH/3,0,BWIDTH/3].forEach(cx=>[1.2,3.0,4.8].forEach(cy=>{
+      const wGeo=new THREE.PlaneGeometry(1.1,1.4);
+      const win=new THREE.Mesh(wGeo,winMat.clone());
+      if(isZ){win.position.set(cx,cy,wd.wallV);win.rotation.y=wd.normal.z>0?0:Math.PI;}
+      else{win.position.set(wd.wallV,cy,cx);win.rotation.y=wd.normal.x>0?Math.PI/2:-Math.PI/2;}
+      engine.scene.add(win);
+    }));
+  });
+
+  for(let f=1;f<=2;f++){
+    const fl=new THREE.Mesh(new THREE.BoxGeometry(BWIDTH+0.05,0.18,BDEPTH+0.05),
+      new THREE.MeshStandardMaterial({color:0x999999,roughness:0.7}));
+    fl.position.set(0,f*2,0); engine.scene.add(fl);
+  }
+}
+function buildPanels(diff){
+  const cfg=DIFF_CFG[diff];
+  const {rows,cols,anomalies}=cfg;
+  const panelW=BWIDTH/cols, panelH=BHEIGHT/rows;
+
+  const WALLS=[
+    {name:'北面',id:'n',axis:'z',wallV:-HALF_D,sign:-1,hAxis:'x'},
+    {name:'南面',id:'s',axis:'z',wallV: HALF_D,sign: 1,hAxis:'x'},
+    {name:'東面',id:'e',axis:'x',wallV: HALF_W,sign: 1,hAxis:'z'},
+    {name:'西面',id:'w',axis:'x',wallV:-HALF_W,sign:-1,hAxis:'z'},
+  ];
+
+  WALLS.forEach(wd=>{
+    const isZ=wd.axis==='z';
+    wd.panels=[]; wd.done=false; wd.scanned=0; wd.totalPanels=rows*cols;
+
+    for(let ci=0;ci<cols;ci++)for(let ri=0;ri<rows;ri++){
+      const cx_local=-BWIDTH/2+panelW*(ci+0.5);
+      const cy_world=panelH*(ri+0.5);
+      const geo=new THREE.PlaneGeometry(panelW*0.9,panelH*0.9);
+      const mat=new THREE.MeshStandardMaterial({
+        color:0x1a5080,transparent:true,opacity:0.55,
+        side:THREE.DoubleSide,depthWrite:false,
+        emissive:new THREE.Color(0x0a2840),emissiveIntensity:1.2});
+      const mesh=new THREE.Mesh(geo,mat);
+      const offset=0.05;
+      if(isZ){mesh.position.set(cx_local,cy_world,wd.wallV+wd.sign*offset);mesh.rotation.y=wd.sign>0?0:Math.PI;}
+      else{mesh.position.set(wd.wallV+wd.sign*offset,cy_world,cx_local);mesh.rotation.y=wd.sign>0?Math.PI/2:-Math.PI/2;}
+      engine.scene.add(mesh);
+      const edges=new THREE.EdgesGeometry(geo);
+      const lineMat=new THREE.LineBasicMaterial({color:0x4488bb,transparent:true,opacity:0.6});
+      mesh.add(new THREE.LineSegments(edges,lineMat));
+      const panel={wall:wd,ci,ri,cx_local,cy_world,hw:panelW*0.5,hh:panelH*0.5,
+        progress:0,done:false,anomaly:false,nearDrone:false,mesh,mat,lineMat};
+      wd.panels.push(panel); panels.push(panel);
+    }
+  });
+
+  totalPanels=panels.length; scannedCount=0;
+  anomalyTotal=Math.min(anomalies,panels.length); anomalyConfirmed=0;
+  const shuffled=[...panels].sort(()=>Math.random()-.5);
+  for(let i=0;i<anomalyTotal;i++){
+    const p=shuffled[i];
+    p.anomaly=true;
+    p.mat.color.setHex(0x9b4500); p.mat.emissive.setHex(0x5c1a00); p.mat.emissiveIntensity=1.0;
+    p.lineMat.color.setHex(0xff7020);
+  }
+  walls=WALLS;
+}
+function buildWindParticles(){
+  const count=60,R=22,positions=new Float32Array(count*3);
+  for(let i=0;i<count;i++){positions[i*3]=(Math.random()-.5)*R*2;positions[i*3+1]=Math.random()*12+0.5;positions[i*3+2]=(Math.random()-.5)*R*2;}
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  const pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0xb0d8ff,size:0.18,transparent:true,opacity:0.55,sizeAttenuation:true}));
+  engine.scene.add(pts); return pts;
+}
+function tickWindParticles(dt){
+  if(!windParticles||wind.vec.lengthSq()<0.01)return;
+  const pos=windParticles.geometry.attributes.position,R=22;
+  for(let i=0;i<pos.count;i++){
+    pos.array[i*3]+=wind.vec.x*dt*3.5; pos.array[i*3+1]-=dt*0.25; pos.array[i*3+2]+=wind.vec.z*dt*3.5;
+    if(pos.array[i*3]>R)pos.array[i*3]-=R*2; if(pos.array[i*3]<-R)pos.array[i*3]+=R*2;
+    if(pos.array[i*3+2]>R)pos.array[i*3+2]-=R*2; if(pos.array[i*3+2]<-R)pos.array[i*3+2]+=R*2;
+    if(pos.array[i*3+1]<0.3)pos.array[i*3+1]=Math.random()*12+0.5;
+  }
+  pos.needsUpdate=true;
+}
+function buildCityscape(){
+  const cityMat=new THREE.MeshStandardMaterial({color:0x777777,roughness:0.9});
+  [[22,0,10,6,14,8],[-25,0,5,5,18,6],[18,0,-20,8,10,7],
+   [-20,0,-18,6,22,5],[30,0,-5,5,8,6],[-30,0,12,7,16,8],
+   [15,0,25,6,12,5],[-15,0,28,5,20,6]].forEach(([x,y,z,w,h,d])=>{
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),cityMat.clone());
+    m.position.set(x,h/2,z); m.castShadow=true; m.receiveShadow=true; engine.scene.add(m);
+  });
+}
+function buildScene(diff){
+  clearDynamicScene(); buildGround(); buildBuilding(); buildPanels(diff); buildCityscape();
+  const cfg=DIFF_CFG[diff];
+  if(cfg.wind>0)windParticles=buildWindParticles();
+  engine.scene.add(mesh);
+}
+
+/* ── 玩家機體（樣式固定用本關主題「巡檢機」，教訓 1） ── */
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code==='inspect-cam'));
+let mesh=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{});
+  mesh.castShadow=true;
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const probe=new YawDrone({spawn:PLAYER_SPAWN,yaw:0,bounds:BOUNDS,phys:PHYS});
+const camProxy={pos:probe.pos,yaw:0};
+buildScene('easy'); // intro 畫面預覽用的預設場景，startGame() 會依選擇的難度重建
+
+/* ── 建築碰撞（沿 bridge checkStructureCollision 同一套 box 障礙物設計） ── */
+let collisionCount=0, lastCollisionT=-2;
+function checkBuildingCollision(){
+  const now=performance.now()/1000; let hit=false;
+  obstacles.forEach(ob=>{
+    if(probe.pos.x>ob.min.x&&probe.pos.x<ob.max.x&&
+       probe.pos.y>ob.min.y&&probe.pos.y<ob.max.y&&
+       probe.pos.z>ob.min.z&&probe.pos.z<ob.max.z)hit=true;
+  });
+  if(hit&&now-lastCollisionT>1.5){
+    lastCollisionT=now; collisionCount++;
+    probe.vel.multiplyScalar(-0.3);
+    hud.toast('💥 碰撞！','fail'); sfx.play('fail');
+  }
+}
+
+/* ── 巡檢邏輯（兩種判定模式併存）──
+   (a) 一般面板：懸停在面板前累積進度條（跟 bridge 的 progress+=rate*dt 同一種模式）
+   (b) 異常面板：距離門檻判定「在範圍內」（nearDrone），還要玩家主動按 B 鍵確認
+       （confirmAnomaly()）才算完成——不是純距離自動觸發。 */
+let _anomalyPulse=0;
+function checkScan(dt){
+  const cfg=DIFF_CFG[pDiff];
+  const {minDist,maxDist,scanRate}=cfg;
+  let anyAnomalyNear=false;
+  walls.forEach(wd=>{
+    if(wd.done)return;
+    const coord=wd.axis==='z'?probe.pos.z:probe.pos.x;
+    const distToWall=(coord-wd.wallV)*wd.sign;
+    if(distToWall<minDist||distToWall>maxDist||distToWall<0)return;
+    wd.panels.forEach(panel=>{
+      if(panel.done)return;
+      const hCoord=wd.hAxis==='x'?probe.pos.x:probe.pos.z;
+      const inPos=Math.abs(hCoord-panel.cx_local)<panel.hw&&Math.abs(probe.pos.y-panel.cy_world)<panel.hh;
+      if(panel.anomaly){
+        if(inPos){
+          panel.nearDrone=true; anyAnomalyNear=true;
+          _anomalyPulse+=dt*4; panel.mat.emissiveIntensity=0.8+0.5*Math.sin(_anomalyPulse);
+        }else{panel.nearDrone=false; panel.mat.emissiveIntensity=1.0;}
+      }else{
+        if(!inPos)return;
+        panel.progress=Math.min(1,panel.progress+scanRate*dt);
+        const p=panel.progress;
+        panel.mat.color.setRGB(0.55+p*0.15,0.35+p*0.3,0.0);
+        panel.mat.opacity=0.40+p*0.35;
+        panel.mat.emissive.setRGB(0.2*p,0.15*p,0); panel.mat.emissiveIntensity=0.6*p;
+        if(panel.progress>=1&&!panel.done){
+          panel.done=true; scannedCount++; wd.scanned++;
+          panel.mat.color.setHex(0x22cc44); panel.mat.opacity=0.60;
+          panel.mat.emissive.setHex(0x008822); panel.mat.emissiveIntensity=0.8;
+          panel.lineMat.color.setHex(0x44ff88);
+          sfx.play('ring');
+          if(wd.scanned>=wd.totalPanels&&!wd.done)wd.done=true;
+          if(scannedCount>=totalPanels)finishGame();
+        }
+      }
+    });
+  });
+  if(anyAnomalyNear)hud.setGuide('🔴 發現異常面板！按動作鍵確認記錄（鍵盤 B／手把 LB）');
+  else{
+    let nearestWall=null,nearestD=Infinity;
+    walls.forEach(wd=>{ if(wd.done)return; const coord=wd.axis==='z'?probe.pos.z:probe.pos.x;
+      const d=(coord-wd.wallV)*wd.sign; if(d>0&&d<nearestD){nearestD=d;nearestWall=wd;} });
+    if(nearestWall)hud.setGuide(`🎯 ${nearestWall.name}｜${nearestD.toFixed(1)}m｜${nearestWall.scanned}/${nearestWall.totalPanels}格`);
+    else hud.setGuide('✅ 全部區段完成！');
+  }
+}
+function confirmAnomaly(){
+  if(!playing||finished)return;
+  let any=false;
+  walls.forEach(wd=>wd.panels.forEach(panel=>{
+    if(!panel.anomaly||!panel.nearDrone||panel.done)return;
+    any=true;
+    panel.done=true; scannedCount++; anomalyConfirmed++; wd.scanned++;
+    panel.mat.color.setHex(0xff2200); panel.mat.emissive.setHex(0x880000);
+    panel.mat.emissiveIntensity=1.5; panel.mat.opacity=0.85;
+    panel.lineMat.color.setHex(0xff4400);
+    sfx.play('ok');
+    if(wd.scanned>=wd.totalPanels&&!wd.done)wd.done=true;
+    if(scannedCount>=totalPanels)finishGame();
+  }));
+  if(any)hud.toast('🔴 異常已記錄','ok');
+}
+
+/* ── 遊戲狀態 ── */
+let pDiff='easy', curCfg=DIFF_CFG.easy;
+let gameTimer=180, totalTime=180, batteryPct=100;
+let playing=false, finished=false;
+
+/* ── 視角／飛手站位／暫停 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function syncModes(){ hud.setModes(ch.hold?'街機':'手動油門',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyB')confirmAnomaly();
+  if(e.code==='Escape')togglePause();
+});
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── 確認異常觸控鈕（獨立於 hud.js 雙搖桿之外，只有觸控裝置顯示） ── */
+(function(){
+  const btn=document.getElementById('insp-confirm-btn');
+  const isTouch=navigator.maxTouchPoints>0||matchMedia('(pointer:coarse)').matches;
+  const showIfTouch=()=>{ btn.style.display=(isTouch&&!(navigator.getGamepads&&[...navigator.getGamepads()].some(g=>g)))?'flex':'none'; };
+  showIfTouch();
+  addEventListener('gamepadconnected',showIfTouch); addEventListener('gamepaddisconnected',showIfTouch);
+  btn.addEventListener('pointerdown',e=>{e.preventDefault();confirmAnomaly();btn.classList.add('active');});
+  btn.addEventListener('pointerup',()=>btn.classList.remove('active'));
+  btn.addEventListener('pointercancel',()=>btn.classList.remove('active'));
+})();
+let _gpConfirmPrev=false;
+
+/* ── Intro／暫停／結算 ── */
+function showIntro(focusIdx=(ch.any?2:1)){
+  engine.simStarted=false; playing=false;
+  ui.showModal({
+    title:'情境體驗 · 建築外牆巡檢',
+    html:`<p>操控無人機圍繞建築飛行，對牆面巡檢區進行掃描。</p>
+      <p><strong>橘色異常面板</strong>需飛近後按 <b>B</b>／畫面右下角按鈕確認記錄，<br>
+      維持適當掃描距離，涵蓋所有樓層高度。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
+          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
+      ch.introButton(()=>showIntro(1)),
+      {id:'b-easy',label:'🏢 初級（24格・3分・無風）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'⚡ 中級（36格・2:30・微風）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'💀 高級（36格・2分・強風）',onClick:()=>startGame('hard')},
+    ].filter(Boolean),align:'top'});
+  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff; curCfg=DIFF_CFG[diff];
+  gameTimer=curCfg.time; totalTime=curCfg.time;
+  scannedCount=0; collisionCount=0; lastCollisionT=-2;
+  batteryPct=100;
+  wind.randomize(curCfg.wind);
+  probe.reset(PLAYER_SPAWN,0);
+  buildScene(diff);
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true; playing=true; finished=false;
+  ch.apply(probe); syncModes();
+  hud.setMission(curCfg.label+' 巡檢任務');
+  hud.setGuide('開始巡檢，飛近面板懸停累積進度');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${curCfg.label}</p>
+      <p>已完成 ${scannedCount}/${totalPanels} 格・異常 ${anomalyConfirmed}/${anomalyTotal}・碰撞 ${collisionCount} 次・剩餘 ${Math.max(0,gameTimer).toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function calcScore(){
+  const cov=Math.round((scannedCount/totalPanels)*60);
+  const anom=anomalyTotal>0?Math.round((anomalyConfirmed/anomalyTotal)*20):20;
+  const tim=Math.round(Math.max(0,gameTimer/totalTime)*10);
+  const saf=Math.max(0,10-collisionCount*5);
+  const tot=Math.min(100,cov+anom+tim+saf);
+  return{cov,anom,tim,saf,tot,grade:tot>=90?'S':tot>=75?'A':tot>=55?'B':tot>=35?'C':'D'};
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false;
+  const{cov,anom,tim,saf,tot,grade}=calcScore();
+  sfx.play('finish');
+  progress.record('x-inspection',{completed:true,score:tot,
+    metrics:{scannedCount,totalPanels,anomalyConfirmed,anomalyTotal,collisionCount,grade,diff:pDiff},...ch.recordFields()});
+  const anomLine=anomalyTotal>0?`異常發現：${anomalyConfirmed}/${anomalyTotal}（+${anom}pt）<br>`:'';
+  ui.showModal({title:grade+' 級　'+({S:'🏆',A:'🥇',B:'🥈',C:'🥉',D:'💪'}[grade]),
+    html:`<p>巡檢覆蓋率：${scannedCount}/${totalPanels} 格（+${cov}pt）<br>
+      ${anomLine}
+      剩餘時間：${Math.max(0,Math.ceil(gameTimer))} 秒（+${tim}pt）<br>
+      安全分：${saf}/10（碰撞 ${collisionCount} 次）<br>
+      <b>總計：${tot} / 100</b></p>
+      <p>成績已記錄（nd.progress.x-inspection）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再試一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(ch.any?2:1)},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('選擇難度後開始巡檢');
+hud.showAttitude(false);
+syncModes();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device,{keyboard:'<kbd>B</kbd>確認異常',gamepad:'<kbd>{action}</kbd>確認異常',touch:'👆右下角鈕確認異常'});
+  if(p.device==='gamepad'){
+    const gp=[...(navigator.getGamepads?.()||[])].find(g=>g);
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    const confirmBtn=gp?input.gpBtn(gp,'action'):false;    // 沿基本版：B 鈕＝gamepad button[1]
+    if(confirmBtn&&!_gpConfirmPrev&&simStarted&&!ui.modalOpen)confirmAnomaly();
+    _gpConfirmPrev=confirmBtn;
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(playing&&!finished){
+    ch.update(dt,probe,engine.camera);
+    probe.step(dt,p);
+    if(wind.enabled)probe.vel.addScaledVector(wind.vec,dt*4.0); // 沿基本版風力比例（見檔頭說明）
+    wind.update(dt);
+    checkBuildingCollision();
+    checkScan(dt);
+    tickWindParticles(dt);
+    gameTimer-=dt;
+    hud.setTimer(Math.max(0,gameTimer));
+    hud.setScore(scannedCount);
+    hud.setProgress(`巡檢 ${scannedCount}/${totalPanels}・異常 ${anomalyConfirmed}/${anomalyTotal}・碰撞 ${collisionCount}`);
+    batteryPct=Math.max(0,batteryPct-curCfg.batDrain*dt/60);
+    hud.setBattery(batteryPct);
+    if(gameTimer<=0||batteryPct<=0)finishGame();
+  }
+  mesh.position.copy(probe.pos);
+  mesh.rotation.y=probe.yaw+Math.PI;               // 補償 yaw-drone 與 drone-styles 機頭慣例相反
+  mesh.visible=(rig.mode!=='fpv');
+  camProxy.yaw=probe.yaw+Math.PI;
+  rig.portrait=hud.portrait;
+  rig.update(dt,camProxy,mesh);
+  hud.setTelemetry(probe.pos.y,probe.speed());
+  hud.setWind(playing?wind.hudInfo():null,playing?wind.screenArrowDeg(probe.pos,engine.camera):null);
+  // 小地圖只畫「牆面代表點」（4 面，依完成度上色）——同一面牆上不同樓層的
+  // 面板俯視會重疊在同一 X/Z 點，逐格畫沒有意義（見檔頭說明）。
+  const mapTargets=walls.map(wd=>{
+    const pos=wd.axis==='z'?new THREE.Vector3(0,0,wd.wallV+wd.sign*1.2):new THREE.Vector3(wd.wallV+wd.sign*1.2,0,0);
+    return{pos,color:wd.done?0x4ade80:0xffcc00,done:wd.done};
+  });
+  hud.drawMinimap(probe.pos,probe.yaw+Math.PI,52,mapTargets,{route:false});
+  hud.setAnomaly(probe.anomalyT>0);
+  hud.update(dt,engine.camera,probe.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>

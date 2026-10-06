@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📋</text></svg>">
+<title>newdrone｜學生進度報告</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    min-height:100vh;padding:28px 16px 60px;box-sizing:border-box;}
+  .wrap{max-width:880px;margin:0 auto;}
+  h1{font-size:22px;color:#00eeff;letter-spacing:2px;margin:0;}
+  .topline{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:18px;}
+  .toplabel{font-size:10px;color:#7aa3b8;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;}
+  button,a.btn{background:#0b1626;color:#9fc3d8;border:1px solid rgba(0,238,255,.35);border-radius:8px;
+    font-size:11px;padding:8px 14px;font-family:inherit;cursor:pointer;text-decoration:none;display:inline-block;}
+  button:hover,a.btn:hover{background:#153a5e;color:#cfefff;}
+  button.primary{background:#0e2238;color:#00eeff;border-color:rgba(0,238,255,.6);}
+
+  .idcard{background:#0b1626;border:1px solid rgba(0,238,255,.3);border-radius:10px;
+    padding:12px 16px;margin-bottom:18px;font-size:12px;display:flex;justify-content:space-between;
+    align-items:center;flex-wrap:wrap;gap:8px;}
+  .idcard .warn{color:#facc15;}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;}
+  .card{background:#0b1626;border:1px solid rgba(0,238,255,.25);border-radius:12px;padding:14px 16px;text-align:center;}
+  .card .lbl{font-size:9px;color:#7aa3b8;text-transform:uppercase;letter-spacing:1.5px;}
+  .card .val{font-size:22px;font-weight:900;color:#fff;margin-top:4px;}
+
+  table{width:100%;border-collapse:collapse;background:#0b1626;border:1px solid rgba(0,238,255,.25);
+    border-radius:12px;overflow:hidden;font-size:12px;margin-bottom:20px;}
+  th{background:rgba(0,238,255,.08);color:#7aa3b8;font-size:9px;text-transform:uppercase;letter-spacing:1px;
+    padding:9px 12px;text-align:left;}
+  td{padding:9px 12px;border-top:1px solid rgba(0,238,255,.12);}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;}
+  .b0{background:rgba(100,116,139,.15);color:#7aa3b8;}
+  .b1{background:rgba(250,204,21,.12);color:#facc15;}
+  .b2{background:rgba(74,222,128,.15);color:#4ade80;}
+  .b3{background:rgba(74,222,128,.2);color:#4ade80;}
+
+  /* ── 成就徽章（2026-08-02 新增）── 進度報告頁完整列表；證書那邊只挑
+     最高榮譽（或已獲得數量）顯示一行，見下方 .cert-badge，版面刻意保持乾淨。 */
+  .badges-list{display:flex;flex-wrap:wrap;gap:10px;}
+  .badge-chip{display:inline-flex;align-items:center;gap:6px;background:rgba(250,204,21,.1);
+    border:1px solid rgba(250,204,21,.4);color:#facc15;border-radius:20px;padding:6px 14px;font-size:12px;}
+  .badge-chip .emoji{font-size:16px;}
+
+  .sect{background:#0b1626;border:1px solid rgba(0,238,255,.35);border-radius:14px;padding:18px 20px;margin-bottom:20px;}
+  .sect h2{font-size:13px;color:#00eeff;margin:0 0 4px;letter-spacing:1px;}
+  .sect .sub{font-size:11px;color:#7aa3b8;margin:0 0 14px;}
+  #code-out{display:none;margin-top:12px;}
+  #code-text{display:block;background:#050a12;border:1px solid rgba(0,238,255,.4);border-radius:8px;
+    padding:12px 14px;color:#5be8ff;font-size:15px;letter-spacing:1px;word-break:break-all;user-select:all;margin-bottom:10px;}
+  .compat-warn{margin-top:10px;font-size:10.5px;color:#facc15;line-height:1.7;background:rgba(250,204,21,.08);
+    border:1px solid rgba(250,204,21,.3);border-radius:8px;padding:10px 12px;}
+
+  details{background:#0b1626;border:1px solid rgba(100,116,139,.25);border-radius:10px;margin-bottom:20px;}
+  summary{padding:12px 16px;font-size:11px;color:#7aa3b8;cursor:pointer;}
+  pre{margin:0;padding:0 16px 14px;font-size:10px;color:#9fc3d8;overflow-x:auto;line-height:1.6;}
+
+  footer{text-align:center;font-size:10px;color:#3b5c7a;margin-top:30px;}
+
+  @media print{
+    body{background:#fff;color:#111;}
+    .card,.idcard,table,.sect,details{background:#f8fafc;border:1px solid #cbd5e1;color:#111;}
+    th{background:#e2e8f0!important;color:#334155!important;}
+    .no-print{display:none!important;}
+  }
+
+  /* ── 飛行員證書（2026-08-02 新增）──
+     跟上面的「列印報告」是兩種東西：報告是給老師看的資料表，證書是給
+     學生留存/給家長看的成就物件，所以刻意用淺色系＋襯線字體的「正式
+     文件」觀感，跟全站霓虹科幻風分開。純瀏覽器端組字＋window.print()
+     存 PDF，不掛任何新的第三方函式庫或字型 CDN（沿用全案「不接外部
+     依賴、教室斷網也能用」的原則），姓名打錯就回 index「修改」身分、
+     回這頁重新產生即可，不用等任何後端。規劃書 6.5 節設想的 GAS＋
+     Google Slides 自動套版證書是另一條「有網路、要排行榜」的路線，
+     這個先做零依賴、隨時能用的本機版本。 */
+  body.cert-mode .wrap{display:none;}
+  #certificate{display:none;}
+  body.cert-mode #certificate{display:block;}
+  .cert-page{max-width:820px;margin:24px auto;padding:0 16px;}
+  .cert-toolbar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:14px;}
+  .cert-card{background:#fbf8ef;color:#2b2013;border-radius:4px;
+    padding:52px 56px;position:relative;font-family:Georgia,'Noto Serif TC',serif;
+    box-shadow:0 10px 40px rgba(0,0,0,.35);}
+  .cert-card::before{content:'';position:absolute;inset:14px;border:2px solid #b8925a;
+    border-radius:2px;pointer-events:none;}
+  .cert-card::after{content:'';position:absolute;inset:20px;border:1px solid #d8bd8f;
+    border-radius:2px;pointer-events:none;}
+  .cert-emblem{text-align:center;font-size:40px;margin-bottom:6px;}
+  .cert-kicker{text-align:center;font-size:11px;letter-spacing:5px;color:#a8843f;
+    font-family:'Share Tech Mono',monospace;}
+  .cert-title{text-align:center;font-size:30px;margin:8px 0 4px;color:#3a2c14;letter-spacing:4px;}
+  .cert-sub{text-align:center;font-size:13px;color:#6b5a3d;margin:4px 0;}
+  .cert-name{font-size:34px;font-weight:700;color:#1f1707;margin:0;
+    border-bottom:2px solid #b8925a;display:inline-block;padding:0 24px 10px;white-space:nowrap;}
+  /* 2026-08-02：使用者反映列印 A4 時，「茲證明」到姓名之間、簽名蓋章這塊太擠——
+     這裡刻意保留較大留白，讓證書版面在紙上分佈更平均，底部不會空一大截。 */
+  .cert-name-wrap{text-align:center;margin:26px 0 24px;}
+  .cert-body{text-align:center;font-size:13px;color:#4a3c22;margin:14px 0 18px;}
+  .cert-stats{display:flex;justify-content:center;gap:34px;margin:0 0 22px;flex-wrap:wrap;}
+  .cert-stats div{text-align:center;}
+  .cert-stats .v{font-size:22px;font-weight:700;color:#1f1707;}
+  .cert-stats .l{font-size:10px;color:#8a7550;letter-spacing:1px;}
+  .cert-levels{font-size:12px;color:#3a2c14;line-height:2;margin:0 0 26px;
+    columns:2;column-gap:28px;}
+  .cert-levels .empty{color:#8a7550;font-style:italic;columns:1;}
+  .cert-footer{display:flex;justify-content:space-between;align-items:flex-end;margin-top:48px;}
+  /* padding-top＝簽名線「上方」的留白，讓老師簽名筆跡／印章有地方蓋，
+     不是緊貼著上面的文字——align-items:flex-end 讓這段留白往上長，
+     不影響下面日期／標籤跟右側日期的對齊基準線 */
+  .cert-sign{width:220px;padding-top:64px;}
+  .cert-line{border-top:1px solid #8a7550;margin-bottom:6px;}
+  .cert-sign-label{font-size:10px;color:#8a7550;letter-spacing:1px;text-align:center;}
+  .cert-date{font-size:12px;color:#4a3c22;}
+  .cert-code{text-align:center;margin-top:26px;font-size:9px;color:#a8955f;
+    font-family:'Share Tech Mono',monospace;letter-spacing:1px;}
+  /* 證書只顯示「最高榮譽」一個徽章，或沒有最高榮譽時顯示已獲得總數，
+     完整清單留給進度報告頁的「我的徽章」區塊，證書版面才不會被塞爆。 */
+  .cert-badge{text-align:center;font-size:14px;color:#8a7550;margin:0 0 18px;letter-spacing:1px;min-height:1em;}
+  .cert-badge .emoji{font-size:24px;vertical-align:middle;margin-right:6px;}
+  @media print{
+    .cert-toolbar{display:none!important;}
+    .cert-page{max-width:none;margin:0;padding:0;}
+    .cert-card{box-shadow:none;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline">
+    <div>
+      <div class="toplabel">newdrone · Drone Pilot Training</div>
+      <h1>📋 學生進度報告</h1>
+    </div>
+    <div class="btns no-print">
+      <button class="primary" id="btn-print">🖨️ 列印／存 PDF</button>
+      <button id="btn-json">📋 複製 JSON</button>
+      <button id="btn-csv">📊 匯出 CSV</button>
+      <button id="btn-cert">🏅 我的飛行證書</button>
+      <a class="btn" href="../index.html">← 返回入口</a>
+    </div>
+  </div>
+
+  <div class="idcard" id="idcard"></div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="sect">
+    <h2>🏅 我的徽章</h2>
+    <p class="sub">依完成度與飛行表現自動頒發，達成後不會收回。</p>
+    <div class="badges-list" id="badges-list"></div>
+  </div>
+
+  <table>
+    <thead><tr><th>關卡</th><th>狀態</th><th>最佳成績</th><th>嘗試次數</th><th>最後嘗試</th></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <div class="sect no-print">
+    <h2>🔑 提交代碼（DPT v2）</h2>
+    <p class="sub">代碼濃縮了目前進度，用來貼到 Google 表單提交、免打字回報。</p>
+    <button class="primary" id="btn-gen">🔄 產生代碼</button>
+    <div id="code-out">
+      <code id="code-text"></code>
+      <div class="btns">
+        <button id="btn-copy">📋 複製代碼</button>
+        <button id="btn-form">📮 開啟預填 Google 表單</button>
+      </div>
+      <div class="compat-warn">
+        ⚠️ 這是 <b>DPT v2</b> 新格式代碼（開頭 <code>N2</code>），跟基本版沿用至今的
+        <code>decode.html</code>／Google試算表 GAS 腳本目前只看得懂 <b>v1</b>（8 碼、無版本標記）代碼——
+        v2 代碼在老師端解碼器升級前，貼進去會被判定「格式錯誤」。舊生用基本版產生的 v1 代碼不受影響、照樣能解。
+        如果現在就要正式跟學生收代碼，記得先請人（或請 Claude）把 <code>decode.html</code>／GAS 腳本
+        升級成看得懂 v2；不急的話，目前先用上面的「複製 JSON」或「匯出 CSV」照樣能拿到完整成績。
+      </div>
+    </div>
+  </div>
+
+  <details>
+    <summary>🔍 原始 localStorage JSON</summary>
+    <pre id="raw-json"></pre>
+  </details>
+
+  <footer>NEWDRONE REPORT v2.0（DPT v2）</footer>
+</div>
+
+<div class="cert-page" id="certificate">
+  <div class="cert-toolbar">
+    <button class="primary" id="btn-cert-print">🖨️ 列印／存 PDF</button>
+    <button id="btn-cert-back">← 返回報告</button>
+  </div>
+  <div class="cert-card">
+    <div class="cert-emblem">🚁</div>
+    <div class="cert-kicker">DRONE PILOT CERTIFICATE</div>
+    <h1 class="cert-title">無人機飛行員證書</h1>
+    <p class="cert-sub">茲證明</p>
+    <div class="cert-name-wrap"><span class="cert-name" id="cert-name"></span></div>
+    <p class="cert-sub" id="cert-meta"></p>
+    <p class="cert-body">已完成無人機飛行模擬訓練課程，各項考核紀錄如下：</p>
+    <div class="cert-badge" id="cert-badge"></div>
+    <div class="cert-stats" id="cert-stats"></div>
+    <div class="cert-levels" id="cert-levels"></div>
+    <div class="cert-footer">
+      <div class="cert-sign"><div class="cert-line"></div><div class="cert-sign-label">指導教師簽章</div></div>
+      <div class="cert-date" id="cert-date"></div>
+    </div>
+    <div class="cert-code" id="cert-code"></div>
+  </div>
+</div>
+
+<script type="module">
+import { progress } from '../data/progress.js';
+import { LEVELS } from '../data/levels-manifest.js';
+import { encodeV2, tierFor, TIER_LABELS } from '../data/dpt.js';
+
+progress.migrateLegacy();
+
+function fmtDate(iso){
+  if(!iso)return'--';
+  try{ const d=new Date(iso);
+    return d.toLocaleDateString('zh-TW')+' '+d.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'});
+  }catch{ return String(iso).slice(0,16).replace('T',' '); }
+}
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderIdCard(){
+  const s=progress.student();
+  const el=document.getElementById('idcard');
+  if(!s){
+    el.innerHTML=`<span class="warn">⚠ 尚未輸入身分</span><a class="btn" href="../index.html">前往 index 輸入身分</a>`;
+    return;
+  }
+  const meta=[s.classId&&`${s.classId} 班`,s.seat&&`座號 ${s.seat}`].filter(Boolean).join('　');
+  el.innerHTML=`<span>👤 <b>${esc(s.name)}</b>${meta?'　'+esc(meta):''}</span>
+    <span style="color:#7aa3b8">匯出時間：${new Date().toLocaleString('zh-TW')}</span>`;
+}
+
+function collect(){
+  return LEVELS.map(lv=>{
+    const rec=progress.get(lv.id);
+    return { lv, rec, tier:tierFor(rec) };
+  });
+}
+
+function renderCards(rows){
+  const done=rows.filter(r=>r.tier>=2).length;
+  const totalAttempts=rows.reduce((s,r)=>s+(r.rec?.attempts||0),0);
+  const totalFlight=rows.reduce((s,r)=>{
+    const m=r.rec?.metrics||{};
+    const t=m.flightTime??r.rec?.flightTime;
+    return s+(typeof t==='number'?t:0);
+  },0);
+  const cards=document.getElementById('cards');
+  cards.innerHTML=`
+    <div class="card"><div class="lbl">完成關卡</div><div class="val">${done} / ${rows.length}</div></div>
+    <div class="card"><div class="lbl">完成率</div><div class="val">${rows.length?Math.round(done/rows.length*100):0}%</div></div>
+    <div class="card"><div class="lbl">總嘗試次數</div><div class="val">${totalAttempts}</div></div>
+    <div class="card"><div class="lbl">累計飛行秒數</div><div class="val">${totalFlight?Math.round(totalFlight):'--'}</div></div>`;
+}
+
+/* 2026-10-01 挑戰條件：非標準條件的最佳分另外列出（例：⚠ 無定高・強風 85） */
+function chalNote(rec){
+  const m=rec?.bestByChallenge; if(!m)return '';
+  const xs=Object.entries(m).filter(([k])=>k!=='標準');
+  return xs.length?'<div style="font-size:11px;color:#fbbf24">'+xs.map(([k,v])=>'⚠ '+esc(k)+' '+v).join('<br>')+'</div>':'';
+}
+function renderTable(rows){
+  const tbody=document.getElementById('tbody');
+  tbody.innerHTML=rows.map(({lv,rec,tier})=>`
+    <tr>
+      <td>${lv.emoji||''} ${esc(lv.title)}</td>
+      <td><span class="badge b${tier}">${TIER_LABELS[tier]}</span></td>
+      <td>${rec?.bestScore??'--'}${chalNote(rec)}</td>
+      <td>${rec?.attempts??0}</td>
+      <td>${rec?.lastAttempt?fmtDate(rec.lastAttempt):'--'}</td>
+    </tr>`).join('');
+}
+
+function renderBadges(){
+  const list=progress.badges();
+  const el=document.getElementById('badges-list');
+  if(!list.length){
+    el.innerHTML=`<span style="color:#7aa3b8;font-size:12px;">尚未獲得徽章，完成關卡或飛出好表現後回來看看！</span>`;
+    return;
+  }
+  el.innerHTML=list.map(b=>
+    `<span class="badge-chip"><span class="emoji">${b.emoji}</span> ${esc(b.name)}</span>`
+  ).join('');
+}
+
+function renderRawJson(rows){
+  const dump={};
+  rows.forEach(({lv,rec})=>{ dump[lv.id]=rec||null; });
+  document.getElementById('raw-json').textContent=JSON.stringify({
+    student:progress.student(), exportedAt:new Date().toISOString(), progress:dump
+  },null,2);
+}
+
+let currentRows=[];
+function renderAll(){
+  renderIdCard();
+  currentRows=collect();
+  renderCards(currentRows);
+  renderBadges();
+  renderTable(currentRows);
+  renderRawJson(currentRows);
+}
+renderAll();
+
+document.getElementById('btn-print').onclick=()=>window.print();
+
+document.getElementById('btn-json').onclick=()=>{
+  const dump={ student:progress.student(), exportedAt:new Date().toISOString(),
+    progress:Object.fromEntries(currentRows.map(({lv,rec})=>[lv.id,rec||null])) };
+  navigator.clipboard.writeText(JSON.stringify(dump,null,2))
+    .then(()=>alert('✅ JSON 已複製到剪貼簿'))
+    .catch(()=>alert('⚠️ 複製失敗，請從下方「原始 JSON」區塊手動複製'));
+};
+
+document.getElementById('btn-csv').onclick=()=>{
+  const s=progress.student();
+  const header=['姓名','班級','座號','關卡ID','關卡名稱','狀態','最佳成績','嘗試次數','最後嘗試','詳細指標(JSON)','挑戰條件最佳(JSON)'];
+  const lines=currentRows.map(({lv,rec,tier})=>[
+    s?.name||'', s?.classId||'', s?.seat||'',
+    lv.id, lv.title, TIER_LABELS[tier].replace(/[^一-龥]/g,''),
+    rec?.bestScore??'', rec?.attempts??0,
+    rec?.lastAttempt?fmtDate(rec.lastAttempt):'',
+    rec?.metrics?JSON.stringify(rec.metrics):'',
+    rec?.bestByChallenge?JSON.stringify(rec.bestByChallenge):''
+  ]);
+  const csv=[header,...lines].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`newdrone_進度_${(s?.name||'學生')}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+};
+
+document.getElementById('btn-gen').onclick=()=>{
+  const tiers=currentRows.map(r=>r.tier);
+  const code=encodeV2(LEVELS,tiers,new Date());
+  document.getElementById('code-text').textContent=code;
+  document.getElementById('code-out').style.display='block';
+};
+document.getElementById('btn-copy').onclick=()=>{
+  const code=document.getElementById('code-text').textContent;
+  navigator.clipboard.writeText(code)
+    .then(()=>{ const b=document.getElementById('btn-copy'); const old=b.textContent;
+      b.textContent='✅ 已複製'; setTimeout(()=>b.textContent=old,1600); })
+    .catch(()=>alert('請手動選取代碼複製'));
+};
+
+/* 承接基本版 progress-report.html 的預填表單常數，「Google 表單預填照舊」
+   （規劃書 6.2）——同一份表單，v1/v2 代碼都貼同一個「進度代碼」欄位，
+   差別只在老師端解碼器認不認得，見上方 compat-warn 提示 */
+const FORM_BASE='https://docs.google.com/forms/d/e/1FAIpQLSdcy0v5YBTNYoOBAmhCzMVyo0hLDsviY6YuhkPKD_1f7vMz7A/viewform';
+const ENTRY_NAME='entry.888420120';
+const ENTRY_CODE='entry.1515281879';
+function buildFormURL(name,code){
+  const p=new URLSearchParams();
+  p.set('usp','pp_url');
+  if(name)p.set(ENTRY_NAME,name);
+  if(code)p.set(ENTRY_CODE,code);
+  return FORM_BASE+'?'+p.toString();
+}
+document.getElementById('btn-form').onclick=()=>{
+  const code=document.getElementById('code-text').textContent.trim();
+  const name=progress.student()?.name||'';
+  if(!name){ alert('請先在 index 輸入姓名再回來提交代碼！'); return; }
+  window.open(buildFormURL(name,code),'_blank');
+};
+
+/* ── 飛行員證書：純本機組字，不打任何後端 ── 姓名/班級/座號直接讀
+   progress.student()（跟 index.html 的身分輸入強制關卡同一把 nd.student
+   key）；打錯字就回 index 用「修改」按鈕改一次、回這頁重按「產生」
+   即可看到更新，不用等任何伺服器往返。 */
+function populateCertificate(){
+  const s=progress.student();
+  const name=s?.name||'（尚未輸入姓名）';
+  document.getElementById('cert-name').textContent=name;
+  const meta=[s?.classId&&`${s.classId} 班`,s?.seat&&`座號 ${s.seat}`].filter(Boolean).join('　');
+  document.getElementById('cert-meta').textContent=meta||' ';
+
+  /* 證書只挑「最高榮譽」一個徽章顯示（拿到就顯示這個，不會同時列出其他）；
+     沒有最高榮譽但已有其他徽章時，改顯示「已獲得 N 項成就」這種簡短標示，
+     完整清單留給進度報告頁的「我的徽章」——證書版面才不會被塞爆。 */
+  const topBadge=progress.topBadge();
+  const allBadges=progress.badges();
+  const badgeEl=document.getElementById('cert-badge');
+  if(topBadge){
+    badgeEl.innerHTML=`<span class="emoji">${topBadge.emoji}</span>${esc(topBadge.name)}`;
+  }else if(allBadges.length){
+    badgeEl.innerHTML=`🏅 已獲得 ${allBadges.length} 項成就`;
+  }else{
+    badgeEl.innerHTML='';
+  }
+
+  const done=currentRows.filter(r=>r.tier>=2);
+  const totalAttempts=currentRows.reduce((sum,r)=>sum+(r.rec?.attempts||0),0);
+  const totalFlight=currentRows.reduce((sum,r)=>{
+    const m=r.rec?.metrics||{};
+    const t=m.flightTime??r.rec?.flightTime;
+    return sum+(typeof t==='number'?t:0);
+  },0);
+  document.getElementById('cert-stats').innerHTML=`
+    <div><div class="v">${done.length} / ${currentRows.length}</div><div class="l">完成關卡</div></div>
+    <div><div class="v">${currentRows.length?Math.round(done.length/currentRows.length*100):0}%</div><div class="l">完成率</div></div>
+    <div><div class="v">${totalAttempts}</div><div class="l">總嘗試次數</div></div>
+    <div><div class="v">${totalFlight?Math.round(totalFlight):'--'}</div><div class="l">累計飛行秒數</div></div>`;
+
+  const levelsEl=document.getElementById('cert-levels');
+  if(!done.length){
+    levelsEl.innerHTML=`<div class="empty">尚無已完成關卡，繼續加油！完成任一關卡後回來重新產生證書即可看到紀錄。</div>`;
+  }else{
+    levelsEl.innerHTML=done.map(({lv,rec})=>
+      `<div>${lv.emoji||'🚁'} ${esc(lv.title)}${rec?.bestScore!=null?`　最佳 ${rec.bestScore}`:''}</div>`
+    ).join('');
+  }
+
+  const today=new Date();
+  document.getElementById('cert-date').textContent=
+    '簽發日期：'+today.toLocaleDateString('zh-TW',{year:'numeric',month:'long',day:'numeric'});
+
+  const tiers=currentRows.map(r=>r.tier);
+  const code=encodeV2(LEVELS,tiers,today);
+  document.getElementById('cert-code').textContent='驗證代碼：'+code;
+}
+function showCertificate(){
+  renderAll(); // 確保進場前資料是最新的（含剛完成的關卡）
+  populateCertificate();
+  document.body.classList.add('cert-mode');
+  window.scrollTo(0,0);
+}
+function hideCertificate(){ document.body.classList.remove('cert-mode'); }
+document.getElementById('btn-cert').onclick=()=>{ location.href='certificate.html'; };   // 2026-10-06 證書合併：全站只有 certificate.html 一個入口（沒雲端時那一頁會自動出本機版）；下面舊的本機證書程式保留不動
+document.getElementById('btn-cert-back').onclick=hideCertificate;
+document.getElementById('btn-cert-print').onclick=()=>window.print();
+</script>
+<script type="module" src="../core/gp-nav-boot.js"></script>   <!-- 2026-10-06 選單可用搖桿操作（有接搖桿才載入） -->
+</body>
+</html>

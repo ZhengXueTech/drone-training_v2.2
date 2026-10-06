@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🌀</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>情境體驗：懸停對戰｜newdrone X-Hover-PK v1.0</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#060d14;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+  /* 分割畫面分隔線／格標籤（沿用 levels/pvp.html 的視覺慣例，這關固定
+     左右各一格，不像足球有 quad/hex 動態配置，不需要那麼複雜的版本） */
+  #split-div{position:fixed;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);
+    z-index:22;pointer-events:none;
+    background:linear-gradient(to bottom,transparent,rgba(34,211,238,.4) 15%,rgba(34,211,238,.55) 50%,rgba(34,211,238,.4) 85%,transparent);
+    box-shadow:0 0 8px rgba(34,211,238,.3);}
+  #pane-labels{position:fixed;inset:0;z-index:23;pointer-events:none;}
+  #pane-labels .plabel{position:absolute;top:8px;margin:0 10px;font-size:11px;
+    background:rgba(11,22,38,.8);border:1px solid rgba(0,238,255,.35);border-radius:6px;
+    padding:4px 10px;color:#9fc3d8;white-space:nowrap;}
+  #topbar{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:center;
+    padding-top:38px;pointer-events:none;}
+  #topbar .pill{background:rgba(11,22,38,.85);border:1px solid rgba(0,238,255,.4);border-radius:10px;
+    padding:8px 22px;color:#cfefff;font-size:13px;text-align:center;box-shadow:0 0 16px rgba(0,238,255,.12);
+    display:flex;gap:18px;align-items:center;}
+  #topbar b{font-size:17px;}
+  #topbar .p1{color:#38bdf8;} #topbar .p2{color:#ff5533;}
+  #toast{position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:24;
+    font-size:14px;padding:6px 16px;border-radius:8px;background:rgba(11,22,38,.85);
+    border:1px solid rgba(0,238,255,.4);color:#cfefff;opacity:0;transition:opacity .3s;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE X-HOVER-PK v1.0</div>
+<div id="split-div"></div>
+<div id="pane-labels"></div>
+<div id="topbar"><div class="pill" id="topbar-text">—</div></div>
+<div id="toast"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone } from '../core/physics.js';
+import { UI } from '../core/ui.js';
+import { renderSplit } from '../core/camera.js';
+import { buildBasicField } from '../core/world.js';
+import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+import { seats as seatSvc } from '../data/seats.js';
+import { PkChallenge } from '../core/challenge.js';
+
+/* ============================================================
+   情境體驗：懸停對戰（x-hover 的 pk-live 版本，規劃書 9 節「單人關卡
+   PK 化框架」低成本首例）
+   ------------------------------------------------------------
+   設計決策（對照規劃書 §9 成本表「hover：場景不用改，加一席即可」）：
+   - 不修改 levels/x-hover.html 本身（單人版維持不變、使用者已實機
+     確認），另開一份專屬檔案——沿用本專案既有慣例：soccer-match.html
+     （單人／AI 訓練版）與 levels/pvp.html（多人對戰版）本來就是兩份
+     獨立檔案，這關比照辦理，不把 solo/pk-live 硬塞進同一份程式碼。
+   - 兩個懸停圈「並排」放在同一片場地：P1 圈心 x=-6、P2 圈心 x=+6，
+     半徑最大只到 5m（易級初始值），兩圈邊緣最近距離仍有 2m 不會重疊。
+   - 兩位玩家共用同一組風場（同一個 WindSystem 算出的向量，同時餵給
+     兩台機──不是各自獨立亂數），確保「同一陣風考驗兩人」的公平對比，
+     這也是「即時比穩定分」的重點：分數差距只來自操控，不是運氣。
+   - 縮圈時間表（zoneR 隨 timer 內插）跟單人版完全同一條公式，兩位玩家
+     同步套用同一個難度層級，不需要為每人分別調整。
+   - 沒有 core/hud.js 全套 HUD（該元件是單人視角設計，不適合分割畫面；
+     沿用 pvp.html 的既有結論：humanCount!==1 時改用輕量頂部列＋自訂
+     分割線/格標籤）；本關固定 2 席分割，不像足球需要 quad/hex 那麼
+     複雜的動態配置，拿掉那一層直接固定左右各一格即可。
+   - AI 席位（若某席在大廳被指派為 AI）：直接沿用「全零輸入」这个最
+     低成本做法──arcade 模式下油門 0 會被 PD 抬升拉回 vy=0（等同定高
+     自動懸停），但水平方向完全不主動修正風的偏移，等於「完全不作為
+     的基準線」，剛好符合懸停挑戰「風會把你吹走，你要不要修正」的核心
+     測驗精神，不需要另外刻一套 AI 控制器（規劃書要求逐關開發，但這關
+     成本本來就低，不需要為了 AI 又做一次額外的移植工程）。
+   - 機體樣式固定用跟單人版一致的「trainer-orb」（教訓 1：情境體驗
+     關卡不吃全域裝備設定），兩位玩家改用不同 tint 區分（P1 藍／P2
+     橘紅，比照 pvp.html 的 A/B 隊配色語意）。
+   ============================================================ */
+
+const ACT='x-hover-pk';
+const LEVEL=getLevel(ACT);
+const pkc=new PkChallenge(ACT);   // 挑戰條件（席位大廳統一選，雙方相同）
+progress.migrateLegacy();
+
+/* ── 席位表：沒有（或筆數不對）就導去大廳指派——這關天生雙人，
+   跟 pvp.html 的處理方式一致，不提供「跳過 pairing 用預設值」的特例。 ── */
+let seatList=seatSvc.get(ACT);
+const seatsValid=seatSvc.isValid(seatList,2);
+if(!seatsValid) location.href='../pages/pairing.html?activity='+ACT;
+
+function boot(){
+const humanIdx=seatList.map((s,i)=>s.controller?.type!=='ai'?i:null).filter(i=>i!==null);
+const humanCount=humanIdx.length;
+
+/* ── 引擎與系統 ── */
+const engine=new Engine(document.getElementById('c'),{lowQuality:innerWidth<600});
+const input=new InputManager();
+const ui=new UI(input);
+const BOUND=20;
+buildBasicField(engine.scene,{size:BOUND,sky:0x060d14});
+
+/* ── 常數（沿單人版 x-hover.html 數值） ── */
+const GAME_TIME=60.0, PTS_IN=10, PTS_OUT=20;
+const DIFF_CFG={
+  easy:{ label:'初級', startR:5.0, endR:2.0, windMax:2.0 },
+  med: { label:'中級', startR:4.0, endR:1.2, windMax:4.0 },
+  hard:{ label:'高級', startR:3.0, endR:0.5, windMax:7.0 },
+};
+const CENTERS=[-6,6]; // P1/P2 圈心 X 座標（Z 固定 0）
+const TINTS=[0x38bdf8,0xff5533];
+const PLABEL=['P1','P2'];
+
+/* ── 兩位玩家的機體（固定用本關主題機體 trainer-orb，tint 區分隊色，
+   scale:1 固定標準大小──同 pvp.html，避免分割畫面大小不一致） ── */
+let styleCode='trainer-orb';
+const meshes=CENTERS.map((cx,i)=>{
+  const m=buildDroneStyle(styleCode,{tint:TINTS[i],scale:1});
+  m.castShadow=true;
+  m.position.set(cx,3.0,0);
+  engine.scene.add(m);
+  return m;
+});
+const drones=CENTERS.map((cx,i)=>new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:14},
+  spawn:new THREE.Vector3(cx,3.0,0)}));
+
+/* ── 懸停圈視覺（每位玩家各一組，複用單人版的 disc/ring/cylinder 手法） ── */
+function buildZoneVisual(cx,color){
+  const discMat=new THREE.MeshBasicMaterial({color,transparent:true,opacity:.10,side:THREE.DoubleSide});
+  const disc=new THREE.Mesh(new THREE.CircleGeometry(1,72),discMat);
+  disc.rotation.x=-Math.PI/2; disc.position.set(cx,0.02,0); engine.scene.add(disc);
+  function ring(y){
+    const pts=[]; for(let i=0;i<=80;i++){const a=(i/80)*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(a),0,Math.sin(a)));}
+    const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color}));
+    l.position.set(cx,y,0); engine.scene.add(l); return l;
+  }
+  const groundRing=ring(0.04), hoverRing=ring(3.0);
+  const cylMat=new THREE.MeshBasicMaterial({color,transparent:true,opacity:.06,side:THREE.DoubleSide});
+  const cyl=new THREE.Mesh(new THREE.CylinderGeometry(1,1,4,48,1,true),cylMat);
+  cyl.position.set(cx,2.0,0); engine.scene.add(cyl);
+  const post=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,3.0,8),
+    new THREE.MeshBasicMaterial({color:0x00ccaa,transparent:true,opacity:.4}));
+  post.position.set(cx,1.5,0); engine.scene.add(post);
+  const dot=new THREE.Mesh(new THREE.CircleGeometry(.15,16),new THREE.MeshBasicMaterial({color:0x00ccaa}));
+  dot.rotation.x=-Math.PI/2; dot.position.set(cx,0.03,0); engine.scene.add(dot);
+  return {
+    setScale(r){ disc.scale.set(r,r,r); groundRing.scale.set(r,1,r); hoverRing.scale.set(r,1,r); cyl.scale.set(r,1,r); },
+    setColor(inside){
+      const col=inside?color:0xef4444, op=inside?0.10:0.08;
+      discMat.color.setHex(col); discMat.opacity=op;
+      groundRing.material.color.setHex(col); hoverRing.material.color.setHex(col);
+      cylMat.color.setHex(col); post.material.color.setHex(inside?0x00ccaa:0xef4444);
+    },
+  };
+}
+const zones=CENTERS.map((cx,i)=>buildZoneVisual(cx,TINTS[i]));
+
+/* ── 分割畫面：固定左右各一格（不像足球需要 quad/hex 動態配置） ── */
+const cams=[new THREE.PerspectiveCamera(66,1,0.05,80),new THREE.PerspectiveCamera(66,1,0.05,80)];
+const _v=new THREE.Vector3();
+function updatePaneCam(cam,d){
+  // [FIX] 這關用 core/physics.js 的 Drone（arcade），yaw=0 時機頭朝 -Z；
+  // 跟 pvp.html 的 SoccerDrone/YawDrone（yaw=0 機頭朝 +Z）是相反慣例。
+  // 原本直接照抄 pvp.html 的 updateSplitCam() 公式（-sy/-cy），套用到
+  // 相反慣例的物理引擎上，導致相機被擺到機頭前方——玩家會看到無人機
+  // 正面朝自己飛過來，而不是背對玩家往前飛，實機回饋「前後反了」正是
+  // 這個根因。改成 +sy/+cy，比照 core/camera.js 的 CameraRig.follow
+  // 公式（offset(0,2.4,7.0) 依 yaw 旋轉＝(sinθ,cosθ)*7，跟這裡同號）。
+  const {x,y,z}=d.pos;
+  const sy=Math.sin(d.yaw), cy=Math.cos(d.yaw);
+  cam.position.lerp(_v.set(x+sy*4.5,y+2.2,z+cy*4.5),.09);
+  cam.lookAt(x,y+0.3,z);
+}
+engine.setRenderFn((renderer,scene)=>{
+  renderSplit(renderer,scene,[
+    {camera:cams[0],rect:{x:0,y:0,w:0.5,h:1}},
+    {camera:cams[1],rect:{x:0.5,y:0,w:0.5,h:1}},
+  ]);
+});
+function seatDeviceIcon(ctl){
+  return ctl?.type==='gamepad'?'🎮':ctl?.type==='keyboard'?('⌨️'+(ctl.layout||'')):ctl?.type==='touch'?'📱':'🤖';
+}
+function renderPaneLabels(){
+  const wrap=document.getElementById('pane-labels');
+  wrap.innerHTML=[0,1].map(i=>
+    `<div class="plabel" style="left:${i*50}%">${PLABEL[i]} ${seatDeviceIcon(seatList[i].controller)}</div>`).join('');
+}
+renderPaneLabels();
+
+/* ── 風（沿單人版節奏：每 3~8 秒隨機換目標風向，平滑 lerp 過去；
+   兩位玩家共用同一個 WindSystem／同一個風向量，公平比較） ── */
+const wind=new WindSystem();
+const windVec=new THREE.Vector3(), windTarget=new THREE.Vector3();
+let windTimer=0;
+function updateHoverWind(dt,wMax){
+  windTimer-=dt;
+  if(windTimer<=0){
+    const ang=Math.random()*Math.PI*2, str=(0.3+Math.random()*0.7)*wMax;
+    windTarget.set(Math.cos(ang)*str,0,Math.sin(ang)*str);
+    windTimer=3+Math.random()*5;
+  }
+  windVec.lerp(windTarget,Math.min(1,dt*0.6));
+  wind.setScripted(windVec.x,windVec.z,windVec.length());
+}
+
+/* ── 賽局狀態 ── */
+let pDiff='med', timer=GAME_TIME, playing=false, finished=false;
+const P=[{score:0,timeIn:0,timeOut:0,inside:true,lastInside:true},
+         {score:0,timeIn:0,timeOut:0,inside:true,lastInside:true}];
+let zoneR=4.0;
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{el.style.opacity=0;},1300);
+}
+
+/* ── Intro／暫停／結算 ── */
+function seatDesc(){
+  return seatList.map((s,i)=>{
+    const who=s.controller?.type==='ai'?'AI（無主動修正，僅供練習基準）':
+      s.controller?.type==='gamepad'?`手把[${s.controller.gpIndex}]`:
+      s.controller?.type==='keyboard'?`鍵盤${s.controller.layout}`:'觸控';
+    return `${PLABEL[i]}：${who}`;
+  }).join('　');
+}
+function showIntro(focusIdx=1){
+  engine.simStarted=false; playing=false;
+  ui.showModal({title:'情境體驗 · 懸停對戰',
+    html:`<p>P1／P2 各自操控無人機停在自己那側地面圓圈正上方（並排放置，互不干擾）。
+      兩人共用同一陣風，圈也會同步縮小，比誰的穩定分先拉開差距！</p>
+      <p>✅ <b>在圈內</b>：+10 分/秒　❌ <b>出圈外</b>：-20 分/秒（最低 0 分）<br>
+      ⏱ 挑戰時間 <b>60 秒</b></p>
+      <p style="font-size:11px;color:#7aa3b8">${seatDesc()}</p>${pkc.introHtml()}`,
+    buttons:[
+      {id:'b-easy',label:'初級（弱風・5m→2m）',onClick:()=>startGame('easy')},
+      {id:'b-med', label:'中級（中風・4m→1.2m）',onClick:()=>startGame('med')},
+      {id:'b-hard',label:'高級（強風・3m→0.5m）',onClick:()=>startGame('hard')},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+    ]});
+  ui.gpSetFocus(['b-easy','b-med','b-hard','b-pairing'],focusIdx);
+}
+function startGame(diff){
+  pDiff=diff;
+  timer=GAME_TIME;
+  P.forEach(p=>{p.score=0;p.timeIn=0;p.timeOut=0;p.inside=true;p.lastInside=true;});
+  zoneR=DIFF_CFG[diff].startR;
+  windVec.set(0,0,0); windTarget.set(0,0,0); windTimer=3+Math.random()*2;
+  drones.forEach((d,i)=>{d.reset(new THREE.Vector3(CENTERS[i],3.0,0));});
+  zones.forEach(z=>{z.setScale(zoneR);z.setColor(true);});
+  ui.closeModal(); sfx.play('click');
+  pkc.apply(drones,seatList);
+  engine.simStarted=true; playing=true; finished=false;
+  toast('開始懸停對戰！注意共用風向');
+}
+function togglePause(){
+  if(!playing||finished)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>難度：${DIFF_CFG[pDiff].label}　剩餘 ${Math.max(0,timer).toFixed(0)} 秒</p>
+      <p>P1 ${Math.floor(P[0].score)} 分　P2 ${Math.floor(P[1].score)} 分</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+function finishGame(){
+  if(finished)return;
+  finished=true; playing=false; sfx.play('finish');
+  const stab=P.map(p=>Math.round((p.timeIn/GAME_TIME)*100));
+  const winner=stab[0]>stab[1]?'P1':stab[1]>stab[0]?'P2':'tie';
+  progress.record(ACT,{completed:true,score:Math.max(Math.floor(P[0].score),Math.floor(P[1].score)),
+    ...pkc.recordFields(),metrics:{p1Score:Math.floor(P[0].score),p2Score:Math.floor(P[1].score),
+      p1Stability:stab[0],p2Stability:stab[1],winner,humanCount,diff:pDiff}});
+  const resText=winner==='tie'?'🤝 平局':`🏆 ${winner} 獲勝！`;
+  ui.showModal({title:'挑戰結束 · '+resText,
+    html:`<p>P1：<b>${Math.floor(P[0].score)} 分</b>（穩定度 ${stab[0]}%）<br>
+      P2：<b>${Math.floor(P[1].score)} 分</b>（穩定度 ${stab[1]}%）</p>
+      <p>成績已記錄（nd.progress['${ACT}']）。</p>`,
+    buttons:[
+      {id:'b-retry',label:'再玩一次',onClick:()=>startGame(pDiff)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro(1)},
+      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
+      {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
+    ]});
+}
+
+addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
+
+/* ── 主迴圈 ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  pkc.update(dt);
+
+  if(playing&&!finished){
+    updateHoverWind(dt,DIFF_CFG[pDiff].windMax);
+    drones.forEach(d=>{d.wind=wind.vec;});
+    humanIdx.forEach(i=>{
+      const inp=input.playerFor(seatList[i].controller);
+      drones[i].update(dt,inp);
+    });
+    // AI 席位：全零輸入即可（見檔頭註解——arcade 模式零輸入＝定高但不主動修正水平風）
+    seatList.forEach((s,i)=>{ if(s.controller?.type==='ai') drones[i].update(dt,{throttle:0,yaw:0,pitch:0,roll:0}); });
+
+    const t=1-(timer/GAME_TIME);
+    zoneR=DIFF_CFG[pDiff].startR-(DIFF_CFG[pDiff].startR-DIFF_CFG[pDiff].endR)*t;
+    zones.forEach(z=>z.setScale(zoneR));
+
+    P.forEach((p,i)=>{
+      const dist=Math.hypot(drones[i].pos.x-CENTERS[i],drones[i].pos.z);
+      p.lastInside=p.inside; p.inside=dist<=zoneR;
+      zones[i].setColor(p.inside);
+      if(p.inside){ p.score+=PTS_IN*dt; p.timeIn+=dt; }
+      else{ p.score=Math.max(0,p.score-PTS_OUT*dt); p.timeOut+=dt; }
+    });
+
+    timer-=dt;
+    if(timer<=0){timer=0;finishGame();}
+  }
+
+  drones.forEach((d,i)=>{
+    meshes[i].position.copy(d.pos);
+    meshes[i].quaternion.copy(d.q);
+    if(meshes[i].userData.spin)meshes[i].userData.spin.rotation.y+=dt*3.2;
+  });
+  wind.update(dt);
+  cams.forEach((cam,i)=>updatePaneCam(cam,drones[i]));
+
+  document.getElementById('topbar-text').innerHTML=
+    `<span class="p1">P1 <b>${Math.floor(P[0].score)}</b></span>`+
+    `<span>${pkc.topTag()}${DIFF_CFG[pDiff].label}　圈 ${zoneR.toFixed(1)}m　剩 ${Math.max(0,Math.ceil(timer))}秒</span>`+
+    `<span class="p2">P2 <b>${Math.floor(P[1].score)}</b></span>`;
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+} // boot()
+if(seatsValid) boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27><text y=%2713%27 font-size=%2713%27>🚁</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>newdrone Phase 1 訓練場 v0.5</title>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1a2e;
+    font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #ver{position:fixed;left:10px;bottom:4px;font-size:10px;color:#3b5c7a;z-index:21;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ver">NEWDRONE PHASE 1 SANDBOX v0.5</div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../core/engine.js';
+import { InputManager } from '../core/input.js';
+import { Drone, PHYS_CONST } from '../core/physics.js';
+import { CameraRig, CAM_LABELS } from '../core/camera.js';
+import { HUD, DENSITY_LABELS } from '../core/hud.js';
+import { UI } from '../core/ui.js';
+import { Guide } from '../core/guide.js';
+import { buildBasicField, makeRing, makeHeadingBeacon } from '../core/world.js';
+import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
+import { WindSystem } from '../core/systems/wind.js';
+import { BatterySystem } from '../core/systems/battery.js';
+import { checkRingPass, ScoreKeeper } from '../core/systems/scoring.js';
+import { sfx } from '../core/audio.js';
+import { progress } from '../data/progress.js';
+import { getLevel } from '../data/levels-manifest.js';
+
+const LEVEL=getLevel('sandbox');
+progress.migrateLegacy();
+
+/* ── 引擎與系統 ── */
+const lowQ=innerWidth<600;
+const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
+const input=new InputManager();
+const hud=new HUD(LEVEL.hud);
+const ui=new UI(input);
+const rig=new CameraRig(engine.camera);
+const wind=new WindSystem({strength:0});
+const battery=new BatterySystem({start:100,drainPerSec:0.5});
+const score=new ScoreKeeper();
+
+const BOUND=15;
+buildBasicField(engine.scene,{size:BOUND});
+
+/* ── 席位與機體（tint = 隊色；樣式可選——nd.settings.droneStyle 全關卡通用） ── */
+let teamTint=progress.setting('teamTint',0x3399ff);
+let styleIdx=Math.max(0,DRONE_STYLES.findIndex(s=>s.code===(droneStyleGet()||'trainer-orb')));
+let beaconOn=progress.setting('headingBeacon',true);   // 機頭指示（遠看清楚朝向）
+let mesh=null, beacon=null;
+function rebuildMesh(){
+  if(mesh)engine.scene.remove(mesh);
+  mesh=buildDroneStyle(DRONE_STYLES[styleIdx].code,{tint:teamTint});
+  mesh.castShadow=true;
+  beacon=makeHeadingBeacon();
+  beacon.visible=beaconOn;
+  mesh.add(beacon);
+  engine.scene.add(mesh);
+}
+rebuildMesh();
+const drone=new Drone({mode:'arcade',bounds:{x:BOUND,z:BOUND,y:12},
+  spawn:new THREE.Vector3(0,1.5,6)});
+const prevPos=new THREE.Vector3().copy(drone.pos);
+
+/* ── 穿環目標 ── */
+const rings=[
+  makeRing(new THREE.Vector3(-6,3,-2)),
+  makeRing(new THREE.Vector3(3,4.5,-7),{color:0xffcc00}),
+  makeRing(new THREE.Vector3(8,2.5,4),{color:0xff66cc}),
+];
+rings.forEach((r,i)=>{r.rotation.y=[0.4,-0.8,1.2][i];engine.scene.add(r);});
+let ringCount=0, flightTime=0;
+
+/* ── 引導（宣告式——規劃書 5.6） ── */
+const guide=new Guide([
+  { text:'推左桿向上，起飛到 3 公尺', done:s=>s.drone.pos.y>3 },
+  { text:'飛向綠色圓環並穿過它', arrow:rings[0].position, done:s=>s.rings>=1 },
+  { text:'把剩下兩個環也穿過！', done:s=>s.rings>=3 },
+],hud,engine.scene);
+
+/* ── 視角／模式／蹲姿 ── */
+function cycleCam(){ hud.toast('視角：'+CAM_LABELS[rig.cycleMode()],'ok'); syncModes(); }
+function toggleMode(){
+  drone.mode=drone.mode==='arcade'?'pro':'arcade';
+  hud.showAttitude(drone.mode==='pro');    // 姿態儀：pro 模式才顯示（5.7）
+  hud.toast(drone.mode==='arcade'?'街機模式（定高輔助）':'專業模式（全姿態）','ok');
+  syncModes();
+}
+function syncModes(){ hud.setModes(drone.mode==='arcade'?'街機':'專業',CAM_LABELS[rig.mode]); }
+addEventListener('keydown',e=>{
+  if(e.code==='KeyC')cycleCam();
+  if(e.code==='KeyV'){rig.cyclePilot();
+    if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+  if(e.code==='KeyZ')rig.crouch=true;      // 蹲姿（承基本版 Z 鍵）
+  if(e.code==='KeyM')toggleMode();
+  if(e.code==='KeyR'&&!engine.simStarted)return;
+  if(e.code==='KeyR'){wind.randomize(wind.enabled?0:2.2);
+    hud.toast(wind.enabled?'風場開啟':'風場關閉','warn');}
+  if(e.code==='Escape')togglePause();
+});
+addEventListener('keyup',e=>{ if(e.code==='KeyZ')rig.crouch=false; });
+hud.onCamButton(cycleCam);
+hud.onPauseButton(togglePause);
+hud.attachTouch(input);
+
+/* ── Intro / 暫停 ── */
+function showIntro(focusIdx=1){
+  engine.simStarted=false;
+  ui.showModal({
+    title:'PHASE 1 訓練場',
+    html:`<p>三裝置皆可操作：鍵盤（W/S 油門、A/D 偏航、方向鍵俯仰翻滾、Shift 半舵）、
+      觸控雙搖桿、遊戲搖桿（Model 2）。</p>
+      <p>目標：跟著引導起飛並穿過三個圓環。C 或手把 ≡ 切視角、M 切飛行模式、R 開關風場、Z 或手把十字↓ 蹲姿。</p>`,
+    buttons:[
+      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
+        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;   // 點一下換下一款（背景即時預覽）
+          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},  // 焦點留在樣式鈕，可連按
+      {id:'b-red',label:'紅隊出發',onClick:()=>startGame(0xff4444)},
+      {id:'b-blue',label:'藍隊出發',onClick:()=>startGame(0x3399ff)},
+    ],align:'top'});  // 對話框靠上，讓下方跟機視角看得到機體本人（即時預覽才看得到）
+  ui.gpSetFocus(['b-style','b-red','b-blue'],focusIdx);   // 預設焦點在「紅隊出發」
+}
+function startGame(tint){
+  teamTint=tint; progress.setSetting('teamTint',tint);
+  rebuildMesh();
+  ui.closeModal(); sfx.play('click');
+  engine.simStarted=true;
+  guide.start();
+  hud.toast(tint===0xff4444?'紅隊，起飛！':'藍隊，起飛！','ok');
+}
+function togglePause(){
+  if(!engine.simStarted)return;
+  engine.paused=!engine.paused;
+  if(engine.paused)showPauseModal(); else ui.closeModal();
+}
+function showPauseModal(){
+  ui.showModal({title:'暫停',
+    html:`<p>任務：${LEVEL.title}</p><p>已穿環 ${ringCount}/3・飛行 ${flightTime.toFixed(0)} 秒</p>`,
+    buttons:[
+      {id:'b-resume',label:'繼續',onClick:togglePause},
+      {id:'b-density',label:'HUD：'+DENSITY_LABELS[hud.density],
+        onClick:()=>{hud.cycleDensity();showPauseModal();}},   // 密度三檔（5.7.1-1）
+      {id:'b-audio',label:'音效：'+(sfx.enabled?'開':'關'),
+        onClick:()=>{sfx.toggle();sfx.play('click');showPauseModal();}},
+      {id:'b-beacon',label:'機頭指示：'+(beaconOn?'開':'關'),
+        onClick:()=>{beaconOn=!beaconOn;progress.setSetting('headingBeacon',beaconOn);
+          beacon.visible=beaconOn;showPauseModal();}},
+      {id:'b-restart',label:'重來',onClick:()=>location.reload()},
+    ]});
+}
+
+/* ── HUD 初始 ── */
+hud.setMission('穿過三個圓環');
+hud.showAttitude(false);
+syncModes();
+const ringTargets=rings.map(r=>({pos:r.position,done:false}));
+const _e=new THREE.Euler();
+
+/* ── 主迴圈（getDelta 只在 engine 內呼叫一次） ── */
+engine.start((dt,simStarted)=>{
+  input.update(dt);
+  ui.update(dt);
+  if(engine.paused)return;
+  const p=input.player(0);
+  hud.setGpBar(p.device);
+  // 搖桿功能鍵——fnEdge 每幀無條件輪詢（[FIX 5] 邊緣偵測不可放在 && 右側被短路）
+  if(p.device==='gamepad'){
+    const camE=p.fnEdge('camCycle'), pilotE=p.fnEdge('pilotCycle');
+    rig.crouch=p.btn('crouch');            // LB 按住＝蹲（STARTRC 無此鍵）
+    if(simStarted&&!ui.modalOpen){
+      if(camE)cycleCam();
+      if(pilotE){rig.cyclePilot();
+        if(rig.mode==='ground')hud.toast(`飛手站位 ${rig.pilotIdx+1}/${rig.pilotPositions.length}`,'ok');}
+    }
+  }
+  if(simStarted){
+    flightTime+=dt;
+    drone.wind=wind.enabled?wind.vec:null;
+    wind.update(dt);
+    prevPos.copy(drone.pos);
+    drone.update(dt,p);
+    battery.update(dt,drone.pos,simStarted);
+    for(let i=0;i<rings.length;i++){
+      const r=rings[i];
+      if(checkRingPass(r,drone.pos,prevPos)){
+        ringCount++; score.add(100,'ring'); sfx.play('ring');
+        ringTargets[i].done=true;
+        hud.toast(`穿環成功！(${ringCount}/3)`,'ok');
+        r.children.forEach(m=>m.material.color.setHex(0x66ff99));
+        if(ringCount>=3){
+          progress.record('sandbox',{completed:true,score:score.score,
+            metrics:{rings:ringCount,flightTime:Math.round(flightTime)}});
+          sfx.play('finish');
+          hud.toast('任務完成！成績已記錄','ok');
+        }
+      }
+    }
+    guide.update(dt,{drone,rings:ringCount});
+    const next=rings.find(r=>!r.userData.passed);
+    hud.setOffscreenTarget(next?next.position:null);   // 螢幕外目標貼邊箭頭（5.7.4-3）
+  }
+  // 機體姿態與旋轉件（FPV 時隱藏自機，避免鏡頭在機體內看到線框）
+  mesh.position.copy(drone.pos);
+  mesh.quaternion.copy(drone.q);
+  mesh.visible=(rig.mode!=='fpv');
+  if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
+  // 機頭指示：依相機距離放大，遠看仍清楚（暫停選單可關）
+  if(beacon&&beacon.visible){
+    const d=engine.camera.position.distanceTo(drone.pos);
+    beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
+  }
+  // 相機與 HUD（姿態儀與機體傾斜同源 q——檢查清單 #7）
+  rig.portrait=hud.portrait;
+  rig.update(dt,drone,mesh);
+  hud.setBattery(battery.pct);
+  hud.setWind(wind.hudInfo(),wind.enabled?wind.screenArrowDeg(drone.pos,engine.camera):null);
+  hud.setTelemetry(drone.pos.y,drone.speed());
+  hud.setProgress(`穿環 ${ringCount}/3`);
+  hud.setScore(score.score);
+  if(drone.mode==='pro'){
+    _e.setFromQuaternion(drone.q,'YXZ');
+    hud.setAttitude(_e.x,-_e.z);
+  }
+  hud.drawMinimap(drone.pos,drone.yaw,BOUND,ringTargets);
+  hud.setAnomaly(drone.anomalyT>0);
+  hud.update(dt,engine.camera,drone.pos);
+});
+
+showIntro();
+addEventListener('beforeunload',()=>engine.dispose());
+</script>
+</body>
+</html>
