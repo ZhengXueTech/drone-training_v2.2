@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🚁</text></svg>">
+<title>newdrone｜訓練關卡選單</title>
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 16px;box-sizing:border-box;}
+  h1{font-size:26px;color:#00eeff;letter-spacing:4px;margin:0;}
+  p.sub{font-size:12px;color:#7aa3b8;margin:6px 0 20px;text-align:center;}
+  h3.sec{width:100%;max-width:820px;font-size:12px;color:#7aa3b8;letter-spacing:2px;
+    border-bottom:1px solid rgba(0,238,255,.2);padding-bottom:6px;margin:22px 0 12px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;width:100%;max-width:820px;}
+  a.card{display:block;background:#0b1626;border:1px solid rgba(0,238,255,.4);border-radius:12px;
+    padding:18px 20px;color:#cfefff;text-decoration:none;transition:.15s;position:relative;}
+  a.card:hover{background:#0e2238;box-shadow:0 0 24px rgba(0,238,255,.15);}
+  a.card h2{margin:0 0 6px;font-size:16px;color:#00eeff;}
+  a.card p{margin:0;font-size:12px;color:#9fc3d8;line-height:1.6;}
+  .tag{font-size:10px;color:#facc15;}
+  .badge{position:absolute;top:14px;right:16px;font-size:10px;padding:2px 8px;border-radius:999px;}
+  .badge.done{background:rgba(74,222,128,.15);color:#4ade80;border:1px solid rgba(74,222,128,.5);}
+  a.card.locked{opacity:.45;pointer-events:none;filter:grayscale(.6);}
+  .badge.locked{background:rgba(148,163,184,.15);color:#94a3b8;border:1px solid rgba(148,163,184,.4);}
+  footer{margin-top:auto;padding-top:30px;font-size:11px;color:#3b5c7a;text-align:center;line-height:1.8;}
+  .scale-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;max-width:820px;}
+  .scale-row span.lbl{font-size:12px;color:#9fc3d8;}
+  .scale-btn{background:#0b1626;border:1px solid rgba(0,238,255,.35);color:#cfefff;border-radius:8px;
+    padding:6px 14px;font-family:inherit;font-size:12px;cursor:pointer;transition:.15s;}
+  .scale-btn:hover{background:#0e2238;}
+  .scale-btn.on{background:rgba(0,238,255,.18);border-color:#00eeff;color:#00eeff;}
+  .scale-hint{font-size:11px;color:#4d7590;width:100%;}
+  a.card .count{font-size:11px;color:#4ade80;margin-top:8px;display:block;}
+
+  /* ── 身分輸入強制關卡（2026-08-02 新增） ──
+     視覺沿用 core/ui.js 的 .nd-modal 語彙（同一套配色/字體/按鈕樣式），
+     但這裡是 index.html 自己內嵌一份，不 import core/ui.js——避免把
+     InputManager／Gamepad 選單導航這條重依賴鏈拉進首頁（首頁本來就
+     刻意不 import drone-styles.js，同一個減重原則，見上面機體縮放
+     那段註解）。文字輸入本來就是鍵盤/觸控主場，不特別做搖桿選單導航。 */
+  .id-gate-bg{position:fixed;inset:0;background:rgba(2,6,12,.86);z-index:60;
+    display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;}
+  .id-gate{background:#0b1626;border:1px solid rgba(0,238,255,.5);border-radius:14px;
+    padding:26px 30px;max-width:400px;width:100%;box-shadow:0 0 40px rgba(0,238,255,.15);}
+  .id-gate h2{margin:0 0 10px;font-size:18px;color:#00eeff;letter-spacing:1px;}
+  .id-gate .hint{font-size:12px;color:#9fc3d8;line-height:1.7;margin:0 0 18px;}
+  .id-gate label{display:block;font-size:12px;color:#7aa3b8;margin:12px 0 4px;}
+  .id-gate select{width:100%;box-sizing:border-box;background:#0a121e;border:1px solid rgba(0,238,255,.3);color:#cfefff;border-radius:8px;padding:9px 10px;font-family:inherit;font-size:14px;}
+  .id-gate input{width:100%;box-sizing:border-box;background:#0a121e;border:1px solid rgba(0,238,255,.3);
+    border-radius:8px;padding:9px 12px;color:#cfefff;font-family:inherit;font-size:14px;}
+  .id-gate input:focus{outline:none;border-color:#00eeff;}
+  .id-gate .err{color:#f87171;font-size:12px;margin:10px 0 0;}
+  .id-gate .btns{display:flex;gap:10px;justify-content:flex-end;margin-top:20px;}
+  .id-gate button{font-family:inherit;font-size:13px;border-radius:8px;padding:9px 18px;cursor:pointer;}
+  .id-gate .btn-primary{background:#0e2238;color:#00eeff;border:1px solid rgba(0,238,255,.6);}
+  .id-gate .btn-primary:hover{background:#153a5e;}
+  .id-gate .btn-secondary{background:transparent;color:#7aa3b8;border:1px solid rgba(122,163,184,.4);}
+  .id-badge{display:flex;align-items:center;gap:8px;font-size:12px;color:#cfefff;
+    background:#0b1626;border:1px solid rgba(0,238,255,.3);border-radius:999px;
+    padding:5px 14px;margin:4px 0 6px;min-height:16px;}
+  .id-badge button{font-family:inherit;font-size:11px;background:transparent;color:#7aa3b8;
+    border:1px solid rgba(122,163,184,.4);border-radius:999px;padding:2px 10px;cursor:pointer;}
+  .id-badge button:hover{color:#cfefff;border-color:#9fc3d8;}
+</style>
+</head>
+<body>
+<h1>NEWDRONE</h1>
+<p class="sub">下一代無人機模擬器｜訓練關卡由 <code>data/levels-manifest.js</code> 動態產生</p>
+<div class="id-badge" id="id-badge"></div>
+
+<h3 class="sec">顯示設定</h3>
+<div class="scale-row" id="scale-row"></div>
+
+<h3 class="sec">教學參數設定</h3>
+<div class="scale-row" id="diff-row"></div>
+
+<h3 class="sec">訓練關卡（依類別分頁）</h3>
+<div class="grid" id="grid-categories"></div>
+
+<h3 class="sec">開發／教師工具</h3>
+<div class="grid">
+  <a class="card" href="pages/teacher.html">
+    <h2>👩‍🏫 教師儀表板</h2>
+    <p>離線配對代碼、班級總覽、成績匯出。</p>
+  </a>
+  <a class="card" href="pages/pk-turn.html">
+    <h2>🆚 PK 輪流賽</h2>
+    <p>單機共用一台電腦、輪流上場計時比賽。</p>
+  </a>
+  <a class="card" href="pages/report.html">
+    <h2>📄 個人成績單</h2>
+    <p>學生端查看自己各關卡的完成狀況與配對代碼。</p>
+  </a>
+  <a class="card" href="pages/leaderboard.html">
+    <h2>🏆 排行榜</h2>
+    <p>各關卡最佳成績排名（要登入雲端）。預設只看得到自己班、姓名遮中間字；老師可在試算表 settings 調整。</p>
+  </a>
+  <a class="card" href="pages/certificate.html">
+    <h2>🏅 飛行證書</h2>
+    <p>完成一個階段的關卡就會出現。登入雲端＝認證版（老師核准後有簽名、附查驗碼）；沒登入或連不上雲端＝本機紀錄版，印出來請老師簽名。</p>
+  </a>
+  <a class="card" href="pages/showroom.html">
+    <h2>🛩 機頭驗收站</h2>
+    <p>14 種機體樣式＋紅藍隊色切換。紅色箭頭＝機頭方向，任何新樣式先過這關才能進關卡。</p>
+  </a>
+  <a class="card" href="pages/controller-wizard.html">
+    <h2>🧙 搖桿對應精靈</h2>
+    <p>沒見過的搖桿或無人機遙控器，跟著做 1 分鐘方向就會對。會自動判斷油門回不回中；老師可匯出設定檔發給全班。</p>
+  </a>
+  <a class="card" href="pages/input-fairness.html">
+    <h2>🎮 輸入公平性驗收</h2>
+    <p>各裝置正規化輸出並排比對、0→滿舵計時、搖桿打滿自動校準。開賽前的器材檢查站。</p>
+  </a>
+  <a class="card" href="pages/dev-check.html">
+    <h2>🔍 開發自檢（dev-check）</h2>
+    <p>manifest ↔ 檔案 ↔ localStorage 三方一致性檢查。每次開發完新關卡開一下，30 秒完成。</p>
+  </a>
+</div>
+
+<footer>
+  需以本機伺服器開啟（雙擊「啟動模擬器.bat」或 python -m http.server）——ES Modules 不支援 file:// 直開。<br>
+  基本版（無人機飛行器_基本版）完全未更動，隨時可退回使用。
+</footer>
+<script type="module">
+import { edition, cloudInit, cloudUrl, schoolList, refreshSchools, centerUrl, classInfo, classLookup, classSet, classClear } from './core/cloud-api.js';
+import { login as cloudLogin, status as cloudStatus, auth as cloudAuth, onCloudStatus, examStart, examState, examEnd } from './data/cloud-sync.js';
+const cloudOn=()=>!!cloudUrl();
+import { LEVELS } from './data/levels-manifest.js';
+import { progress } from './data/progress.js';
+import { CATEGORIES } from './data/level-categories.js';
+import { GATED, gateState, bindEgg, gateReady } from './data/gate.js';
+import { ownerStrict } from './data/owner.js';   // 2026-10-06 基礎＋進階全過才開放其他分類；連點標題七下＝彩蛋
+progress.migrateLegacy();
+
+// 診斷模式開關：網址加 ?debug=1 開、?debug=0 關（2026-10-06，見 core/debug-overlay.js）
+try{ const d=new URLSearchParams(location.search).get('debug'); if(d==='1'){ localStorage.setItem('nd.debug','1'); alert('診斷模式已開啟：進任何一關，畫面上方會顯示一塊綠色的數字。'); } else if(d==='0'){ localStorage.removeItem('nd.debug'); alert('診斷模式已關閉。'); } }catch{}
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ── 身分輸入強制關卡（2026-08-02 新增，補上規劃書 Phase 2 一直沒補的缺口）──
+   姓名必填、班級/座號選填；沒有輸入姓名前蓋一層無法關閉的全螢幕 modal，
+   擋住整個選單（含教師工具區），交出去的資料只是 progress.setStudent()
+   寫進 localStorage 的 nd.student，report.html／teacher.html 早就在讀
+   這把 key，這裡只是把「寫入」這端補上。修改用 id-badge 上的「修改」
+   按鈕，不用清 localStorage 重來一次。 */
+/* ── 老師代碼（2026-10-06 一位老師一份試算表）──
+   有設定中心、但這台還不知道要連哪位老師的班級 → 先問代碼。查到後顯示「你要連到：○○學校 ○老師的班級」，學生確認才記住。
+   沒有代碼只能按「先不登入」當訪客，成績存在這台，之後輸入代碼登入會補傳。網址帶 ?c=代碼 會自動帶入。 */
+function showClassGate(prefill){
+  const bg=document.createElement('div'); bg.className='id-gate-bg';
+  bg.innerHTML=`<div class="id-gate">
+    <h2>🏫 輸入老師給你的代碼</h2>
+    <p class="hint">代碼決定你的成績要存到<b>哪位老師</b>那裡。不知道代碼請問老師；也可以先不登入，成績會先存在這台，之後再補登入。</p>
+    <label>老師代碼</label><input id="cg-code" type="text" maxlength="8" autocomplete="off" style="text-transform:uppercase;letter-spacing:4px;" placeholder="例如：K7QM2" value="${esc(prefill||'')}">
+    <p class="err" id="cg-err" style="display:none;"></p>
+    <div id="cg-found" style="display:none;margin:14px 0 4px;padding:12px;border:1px solid rgba(74,222,128,.5);border-radius:10px;font-size:14px;line-height:1.8;color:#cfefff;"></div>
+    <div class="btns"><button id="cg-skip" class="btn-secondary">先不登入（成績只存這台）</button>
+      <button id="cg-ok" class="btn-primary">查詢</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  const $c=id=>document.getElementById(id), inp=$c('cg-code'), err=$c('cg-err'), box=$c('cg-found'), ok=$c('cg-ok');
+  let found=null;
+  const fail=m=>{ err.textContent=m; err.style.display='block'; inp.focus(); };
+  inp.addEventListener('input',()=>{ found=null; box.style.display='none'; ok.textContent='查詢'; err.style.display='none'; });
+  async function go(){
+    if(found){ classSet(found); try{ sessionStorage.removeItem('nd.cloud.skip'); }catch{} location.reload(); return; }       // 重新載入：登入畫面、學校清單都換成這位老師的
+    const code=inp.value.trim().toUpperCase();
+    if(!/^[A-Z0-9]{3,8}$/.test(code))return fail('代碼是 5 個英文字母或數字，例如 K7QM2。');
+    ok.disabled=true; ok.textContent='查詢中…'; err.style.display='none';
+    const r=await classLookup(code);
+    ok.disabled=false; ok.textContent='查詢';
+    if(!r.ok)return fail(r.code==='net'?'現在連不上雲端（'+r.error+'）。可以先按「先不登入」。':(r.error||'查詢失敗'));
+    if(!r.found)return fail(r.state==='待審核'?'這個代碼還在等審核，請老師確認。':r.state==='停用'?'這個代碼已經停用，請問老師。':'查不到這個代碼，再看一次有沒有打錯。');
+    found=r;
+    box.innerHTML=`你要連到：<br><b style="color:#4ade80;font-size:16px;">${esc(r.school)}　${esc(r.teacher)} 老師的班級</b><br><span style="font-size:12px;color:#9fc3d8;">不是你的老師就不要按，改一下代碼。</span>`;
+    box.style.display='block'; ok.textContent='是，連到這位老師';
+  }
+  ok.addEventListener('click',go);
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter')go(); });
+  $c('cg-skip').addEventListener('click',()=>{ try{ sessionStorage.setItem('nd.cloud.skip','1'); }catch{} bg.remove();
+    if(!progress.student()?.name)showIdentityGate(false); else renderIdentityBadge(); });
+  inp.focus(); if(prefill)go();
+}
+function showIdentityGate(isEdit){
+  if(isEdit&&centerUrl()&&!cloudOn())return showClassGate();        // 訪客按「登入」：還沒選老師，先問代碼
+  const s=progress.student()||{};
+  const on=cloudOn(), schools=schoolList(), a=cloudAuth()||{};
+  const bg=document.createElement('div');
+  bg.className='id-gate-bg';
+  // 有設定雲端：學校／班級／座號／姓名都必填，登入後成績會上傳、換電腦可以拉回來。沒設定雲端：跟以前一樣只要姓名。
+  bg.innerHTML=`<div class="id-gate">
+    <h2>👤 ${isEdit?'修改身分':'開始前，先輸入你的身分'}</h2>
+    <p class="hint">${on?'登入後，你的成績會存到老師的雲端：<b>換電腦、電腦重開機都不會不見</b>。每次開機都要輸入一次。'
+      :'姓名為必填，班級／座號選填。這份資料只存在這台裝置本機，成績單匯出、教師端對照、Google 表單提交都會用到。'}</p>
+    ${on&&classInfo()&&!classInfo().pinned?`<p class="hint" id="ig-class-line" style="margin:-8px 0 10px;color:#4ade80;">連到：${esc(classInfo().school)}　${esc(classInfo().teacher)} 老師的班級　<a href="#" id="ig-change-class" style="color:#7aa3b8;">換老師</a></p>`:''}
+    ${on?`<label>學校</label>${schools.length
+        ?`<select id="ig-school">${schools.map(x=>`<option${(a.school||s.school)===x?' selected':''}>${esc(x)}</option>`).join('')}</select>`
+        :`<input id="ig-school" type="text" maxlength="30" placeholder="例如：新北市立中正國民中學" value="${esc(a.school||s.school||'')}">`}`:''}
+    <label>班級${on?'':'（選填）'}</label><input id="ig-class" type="text" maxlength="10" placeholder="例如：802" value="${esc(s.classId||'')}">
+    <label>座號${on?'':'（選填）'}</label><input id="ig-seat" type="text" maxlength="6" placeholder="例如：12" value="${esc(s.seat||'')}">
+    <label>姓名${on?'':'（必填）'}</label><input id="ig-name" type="text" maxlength="20" placeholder="例如：王小明" value="${esc(s.name||'')}">
+    ${on?`<label>密碼（沒改過就不用填）</label><input id="ig-pw" type="password" maxlength="30" placeholder="預設是 班級＋座號，例如 80212">`:''}
+    <p class="err" id="ig-err" style="display:none;"></p>
+    <div class="btns">${isEdit?'<button id="ig-cancel" class="btn-secondary">取消</button>':on?'<button id="ig-skip" class="btn-secondary">先不登入（成績只存這台電腦）</button>':''}
+      <button id="ig-confirm" class="btn-primary">${on?'登入':isEdit?'儲存':'開始使用'}</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  const $i=id=>document.getElementById(id), nameInput=$i('ig-name'), err=$i('ig-err');
+  // 學校清單以老師試算表的 schools 工作表為準：抓到最新的就更新下拉選單（保留學生已經選的）
+  if(on)refreshSchools().then(list=>{ const el=$i('ig-school');
+    if(!el||!list.length||JSON.stringify(list)===JSON.stringify(schools))return;
+    const cur=el.value, sel=document.createElement('select'); sel.id='ig-school';
+    sel.innerHTML=list.map(x=>`<option${x===cur?' selected':''}>${esc(x)}</option>`).join('');
+    el.replaceWith(sel); });
+  if($i('ig-change-class'))$i('ig-change-class').addEventListener('click',e=>{ e.preventDefault(); classClear(); location.reload(); });
+  (on?$i('ig-class'):nameInput).focus();
+  const fail=(msg,el)=>{ err.textContent=msg; err.style.display='block'; if(el)el.focus(); };
+  const saveLocal=(extra={})=>progress.setStudent({name:nameInput.value.trim(),classId:$i('ig-class').value.trim(),
+    seat:$i('ig-seat').value.trim(),school:on?$i('ig-school').value.trim():s.school,createdAt:s.createdAt,...extra});
+  async function confirmIdentity(){
+    const name=nameInput.value.trim();
+    if(!on){
+      if(!name)return fail('請先輸入姓名再繼續。',nameInput);
+      saveLocal(); bg.remove(); renderIdentityBadge(); return;
+    }
+    const cls=$i('ig-class').value.trim(), seat=$i('ig-seat').value.trim(), school=$i('ig-school').value.trim();
+    if(!school)return fail('請填學校。',$i('ig-school'));
+    if(!cls)return fail('請填班級。',$i('ig-class'));
+    if(!/^\d{1,2}$/.test(seat))return fail('座號請填數字（例如 5 或 12）。',$i('ig-seat'));
+    if(!name)return fail('請填姓名。',nameInput);
+    const btn=$i('ig-confirm'); btn.disabled=true; btn.textContent='登入中…（第一次可能要等十幾秒）'; err.style.display='none';
+    const r=await cloudLogin({school,classId:cls,seat:String(+seat),name,pw:$i('ig-pw').value},{onWait:n=>{ btn.textContent=`排隊中…（很多人同時登入，自動重試第 ${n} 次）`; }});
+    btn.disabled=false; btn.textContent='登入';
+    if(r.ok){
+      saveLocal({name:r.name||name,seat:String(+seat)}); bg.remove(); renderIdentityBadge();
+      toastMsg((r.created?'✓ 註冊成功，之後的成績會自動存到雲端。':r.restored?`✓ 歡迎回來，已從雲端拉回 ${r.restored} 關的成績。`:'✓ 登入成功。')+(r.pushed?`這台裝置上還沒上傳的 ${r.pushed} 關成績正在補傳。`:''));
+      if(r.restored||r.switched)setTimeout(()=>location.reload(),1600);      // 重新畫出各關卡片上的成績
+      return;
+    }
+    if(r.code==='net'||r.code==='server'){
+      // 連不上：先讓學生用，成績留在這台電腦，下次登入成功時一起補傳
+      fail('現在連不上雲端（'+r.error+'）。可以按「先不登入」繼續玩，成績會先存在這台電腦。');
+      return;
+    }
+    fail(r.error||'登入失敗',r.code==='pw'?$i('ig-pw'):r.code==='name'?$i('ig-seat'):null);
+  }
+  $i('ig-confirm').addEventListener('click',confirmIdentity);
+  bg.querySelectorAll('input').forEach(inp=>inp.addEventListener('keydown',e=>{ if(e.key==='Enter')confirmIdentity(); }));
+  if(isEdit)$i('ig-cancel').addEventListener('click',()=>bg.remove());
+  else if(on)$i('ig-skip').addEventListener('click',()=>{
+    if(!nameInput.value.trim())return fail('至少先填姓名。',nameInput);
+    saveLocal(); try{ sessionStorage.setItem('nd.cloud.skip','1'); }catch{} bg.remove(); renderIdentityBadge(); });
+}
+function toastMsg(msg){
+  const t=document.createElement('div');
+  t.style.cssText='position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:80;background:#0b1626;border:1px solid rgba(74,222,128,.6);color:#4ade80;border-radius:10px;padding:10px 18px;font-size:13px;';
+  t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),4500);
+}
+function renderIdentityBadge(){
+  const s=progress.student();
+  const el=document.getElementById('id-badge');
+  if(!s||!s.name){ el.innerHTML=''; return; }
+  const meta=[s.classId&&`${esc(s.classId)} 班`,s.seat&&`座號 ${esc(s.seat)}`].filter(Boolean).join('・');
+  // 雲端狀態：已同步／待上傳幾筆／沒登入
+  let cloud='';
+  const anyCloud=cloudOn()||!!centerUrl();      // 有中心但還沒選老師：也顯示「沒登入雲端」和登入鈕
+  if(anyCloud){ const c=cloudStatus();
+    cloud=!c.loggedIn?'<span id="id-cloud" style="color:#fbbf24">☁ 沒登入雲端（成績只存這台）</span>'
+      :c.pending?`<span id="id-cloud" style="color:#fbbf24" title="${esc(c.error||'')}">☁ 待上傳 ${c.pending} 筆</span>`
+      :'<span id="id-cloud" style="color:#4ade80">☁ 已同步</span>'; }
+  el.innerHTML=`👤 <b>${esc(s.name)}</b>${meta?'　'+meta:''}${cloud?'　'+cloud:''}<button id="btn-edit-id">${anyCloud&&!cloudStatus().loggedIn?'登入':'修改'}</button>`;
+  document.getElementById('btn-edit-id').addEventListener('click',()=>showIdentityGate(true));
+  // 考場代碼（要登入雲端才有）：沒在考＝「輸入考場代碼」；考核中＝顯示代碼、剩幾次、進入／結束
+  if(cloudOn()&&cloudStatus().loggedIn){
+    const ex=examState(), box=document.createElement('span'); box.id='id-exam'; box.style.marginLeft='6px';
+    if(ex){ const left=ex.limit-ex.used;
+      box.innerHTML=`<span style="color:#fde68a">📝 考核中 ${esc(ex.code)}｜${esc(ex.title||ex.levelId)}｜${left>0?'剩 '+left+' 次':'次數用完了'}</span>${left>0?'<button id="btn-exam-go">進入</button>':''}<button id="btn-exam-end">結束考核</button>`;
+      el.appendChild(box);
+      if(left>0)document.getElementById('btn-exam-go').addEventListener('click',()=>{ location.href=ex.file; });
+      document.getElementById('btn-exam-end').addEventListener('click',()=>{ examEnd(); renderIdentityBadge(); });
+    }else{ box.innerHTML='<button id="btn-exam">📝 輸入考場代碼</button>'; el.appendChild(box);
+      document.getElementById('btn-exam').addEventListener('click',showExamGate); }
+  }
+}
+function showExamGate(){
+  const bg=document.createElement('div'); bg.className='id-gate-bg';
+  bg.innerHTML=`<div class="id-gate"><h2>📝 考場代碼</h2>
+    <p class="hint">輸入老師給的代碼，會直接進到考核的那一關。<br>考核中每飛完一次都會算一次，請準備好再開始。</p>
+    <label>考場代碼</label><input id="ex-code" type="text" maxlength="12" autocomplete="off" placeholder="例如：K7QM" style="text-transform:uppercase;letter-spacing:3px;">
+    <p class="err" id="ex-err" style="display:none;"></p>
+    <div class="btns"><button id="ex-cancel" class="btn-secondary">取消</button><button id="ex-ok" class="btn-primary">開始考核</button></div></div>`;
+  document.body.appendChild(bg);
+  const $i=id=>document.getElementById(id), inp=$i('ex-code'), err=$i('ex-err'); inp.focus();
+  async function go(){
+    if(!inp.value.trim()){ err.textContent='請輸入考場代碼。'; err.style.display='block'; return; }
+    const btn=$i('ex-ok'); btn.disabled=true; btn.textContent='查詢中…'; err.style.display='none';
+    const r=await examStart(inp.value,LEVELS);
+    if(r.ok){ location.href=r.exam.file; return; }
+    btn.disabled=false; btn.textContent='開始考核'; err.textContent=r.error||'查不到這個代碼'; err.style.display='block'; inp.focus();
+  }
+  $i('ex-ok').addEventListener('click',go);
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter')go(); });
+  $i('ex-cancel').addEventListener('click',()=>bg.remove());
+}
+renderIdentityBadge();
+/* 等雲端設定讀完再決定要不要跳登入：有設定雲端又還沒登入 → 跳出來（這次開瀏覽器按過「先不登入」就不再跳） */
+cloudInit().then(()=>{
+  const ed=edition();      // 活動版（離線體驗營）：姓名不同就算換人；副標題顯示活動與單位
+  if(ed){ if(ed.strictNames)ownerStrict(true);
+    const sub=document.querySelector('p.sub'); if(sub&&(ed.event||ed.issuer))sub.textContent=[ed.event,ed.issuer].filter(Boolean).join('｜');
+    if(ed.credit){ const f=document.querySelector('footer'); if(f){ const d=document.createElement('div'); d.id='nd-credit'; d.style.marginTop='6px'; d.textContent='模擬器製作：'+ed.credit; f.appendChild(d); } } }
+  renderIdentityBadge(); onCloudStatus(renderIdentityBadge);
+  let skipped=false; try{ skipped=!!sessionStorage.getItem('nd.cloud.skip'); }catch{}
+  // 網址帶 ?c=代碼（老師給的連結、QR Code、還原卡電腦的首頁）：還沒連到這位老師就自動帶入查詢
+  let qc=''; try{ qc=(new URLSearchParams(location.search).get('c')||'').trim().toUpperCase(); }catch{}
+  const ci=classInfo();
+  if(qc&&centerUrl()&&!(ci&&(ci.pinned||ci.code===qc)))return showClassGate(qc);
+  if(centerUrl()&&!cloudOn()&&!skipped)return showClassGate();        // 有中心、還沒選老師：先問代碼（可以先不登入）
+  if(!progress.student()?.name)showIdentityGate(false);
+  else if(cloudOn()&&!cloudStatus().loggedIn&&!skipped)showIdentityGate(false);
+});
+
+/* 機體視覺大小（使用者 2026-07-22 實機回饋：小螢幕操作時機體看起來太小）——
+   純視覺縮放，不影響碰撞/物理尺寸；只在單人訓練關卡＋足球 solo 版生效，
+   多人 PVP 分割畫面固定 1.0×（見 levels/pvp.html），避免同畫面內大小不一致。
+   讀寫邏輯跟 core/drone-styles.js 的 droneVisualScaleGet/Set 共用同一把
+   localStorage key（'nd.settings.droneVisualScale'），但這裡刻意不 import
+   drone-styles.js——那個模組會連帶載入 three.js 整套機體幾何建構程式碼，
+   index.html 本身不畫 3D 場景，沒必要背這個重量級相依（也不用額外加
+   three 的 import map）。 */
+const SCALE_KEY='nd.settings.droneVisualScale';
+function droneVisualScaleGet(){
+  try{ const v=parseFloat(localStorage.getItem(SCALE_KEY)); return (v>0 && isFinite(v))?v:1; }catch(e){ return 1; }
+}
+function droneVisualScaleSet(scale){
+  try{ localStorage.setItem(SCALE_KEY,String(scale)); }catch(e){}
+}
+const SCALE_OPTIONS=[[1,'標準'],[1.3,'較大'],[1.6,'最大'],[2,'特大'],[3,'超大']];   // 2026-10-06 老師要在平板上試 2 倍、3 倍（只是看起來大，碰撞範圍不變）
+function renderScaleRow(){
+  const cur=droneVisualScaleGet();
+  document.getElementById('scale-row').innerHTML=
+    `<span class="lbl">🚁 機體視覺大小：</span>`+
+    SCALE_OPTIONS.map(([v,label])=>
+      `<button class="scale-btn${Math.abs(cur-v)<0.001?' on':''}" data-scale="${v}">${label}（${v}×）</button>`
+    ).join('')+
+    `<span class="scale-hint">只影響單人訓練關卡／足球 solo 版的畫面顯示，不影響碰撞判定；多人 PVP 分割畫面固定標準大小。</span>`;
+  document.querySelectorAll('#scale-row .scale-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{ droneVisualScaleSet(parseFloat(btn.dataset.scale)); renderScaleRow(); });
+  });
+}
+renderScaleRow();
+
+/* 觸控按鍵大小（2026-10-06，規劃書附錄 F.1）：平板／手機橫拿時，虛擬搖桿、暫停與視角鈕、關卡動作鈕一起縮放。
+   讀寫 nd.settings.touchScale，core/hud.js 套用；用滑鼠鍵盤或手把的電腦不受影響。 */
+const TOUCH_KEY='nd.settings.touchScale';
+function touchScaleGet(){ try{ const v=parseFloat(localStorage.getItem(TOUCH_KEY)); return v>=0.5&&v<=2?v:1; }catch(e){ return 1; } }
+function renderTouchRow(){
+  const cur=touchScaleGet();
+  let row=document.getElementById('touch-row');
+  if(!row){ row=document.createElement('div'); row.className='scale-row'; row.id='touch-row'; document.getElementById('scale-row').after(row); }
+  row.innerHTML=`<span class="lbl">👆 觸控按鍵大小：</span>`+
+    [[0.85,'小'],[1,'標準'],[1.3,'大'],[1.6,'特大']].map(([v,l])=>
+      `<button class="scale-btn${Math.abs(cur-v)<0.001?' on':''}" data-touch="${v}">${l}</button>`).join('')+
+    `<span class="scale-hint">平板、手機橫拿時的虛擬搖桿和按鈕大小；用滑鼠鍵盤或手把的電腦不受影響。</span>`;
+  row.querySelectorAll('.scale-btn').forEach(b=>b.addEventListener('click',()=>{ try{ localStorage.setItem(TOUCH_KEY,b.dataset.touch); }catch(e){} renderTouchRow(); }));
+}
+renderTouchRow();
+
+/* 小地圖方向（2026-09-30 新增，使用者回報 t06「往前飛小地圖卻往下跑，閱讀很奇怪」）：
+   隨畫面轉（預設）＝畫面前方就是小地圖上方；北方朝上＝原本的固定地圖。
+   讀寫 nd.settings.mapOrient，core/hud.js 的 drawMinimap() 每幀讀取，全部關卡共用。 */
+const MAP_KEY='nd.settings.mapOrient';
+function mapOrientGet(){ try{ return JSON.parse(localStorage.getItem(MAP_KEY))==='north'?'north':'view'; }catch(e){ return 'view'; } }
+function renderMapRow(){
+  const cur=mapOrientGet();
+  let row=document.getElementById('map-row');
+  if(!row){ row=document.createElement('div'); row.className='scale-row'; row.id='map-row';
+    document.getElementById('scale-row').after(row); }
+  row.innerHTML=`<span class="lbl">🧭 小地圖方向：</span>`+
+    [['view','隨畫面轉（前方＝上方）'],['north','北方朝上']].map(([v,l])=>
+      `<button class="scale-btn${cur===v?' on':''}" data-orient="${v}">${l}</button>`).join('')+
+    `<span class="scale-hint">初學者建議「隨畫面轉」：往前飛，小地圖上的自己就往上走。</span>`;
+  row.querySelectorAll('.scale-btn').forEach(b=>b.addEventListener('click',()=>{
+    try{ localStorage.setItem(MAP_KEY,JSON.stringify(b.dataset.orient)); }catch(e){}
+    renderMapRow(); }));
+}
+renderMapRow();
+
+/* 班級難度預設（2026-08-02 新增，輕量參數編輯器第一批）：老師在這裡設一次，
+   目前套用範圍——t06 逆風飛行的風力強度倍率、t04/t05/t09 的電量消耗速率
+   （係數集中在 data/progress.js 的 classDiffCoef()，以後要調鬆緊只改
+   那一個地方）。刻意不做成「鎖死關卡選單」：學生原本就有的 easy/med/hard
+   選單（如 x-hover 懸停挑戰）完全不受影響，照樣自己選；這個旋鈕只影響
+   「沒有選單、原本寫死一個固定值」的關卡，給老師一個班級統一調整的
+   入口，不用逐關卡進去改程式碼。 */
+const DIFF_OPTIONS=[[null,'無（維持預設）'],['easy','初級（弱）'],['med','中級（中）'],['hard','高級（強）']];
+function renderDiffRow(){
+  const cur=progress.classDifficulty();
+  document.getElementById('diff-row').innerHTML=
+    `<span class="lbl">🎚️ 班級難度預設：</span>`+
+    DIFF_OPTIONS.map(([v,label])=>
+      `<button class="scale-btn${cur===v?' on':''}" data-diff="${v??''}">${label}</button>`
+    ).join('')+
+    `<span class="scale-hint">目前套用：t06 逆風飛行的風力強度、t04/t05/t09 的電量消耗速率、起降訊號異常（初級＝關閉、中級 15%、高級 25%）。有既有難度選單的關卡（如懸停挑戰）不受影響，學生仍自己選。</span>`;
+  document.querySelectorAll('#diff-row .scale-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{ progress.setClassDifficulty(btn.dataset.diff||null); renderDiffRow(); });
+  });
+}
+renderDiffRow();
+
+/* 2026-07-26：改成「分類卡片」而不是把 30 關全部攤開——使用者回饋
+   全塞在同一區塊很亂。每張卡片連到 pages/levels-*.html 一個子頁面，
+   分類定義集中在 data/level-categories.js（單一真相來源，新增分類
+   只改那一份，不必同時改這裡）。卡片上順便顯示「已完成／總數」，
+   讓老師/學生不用點進去就能大致掌握進度。 */
+const grid=document.getElementById('grid-categories');
+function renderCategories(){
+  const g=gateState(LEVELS,progress);
+  grid.innerHTML=CATEGORIES.map(cat=>{
+    const levels=LEVELS.filter(cat.match);
+    const doneCount=levels.filter(lv=>{
+      const rec=progress.get(lv.id);
+      return !!(rec && rec[lv.doneField||'completed']);
+    }).length;
+    const locked=levels.length&&levels.every(GATED)&&!g.open;
+    return `<a class="card${locked?' locked':''}" data-cat="${cat.key}" href="${locked?'#':'pages/'+cat.file}"${locked?' tabindex="-1" aria-disabled="true"':''}>
+      <h2>${locked?'🔒':cat.emoji} ${esc(cat.title)}</h2>
+      <p>${esc(cat.desc)}</p>
+      <span class="count"${locked?' style="color:#94a3b8"':''}>${locked?`通過基礎＋進階全部關卡後開放（目前 ${g.done} / ${g.total}）`:`${doneCount} / ${levels.length} 已完成`}</span>
+    </a>`;
+  }).join('');
+}
+renderCategories();
+gateReady().then(all=>{ if(all)renderCategories(); });      // 活動版全部開放
+bindEgg(document.querySelector('h1'),()=>{ renderCategories(); toastMsg('🎉 你找到彩蛋了！全部關卡暫時開放，關掉瀏覽器就會恢復。'); });
+</script>
+<script type="module" src="core/gp-nav-boot.js"></script>   <!-- 2026-10-06 選單可用搖桿操作（有接搖桿才載入） -->
+</body>
+</html>
