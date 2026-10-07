@@ -58,7 +58,7 @@
 
 <script type="module">
 import { LEVELS } from '../data/levels-manifest.js';
-import { cloudInit, cloudUrl, centerUrl } from '../core/cloud-api.js';
+import { cloudInit, cloudUrl, centerUrl, localMode, localUrl } from '../core/cloud-api.js';
 import { board, auth } from '../data/cloud-sync.js';
 
 const $=id=>document.getElementById(id);
@@ -76,6 +76,7 @@ let seq=0;
 async function load(){
   const my=++seq, id=$('lv').value;
   await cloudInit();
+  if(localMode())return loadLocal(my,id);
   if(!cloudUrl())return msg(centerUrl()?'還沒有連到老師的班級，所以沒有排行榜。<br><a href="../index.html" style="color:#00eeff">回首頁按「登入」輸入老師代碼</a>':'這台電腦沒有設定雲端，所以沒有排行榜。',true);
   if(!auth())return msg('要先登入雲端才看得到排行榜。<br><a href="../index.html" style="color:#00eeff">回首頁登入</a>',true);
   $('reload').disabled=true; msg('讀取中…（第一次可能要等十幾秒）');
@@ -90,6 +91,23 @@ async function load(){
   $('out').innerHTML='<table>'+r.rows.map(x=>`<tr class="${x.me?'me ':''}${x.rank<=3?'top'+x.rank:''}"><td class="r">${x.rank<=3?MEDAL[x.rank-1]:x.rank}</td><td>${esc(x.label)}${x.me?'　← 你':''}</td><td class="s">${esc(x.score)}</td></tr>`).join('')+'</table>';
   $('mine').textContent=!r.me?'你這一關還沒有上榜的成績。'
     :r.rows.some(x=>x.me)?'':`你目前第 ${r.me.rank} 名（${r.me.score} 分）。`;
+}
+/* 平板連老師的筆電：排行榜用筆電收到的成績算（只有這台筆電上的，不用網路）。同班的才排在一起，姓名遮中間字。 */
+async function loadLocal(my,id){
+  msg('讀取中…');
+  let d=null; try{ d=await (await fetch(localUrl('board'),{cache:'no-store'})).json(); }catch{}
+  if(my!==seq)return;
+  if(!d||!d.ok)return msg('老師的電腦沒有回應，等一下再按重新整理。',true);
+  let me={}; try{ me=JSON.parse(localStorage.getItem('nd.student')||'{}')||{}; }catch{}
+  const mask=n=>{ n=String(n||''); return n.length>2?n[0]+'○'+n.slice(2):n.length===2?n[0]+'○':n; };
+  const mine=x=>String(x.c)===String(me.classId||'')&&String(+x.s)===String(+me.seat)&&x.n===me.name;
+  const all=d.rows.filter(x=>x.l===id&&typeof x.sc==='number'&&(!me.classId||String(x.c)===String(me.classId))).sort((a,b)=>b.sc-a.sc);
+  let rank=0,last=null; all.forEach((x,i)=>{ if(x.sc!==last){ rank=i+1; last=x.sc; } x.rank=rank; });
+  $('where').textContent=`範圍：${me.classId?me.classId+' 班':'全部'}（老師電腦上的成績）　共 ${all.length} 人上榜`;
+  if(!all.length){ $('mine').textContent=''; return void($('out').innerHTML='<div class="msg">這一關還沒有人上榜，去當第一個吧！</div>'); }
+  const top=all.slice(0,20), m=all.find(mine);
+  $('out').innerHTML='<table>'+top.map(x=>`<tr class="${mine(x)?'me ':''}${x.rank<=3?'top'+x.rank:''}"><td class="r">${x.rank<=3?MEDAL[x.rank-1]:x.rank}</td><td>${esc((x.c?x.c+' ':'')+mask(x.n))}${mine(x)?'　← 你':''}</td><td class="s">${esc(x.sc)}</td></tr>`).join('')+'</table>';
+  $('mine').textContent=!m?'你這一關還沒有上榜的成績。':top.includes(m)?'':`你目前第 ${m.rank} 名（${m.sc} 分）。`;
 }
 $('lv').addEventListener('change',load);
 $('reload').addEventListener('click',load);

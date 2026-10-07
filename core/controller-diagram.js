@@ -46,29 +46,35 @@ function padPos(shape){
     b8:[234,104], b9:[286,104] };
 }
 
-export function buildDiagram(host,{shape,gp,cfg}){
+export function buildDiagram(host,{shape,gp,cfg,edit}){
   const map=fnMap(cfg), std=gp&&gp.mapping==='standard';
   const S=[]; const T=(x,y,t,a='middle',c='#facc15',s=11)=>`<text x="${x}" y="${y}" text-anchor="${a}" fill="${c}" font-size="${s}">${t}</text>`;
   const BTN=(i,x,y,r=13)=>`<circle data-b="${i}" cx="${x}" cy="${y}" r="${r}" fill="#0e2238" stroke="#3b6a8a" stroke-width="1.5"/>`;
   const STICK=(id,x,y,R)=>`<circle cx="${x}" cy="${y}" r="${R}" fill="#06101c" stroke="#3b6a8a" stroke-width="2" data-stick="${id}"/>
     <circle id="dot${id}" data-cx="${x}" data-cy="${y}" data-r="${R-12}" cx="${x}" cy="${y}" r="11" fill="#4ade80"/>`;
   let capL='上下＝油門　左右＝轉向', capR='上下＝前後　左右＝左右', fnBased=true;
+  /* 遙控器外型：每一支桿、每個撥桿、每顆按鈕各包成一組（data-mv），照設定檔 layout（{鍵:[dx,dy]}）平移。
+     程式看不到實體長相，所以讓老師在精靈最後一步用拖的把圖排成跟手上那支一樣（2026-10-07）。標準手把編號＝位置，不用排。 */
+  const LAY=(cfg&&cfg.layout)||{};
+  /* hide＝從圖上藏起來的鍵（有些遙控器同一個開關會同時回報成「撥桿」和「按鈕」，圖上就多一顆）。編輯模式（edit）才畫出來、半透明，可以點回來。 */
+  const HID=new Set((cfg&&cfg.hide)||[]);
+  const G=(key,bx,by,inner)=>{ const o=LAY[key]||[0,0], h=HID.has(key); if(h&&!edit)return '';
+    return `<g data-mv="${key}" data-bx="${bx}" data-by="${by}"${h?' data-hidden="1" opacity="0.28"':''} transform="translate(${+o[0]||0},${+o[1]||0})">${inner}</g>`; };
   if(shape==='rc'){
     S.push(`<rect x="40" y="70" width="440" height="170" rx="46" fill="#0b1626" stroke="#2a5c7f" stroke-width="2"/>`);
-    S.push(STICK('L',150,150,44),STICK('R',370,150,44));
+    S.push(G('L',150,150,STICK('L',150,150,44)+T(150,222,'油門／轉向','middle','#7aa3b8',10)),G('R',370,150,STICK('R',370,150,44)+T(370,222,'前後／左右','middle','#7aa3b8',10)));
     // 撥桿開關：四支主軸以外的軸，一軸一格
     const used=new Set(cfg?.axes?Object.values(cfg.axes).map(a=>a.i):[0,1,2,3]);
     const extra=(gp?[...gp.axes.keys()]:[]).filter(i=>!used.has(i)).slice(0,8);
     extra.forEach((ai,k)=>{ const x=260+(k-(extra.length-1)/2)*52;
-      S.push(`<rect x="${x-9}" y="20" width="18" height="40" rx="9" fill="#06101c" stroke="#3b6a8a" stroke-width="1.5" data-sw="${ai}"/>
-        <circle id="sw${ai}" data-y="40" cx="${x}" cy="40" r="7" fill="#7aa3b8"/>`,
-        T(x,13,(cfg?.labels?.['a'+ai]?cfg.labels['a'+ai]+'：':'')+(map.ax[ai]?lab(map.ax[ai]):(cfg?.labels?.['a'+ai]?'':'撥桿'+ai)),'middle',map.ax[ai]?'#facc15':'#5b7f95',10)); });
+      S.push(G('a'+ai,x,40,`<rect x="${x-9}" y="20" width="18" height="40" rx="9" fill="#06101c" stroke="#3b6a8a" stroke-width="1.5" data-sw="${ai}"/>
+        <circle id="sw${ai}" data-y="40" cx="${x}" cy="40" r="7" fill="#7aa3b8"/>`+
+        T(x,13,(cfg?.labels?.['a'+ai]?cfg.labels['a'+ai]+'：':'')+(map.ax[ai]?lab(map.ax[ai]):(cfg?.labels?.['a'+ai]?'':'撥桿'+ai)),'middle',map.ax[ai]?'#facc15':'#5b7f95',10))); });
     // 按鈕：一顆一個圓，照編號排
     const nb=Math.min(gp?gp.buttons.length:0,16);
     for(let i=0;i<nb;i++){ const x=260+(i-(nb-1)/2)*27;
-      S.push(BTN(i,x,262,9),T(x,266,i,'middle','#7aa3b8',9));
-      if(map.btn[i])S.push(T(x,288+(i%2)*11,(cfg?.labels?.['b'+i]?cfg.labels['b'+i]+'：':'')+lab(map.btn[i]),'middle','#facc15',10)); }
-    S.push(T(150,222,'油門／轉向','middle','#7aa3b8',10),T(370,222,'前後／左右','middle','#7aa3b8',10));
+      S.push(G('b'+i,x,262,BTN(i,x,262,9)+T(x,266,i,'middle','#7aa3b8',9)+
+        (map.btn[i]?T(x,288+(i%2)*11,(cfg?.labels?.['b'+i]?cfg.labels['b'+i]+'：':'')+lab(map.btn[i]),'middle','#facc15',10):''))); }
   }else{
     const P=padPos(shape);
     S.push(`<path d="${BODY}" fill="#0b1626" stroke="#2a5c7f" stroke-width="2"/>`);

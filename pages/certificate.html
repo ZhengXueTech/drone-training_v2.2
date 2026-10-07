@@ -117,7 +117,7 @@
 
 <script type="module">
 import { LEVELS } from '../data/levels-manifest.js';
-import { cloudInit, cloudUrl, centerUrl, edition } from '../core/cloud-api.js';
+import { cloudInit, cloudUrl, centerUrl, edition, localMode } from '../core/cloud-api.js';
 import { cert, verifyCert, auth } from '../data/cloud-sync.js';
 import { progress } from '../data/progress.js';
 
@@ -199,6 +199,7 @@ async function load(){
   $('certificate').style.display='none'; $('todo').style.display='none';
   await cloudInit();
   document.querySelector('.verify').style.display=cloudUrl()?'':'none';     // 沒有雲端就沒得查驗
+  if(localMode())return showLocal('你的成績已經交給老師的電腦。老師上傳到雲端後，用可以上網的裝置登入，就能拿到有查驗碼的認證版。',false);
   if(!cloudUrl())return centerUrl()?showLocal('這台裝置還沒有連到老師的班級（回首頁按「登入」輸入老師代碼）。',true):showLocal('這台裝置沒有設定雲端。',false);
   if(!auth())return showLocal('你還沒有登入雲端。',true);
   state('讀取中…（第一次可能要等十幾秒）');

@@ -156,7 +156,7 @@ export function profileToCfg(p){
   const buttons={};
   for(const fn of FN_NAMES){ const b=p.buttons?.[fn]; buttons[fn]=Number.isInteger(b)?b:-1; }
   const cfg={axes,buttons,deadzone:p.deadzone??0.08,expo:p.expo??0,
-    throttleType:p.throttleType||'center',profileName:p.name||p.id,shape:p.shape||null,labels:p.labels||null};
+    throttleType:p.throttleType||'center',profileName:p.name||p.id,shape:p.shape||null,labels:p.labels||null,layout:p.layout||null,hide:p.hide||null};
   if(p.axBtns&&p.axBtns.length)cfg.axBtns=p.axBtns.map(b=>({...b}));
   _cfgCache.set(p,cfg);
   return cfg;

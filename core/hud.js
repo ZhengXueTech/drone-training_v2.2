@@ -98,6 +98,17 @@ body.nd-portrait #nd-guide{display:none;}
 body.nd-portrait #nd-guide-deck{display:block;}
 body.nd-portrait .nd-vj.overlay{display:none;}
 body.nd-portrait #nd-map{top:30px;}
+/* ── 直拿版面補強（2026-10-08）：關卡自己的動作鈕（模式、自穩、噴藥…）原本用 position:fixed 疊在遙控器區中間，和「視角／暫停」蓋在一起。
+   直拿時把它們搬進遙控器區中間那一欄（#nd-deck-acts）：上面一排「視角｜⏸」，下面依序排關卡的動作鈕；轉回橫拿就放回原處。
+   進度條（#hold-wrap／#prog-wrap）不是按鈕，改放到畫面區的下緣。橫拿、電腦完全不受影響。 */
+#nd-deck .mid .sys{display:flex;gap:6px;justify-content:center;}
+#nd-deck-acts{display:flex;flex-direction:column;align-items:center;gap:8px;}
+#nd-deck-acts:empty{display:none;}
+.nd-docked{position:static!important;margin:0!important;flex:0 0 auto;}
+body.nd-portrait #nd-deck .mid{align-items:center;gap:8px;}
+body.nd-portrait #nd-map{top:46px;}
+body.nd-portrait #nd-guide-deck{left:3vw;right:3vw;transform:none;width:fit-content;max-width:94vw;margin:0 auto;white-space:normal;text-align:center;box-sizing:border-box;}
+body.nd-portrait #hold-wrap,body.nd-portrait #prog-wrap{bottom:calc(40% + 40px);}
 /* ── 觸控橫拿版面（2026-10-06，規劃書附錄 D.4／F.1；摸底結果見 tests/layout_audit.md）──
    原本小地圖、飛行數據、情境關的專用按鈕都擠在兩支虛擬搖桿的位置上，而且橫拿時沒有暫停鈕。
    只在「觸控裝置＋橫拿」（body.nd-touch）生效，滑鼠鍵盤與手把的畫面完全不變：
@@ -177,6 +188,7 @@ export class HUD{
       const portrait=innerWidth<600&&innerHeight>innerWidth;
       document.body.classList.toggle('nd-portrait',portrait);
       this.portrait=portrait;
+      this._dockActs(portrait);
       // 觸控裝置橫拿：套用分區版面（上面的 body.nd-touch 規則）。直拿走原本的遙控器版面。
       let coarse=false; try{ coarse=matchMedia('(pointer:coarse)').matches; }catch{}
       document.body.classList.toggle('nd-touch',coarse&&!portrait);
@@ -222,8 +234,8 @@ export class HUD{
       <div id="nd-deck"><div class="deck-in">
         <div class="nd-vj" id="nd-vj-dl"><div class="vj-knob"></div></div>
         <div class="mid">
-          <button id="nd-btn-cam">視角</button>
-          <button id="nd-btn-pause">⏸</button>
+          <div class="sys"><button id="nd-btn-cam">視角</button><button id="nd-btn-pause">⏸</button></div>
+          <div id="nd-deck-acts"></div>
         </div>
         <div class="nd-vj" id="nd-vj-dr"><div class="vj-knob"></div></div>
       </div></div>`;
@@ -236,6 +248,19 @@ export class HUD{
       const big=map.classList.toggle('nd-map-big');
       this._mapBigT=big?2.0:0;
     });
+  }
+  /* 直拿：把關卡自己的動作鈕搬進遙控器區中間；離開直拿就放回原來的位置（2026-10-08）。
+     新關卡的按鈕加 data-deck-act 屬性就會自動被搬；下面這串是既有關卡的按鈕。 */
+  _dockActs(on){
+    const slot=document.getElementById('nd-deck-acts'); if(!slot)return;
+    if(on){
+      document.querySelectorAll('[data-deck-act],#mode-btn,#self-level-btn,#kill-btn,#bg-boost-btn,#rs-thermal-btn,#insp-confirm-btn,#agri-spray-btn').forEach(e=>{
+        if(e.classList.contains('nd-docked'))return;
+        e._ndHome={p:e.parentNode,n:e.nextSibling}; e.classList.add('nd-docked'); slot.appendChild(e); });
+    }else{
+      [...slot.children].forEach(e=>{ e.classList.remove('nd-docked'); const h=e._ndHome;
+        if(h&&h.p){ if(h.n&&h.n.parentNode===h.p)h.p.insertBefore(e,h.n); else h.p.appendChild(e); } });
+    }
   }
   /* 觸控搖桿元素（依直/橫拿把正確的一組交給 input.touch.attach） */
   attachTouch(input){

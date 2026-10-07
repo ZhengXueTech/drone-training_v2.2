@@ -123,14 +123,15 @@
   基本版（無人機飛行器_基本版）完全未更動，隨時可退回使用。
 </footer>
 <script type="module">
-import { edition, cloudInit, cloudUrl, schoolList, refreshSchools, centerUrl, classInfo, classLookup, classSet, classClear } from './core/cloud-api.js';
+import { localMode, edition, cloudInit, cloudUrl, schoolList, refreshSchools, centerUrl, classInfo, classLookup, classSet, classClear } from './core/cloud-api.js';
 import { login as cloudLogin, status as cloudStatus, auth as cloudAuth, onCloudStatus, examStart, examState, examEnd } from './data/cloud-sync.js';
 const cloudOn=()=>!!cloudUrl();
 import { LEVELS } from './data/levels-manifest.js';
 import { progress } from './data/progress.js';
 import { CATEGORIES } from './data/level-categories.js';
 import { GATED, gateState, bindEgg, gateReady } from './data/gate.js';
-import { ownerStrict } from './data/owner.js';   // 2026-10-06 基礎＋進階全過才開放其他分類；連點標題七下＝彩蛋
+import { ownerStrict } from './data/owner.js';
+import { localStatus, onLocalStatus } from './data/local-sync.js';   // 2026-10-07 平板連老師筆電：成績交給筆電   // 2026-10-06 基礎＋進階全過才開放其他分類；連點標題七下＝彩蛋
 progress.migrateLegacy();
 
 // 診斷模式開關：網址加 ?debug=1 開、?debug=0 關（2026-10-06，見 core/debug-overlay.js）
@@ -182,7 +183,8 @@ function showClassGate(prefill){
   inp.focus(); if(prefill)go();
 }
 function showIdentityGate(isEdit){
-  if(isEdit&&centerUrl()&&!cloudOn())return showClassGate();        // 訪客按「登入」：還沒選老師，先問代碼
+  const lm=localMode();      // 平板連老師的筆電：不用密碼、不問老師代碼，但班級座號要填（老師才知道是誰）
+  if(isEdit&&centerUrl()&&!cloudOn()&&!lm)return showClassGate();        // 訪客按「登入」：還沒選老師，先問代碼
   const s=progress.student()||{};
   const on=cloudOn(), schools=schoolList(), a=cloudAuth()||{};
   const bg=document.createElement('div');
@@ -191,14 +193,15 @@ function showIdentityGate(isEdit){
   bg.innerHTML=`<div class="id-gate">
     <h2>👤 ${isEdit?'修改身分':'開始前，先輸入你的身分'}</h2>
     <p class="hint">${on?'登入後，你的成績會存到老師的雲端：<b>換電腦、電腦重開機都不會不見</b>。每次開機都要輸入一次。'
+      :lm?'填好班級、座號、姓名就能開始。你的成績會<b>交給老師的電腦</b>，不用密碼。'
       :'姓名為必填，班級／座號選填。這份資料只存在這台裝置本機，成績單匯出、教師端對照、Google 表單提交都會用到。'}</p>
     ${on&&classInfo()&&!classInfo().pinned?`<p class="hint" id="ig-class-line" style="margin:-8px 0 10px;color:#4ade80;">連到：${esc(classInfo().school)}　${esc(classInfo().teacher)} 老師的班級　<a href="#" id="ig-change-class" style="color:#7aa3b8;">換老師</a></p>`:''}
     ${on?`<label>學校</label>${schools.length
         ?`<select id="ig-school">${schools.map(x=>`<option${(a.school||s.school)===x?' selected':''}>${esc(x)}</option>`).join('')}</select>`
         :`<input id="ig-school" type="text" maxlength="30" placeholder="例如：新北市立中正國民中學" value="${esc(a.school||s.school||'')}">`}`:''}
-    <label>班級${on?'':'（選填）'}</label><input id="ig-class" type="text" maxlength="10" placeholder="例如：802" value="${esc(s.classId||'')}">
-    <label>座號${on?'':'（選填）'}</label><input id="ig-seat" type="text" maxlength="6" placeholder="例如：12" value="${esc(s.seat||'')}">
-    <label>姓名${on?'':'（必填）'}</label><input id="ig-name" type="text" maxlength="20" placeholder="例如：王小明" value="${esc(s.name||'')}">
+    <label>班級${on||lm?'':'（選填）'}</label><input id="ig-class" type="text" maxlength="10" placeholder="例如：802" value="${esc(s.classId||'')}">
+    <label>座號${on||lm?'':'（選填）'}</label><input id="ig-seat" type="text" maxlength="6" placeholder="例如：12" value="${esc(s.seat||'')}">
+    <label>姓名${on||lm?'':'（必填）'}</label><input id="ig-name" type="text" maxlength="20" placeholder="例如：王小明" value="${esc(s.name||'')}">
     ${on?`<label>密碼（沒改過就不用填）</label><input id="ig-pw" type="password" maxlength="30" placeholder="預設是 班級＋座號，例如 80212">`:''}
     <p class="err" id="ig-err" style="display:none;"></p>
     <div class="btns">${isEdit?'<button id="ig-cancel" class="btn-secondary">取消</button>':on?'<button id="ig-skip" class="btn-secondary">先不登入（成績只存這台電腦）</button>':''}
@@ -220,6 +223,11 @@ function showIdentityGate(isEdit){
   async function confirmIdentity(){
     const name=nameInput.value.trim();
     if(!on){
+      if(lm){ const c2=$i('ig-class').value.trim(), s2=$i('ig-seat').value.trim();
+        if(!c2)return fail('請填班級。',$i('ig-class'));
+        if(!/^\d{1,2}$/.test(s2))return fail('座號請填數字（例如 5 或 12）。',$i('ig-seat'));
+        if(!name)return fail('請填姓名。',nameInput);
+        saveLocal({seat:String(+s2),school:s.school||schools[0]||''}); bg.remove(); renderIdentityBadge(); return; }
       if(!name)return fail('請先輸入姓名再繼續。',nameInput);
       saveLocal(); bg.remove(); renderIdentityBadge(); return;
     }
@@ -263,11 +271,15 @@ function renderIdentityBadge(){
   const meta=[s.classId&&`${esc(s.classId)} 班`,s.seat&&`座號 ${esc(s.seat)}`].filter(Boolean).join('・');
   // 雲端狀態：已同步／待上傳幾筆／沒登入
   let cloud='';
-  const anyCloud=cloudOn()||!!centerUrl();      // 有中心但還沒選老師：也顯示「沒登入雲端」和登入鈕
+  const lm=localMode();
+  const anyCloud=!lm&&(cloudOn()||!!centerUrl());      // 有中心但還沒選老師：也顯示「沒登入雲端」和登入鈕
   if(anyCloud){ const c=cloudStatus();
     cloud=!c.loggedIn?'<span id="id-cloud" style="color:#fbbf24">☁ 沒登入雲端（成績只存這台）</span>'
       :c.pending?`<span id="id-cloud" style="color:#fbbf24" title="${esc(c.error||'')}">☁ 待上傳 ${c.pending} 筆</span>`
       :'<span id="id-cloud" style="color:#4ade80">☁ 已同步</span>'; }
+  if(lm){ const ls=localStatus();
+    cloud=ls.pending?`<span id="id-cloud" style="color:#fbbf24" title="${esc(ls.error||'')}">📥 還有 ${ls.pending} 筆沒交出去</span>`
+      :'<span id="id-cloud" style="color:#4ade80">📥 成績會交給老師的電腦</span>'; }
   el.innerHTML=`👤 <b>${esc(s.name)}</b>${meta?'　'+meta:''}${cloud?'　'+cloud:''}<button id="btn-edit-id">${anyCloud&&!cloudStatus().loggedIn?'登入':'修改'}</button>`;
   document.getElementById('btn-edit-id').addEventListener('click',()=>showIdentityGate(true));
   // 考場代碼（要登入雲端才有）：沒在考＝「輸入考場代碼」；考核中＝顯示代碼、剩幾次、進入／結束
@@ -314,6 +326,10 @@ cloudInit().then(()=>{
   // 網址帶 ?c=代碼（老師給的連結、QR Code、還原卡電腦的首頁）：還沒連到這位老師就自動帶入查詢
   let qc=''; try{ qc=(new URLSearchParams(location.search).get('c')||'').trim().toUpperCase(); }catch{}
   const ci=classInfo();
+  if(localMode()){      // 平板連老師的筆電：不問代碼、不登入雲端；班級座號姓名缺一個就問
+    onLocalStatus(renderIdentityBadge);
+    const st=progress.student()||{}; if(!st.name||!st.classId||!st.seat)showIdentityGate(false);
+    return; }
   if(qc&&centerUrl()&&!(ci&&(ci.pinned||ci.code===qc)))return showClassGate(qc);
   if(centerUrl()&&!cloudOn()&&!skipped)return showClassGate();        // 有中心、還沒選老師：先問代碼（可以先不登入）
   if(!progress.student()?.name)showIdentityGate(false);

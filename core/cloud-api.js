@@ -14,7 +14,7 @@
    ============================================================ */
 const GAS_KEY='nd.settings.gasUrl';
 const okUrl=u=>typeof u==='string'&&(/^https:\/\/script\.google(usercontent)?\.com\//.test(u)||/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u));
-let _init=null, _url='', _center='', _cfg={}, _schools=null, _class=null;
+let _init=null, _url='', _center='', _cfg={}, _schools=null, _class=null, _local=false;
 const CLASS_KEY='nd.class';
 const SCH_KEY='nd.cache.schools';
 
@@ -26,16 +26,34 @@ export function cloudInit(){
     if(!u)u=_cfg.gasUrl||'';
     _center=okUrl(u)?u:'';
     _url=''; _class=null;
+    // 交給老師的電腦（2026-10-07）：這一頁不是在本機開的（平板連到筆電），而且那台筆電有成績收件匣
+    // → 成績一律交給筆電，不直接找雲端（不用網路、不用排隊、不用密碼）。筆電自己開的（localhost）不走這條。
+    _local=false;
+    try{ const h=location.hostname;
+      if(location.protocol==='http:'&&h&&h!=='localhost'&&h!=='127.0.0.1'&&h!=='[::1]'){
+        const ac=new AbortController(), t=setTimeout(()=>ac.abort(),1500);
+        try{ const r=await fetch(new URL('../local/ping',import.meta.url),{cache:'no-store',signal:ac.signal}); if(r.ok){ const j=await r.json(); _local=!!(j&&j.ok&&j.local); } }catch{} finally{ clearTimeout(t); }
+      } }catch{}
+    if(_local)return _url;
     if(okUrl(_cfg.classUrl)){ _url=_cfg.classUrl; _class={url:_url,pinned:true}; }
     else{
       let c=null; try{ c=JSON.parse(localStorage.getItem(CLASS_KEY)||'null'); }catch{}
-      if(c&&okUrl(c.url)){ _class=c; _url=c.url; }
+      if(c&&okUrl(c.url)){ _class=c; _url=c.url;
+        // 老師重新部署後網址可能換了：這台記的是舊網址就會整個連不上。每小時最多一次，背景向中心重查這個代碼，網址不同就換成新的。
+        if(c.code&&_center&&!(Date.now()-(+c.checkedAt||0)<3600000)){
+          classLookup(c.code).then(r=>{ if(!r||!r.ok||!r.found)return;
+            const fresh={code:String(r.code||c.code),school:String(r.school||''),teacher:String(r.teacher||''),url:r.url,checkedAt:Date.now()};
+            if(_class&&_class.code===c.code){ _class=fresh; _url=r.url; try{ localStorage.setItem(CLASS_KEY,JSON.stringify(fresh)); }catch{} } }).catch(()=>{});
+        } }
       else if(_cfg.classCode&&_center){ const r=await classLookup(_cfg.classCode); if(r.ok&&r.found)classSet(r); }
     }
     return _url;
   })();
 }
 export function centerUrl(){ return _center; }
+/* true＝成績交給老師的電腦（平板連筆電上課） */
+export function localMode(){ return _local; }
+export const localUrl=p=>new URL('../local/'+p,import.meta.url).href;
 /* 目前連到哪位老師的班級：{code, school, teacher, url} 或 null；pinned＝資料夾設定直接指定的（不能在畫面上換） */
 export function classInfo(){ return _class; }
 /* 問中心：這個代碼連到哪位老師？回傳 {ok, found, code, school, teacher, url} */
@@ -51,7 +69,7 @@ export async function classLookup(code){
 }
 export function classSet(info){
   if(!info||!okUrl(info.url))return false;
-  _class={code:String(info.code||''),school:String(info.school||''),teacher:String(info.teacher||''),url:info.url}; _url=info.url;
+  _class={code:String(info.code||''),school:String(info.school||''),teacher:String(info.teacher||''),url:info.url,checkedAt:Date.now()}; _url=info.url;
   try{ localStorage.setItem(CLASS_KEY,JSON.stringify(_class)); localStorage.removeItem(SCH_KEY); }catch{}
   _schools=null; _schP=null; return true;
 }

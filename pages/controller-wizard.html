@@ -44,6 +44,13 @@
   th{color:#7aa3b8;font-weight:normal;}
   input[type=text]{background:#06101c;color:#cfefff;border:1px solid rgba(0,238,255,.4);border-radius:8px;font-family:inherit;font-size:13px;padding:8px 10px;width:280px;max-width:100%;}
   .warn{color:#fbbf24;} .ok{color:#4ade80;}
+  .mv-on svg{touch-action:none;} .mv-on g[data-mv]{cursor:move;} .mv-on g[data-mv] circle[data-stick],.mv-on g[data-mv] rect[data-sw],.mv-on g[data-mv] circle[data-b]{stroke:#facc15;stroke-dasharray:4 3;}
+  .nav{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid #1c3a52;}
+  .nav button{font-size:16px;padding:13px 24px;min-width:150px;border-width:2px;}
+  .nav #b-back{color:#cfefff;border-color:#7aa3b8;}
+  .nav #b-next{background:#0b4a5e;color:#eaffff;border-color:#00eeff;box-shadow:0 0 14px rgba(0,238,255,.45);font-weight:bold;}
+  .nav #b-next:disabled{background:#0e2238;color:#5b7f95;border-color:#234;box-shadow:none;font-weight:normal;cursor:default;}
+  .nav .mid{flex:1;text-align:center;font-size:12px;color:#7aa3b8;}
   details{margin-top:6px;} summary{cursor:pointer;color:#9fc3d8;font-size:13px;}
 </style>
 </head>
@@ -97,6 +104,7 @@
 <script type="module">
 import { InputManager, gpCfgRead, DEF_BTN } from '../core/input.js';
 import { buildDiagram, shapeFor, SHAPES } from '../core/controller-diagram.js';
+import { createStickGuide } from '../core/stick-guide.js';   // 2026-10-07 示範動作＋搖桿範圍
 import { cloudError, listCloudProfiles, uploadProfile, pingCloud, setGasUrl, gasUrl, cloudState, fetchCloudProfiles, saveProfile, deleteProfile, listLocalProfiles, listFileProfiles, exportProfiles, importProfiles, envInfo, AXIS_NAMES, profileFor, profileSource, setDraftProfile }
   from '../core/controller-profiles.js';
 
@@ -124,7 +132,7 @@ const STORE_CAL='nd.settings.gpCal2';
 let st=null, input=null;
 const niceName=id=>(id.replace(/\s*\((?:STANDARD GAMEPAD|Vendor|XInput).*$/i,'').trim()||id).substring(0,40);
 const mkState=()=>({labels:{},noise:0,sampling:null,pendSw:null,step:0,gpIndex:null,gpId:'',rest:[],axes:{},used:new Set(),thr:null,throttleType:null,detected:null,
-  buttons:{},axBtns:[],btnStep:0,holdT:0,cand:null,base:null,name:'',shape:null,editOne:null,editBackup:null,defaultsDone:false,keepButtons:false});
+  buttons:{},axBtns:[],btnStep:0,holdT:0,cand:null,base:null,name:'',shape:null,layout:{},hide:[],thr0:null,thrDown:null,editOne:null,editBackup:null,defaultsDone:false,keepButtons:false});
 function reset(){ st=mkState(); input=null; setDraftProfile(null); render(); }
 
 /* ── 上一步／單顆修改／編輯已存的設定（2026-10-06，老師回饋：不小心跳過或最後想改一顆，都不該整個重來）── */
@@ -163,7 +171,7 @@ function editSaved(id){
   for(const n of AXIS_NAMES){ const a=p.axes[n]; st.axes[n]={i:a.i,inv:!!a.inv,rest:a.rest??0,min:a.min??-1,max:a.max??1,relRaw:a.rest??0}; st.used.add(a.i); }
   st.throttleType=st.detected=p.throttleType||'center';
   st.buttons={...(p.buttons||{})}; st.axBtns=(p.axBtns||[]).map(a=>({...a}));
-  st.name=p.name||''; st.shape=p.shape||null; st.defaultsDone=true; st.labels={...(p.labels||{})};
+  st.name=p.name||''; st.shape=p.shape||null; st.defaultsDone=true; st.labels={...(p.labels||{})}; st.layout={...(p.layout||{})}; st.hide=[...(p.hide||[])];
   $('list-msg').textContent='';
   finishDetect(); scrollTo({top:0,behavior:'smooth'});
 }
@@ -187,7 +195,86 @@ const curGp=()=>gamepads().find(g=>g.index===st.gpIndex)||null;
 function renderSteps(){
   $('steps').innerHTML=STEP_NAMES.map((n,i)=>`<span class="${i===st.step?'cur':i<st.step?'done':''}">${i+1}. ${n}</span>`).join('');
 }
+/* 每一步的示範動作（以美國手顯示：左手＝油門／轉向，右手＝前後／左右） */
+const DEMO={1:{pad:null,pulse:true,note:'兩支搖桿都放開，不要碰。'},
+  2:{pad:'L',path:[[0,0],[0,-1],[0,-1],[0,1],[0,1]],note:'黃色虛線圈是示範動作：先拉到最下面，再推到最上面停住。綠色外圈轉滿＝抓到了。'},
+  3:{pad:'L',note:'把手從油門桿上放開。'},
+  4:{pad:'L',path:[[0,0],[1,0],[1,0]],note:'黃色虛線圈是示範動作：往右推到底停住。綠色外圈轉滿＝抓到了。'},
+  5:{pad:'R',path:[[0,0],[0,1],[0,1]],note:'黃色虛線圈是示範動作：往上推到底停住。綠色外圈轉滿＝抓到了。'},
+  6:{pad:'R',path:[[0,0],[1,0],[1,0]],note:'黃色虛線圈是示範動作：往右推到底停住。綠色外圈轉滿＝抓到了。'}};
+let guide=null, guide8=null, moveMode=false;
+function mountGuide(){
+  const h=$('sg'), s=st.step; guide=null; if(!h||!DEMO[s])return;
+  guide=createStickGuide(h);
+  const k=n=>!!st.axes[n], caps={L:[k('throttle')||s===2?'上下＝油門':'',k('yaw')||s===4?'左右＝轉向':''].filter(Boolean).join('　'),
+    R:[k('pitch')||s===5?'上下＝前後':'',k('roll')||s===6?'左右＝左右':''].filter(Boolean).join('　')};
+  guide.setDemo({...DEMO[s],caps,note:DEMO[s].note+'（圖以美國手顯示，你的遙控器配置不同也沒關係，照文字說的功能推就好）'});
+}
+/* 面板上兩個亮點的位置：已經認出來的軸用校正後的值；正在認的那一軸照「要求的方向」顯示推了多少 */
+function guideVals(gp){
+  const nv=fn=>{ const a=st.axes[fn]; if(!a)return 0; const v=gp.axes[a.i]??0;
+    const n=v>=a.rest?(v-a.rest)/Math.max(0.05,a.max-a.rest):(v-a.rest)/Math.max(0.05,a.rest-a.min); return (a.inv?-1:1)*Math.max(-1,Math.min(1,n)); };
+  const o={L:{x:nv('yaw'),y:nv('throttle')},R:{x:nv('roll'),y:nv('pitch')}}, s=st.step;
+  if(s===2&&st.thr){      // 油門：還不知道哪一端是「上」。起點靠近哪一端，那一端就先當「下」；起點在中間，先推過去的那一端當「下」
+    if(!st.thr0)st.thr0=[...gp.axes];
+    let best=-1,br=0; gp.axes.forEach((v,i)=>{ const r=st.thr.max[i]-st.thr.min[i]; if(r>br){br=r;best=i;} });
+    if(best>=0&&br>0.3){ const mn=st.thr.min[best], mx=st.thr.max[best], v=gp.axes[best];
+      if(!st.thrDown||st.thrDown.i!==best){ const s0=st.thr0[best]??0, dMin=s0-mn, dMax=mx-s0, near=Math.min(dMin,dMax)<0.2*br;
+        st.thrDown={i:best,near,s0,end:near?(dMin<dMax?'min':'max'):(dMin>dMax?'min':'max')}; }
+      // 用固定的行程（約 ±0.9）換算，亮點才不會一動就跳到頂；起點在底端的從 -1 往上算，起點在中間的從 0 往兩邊算
+      const d=st.thrDown, dir=d.end==='min'?1:-1;
+      o.L.y=Math.max(-1,Math.min(1,d.near?-1+dir*(v-d.s0)/0.9:dir*(v-d.s0)/0.9)); }
+  }else if(s>=4&&s<=6){
+    let bd=0; gp.axes.forEach((v,i)=>{ if(st.used.has(i))return; const d=v-st.rest[i]; if(Math.abs(d)>Math.abs(bd))bd=d; });
+    const m=Math.abs(bd)>0.08?Math.min(1,Math.abs(bd)/0.9):0;
+    if(s===4)o.L.x=m; else if(s===5)o.R.y=m; else o.R.x=m;
+  }
+  return o;
+}
+/* 遙控器外型的示意圖：拖動搖桿／撥桿／按鈕，位置存進設定檔的 layout */
+function bindMove(host){
+  if(!host||host._mv)return; host._mv=true;
+  let drag=null;
+  const pt=e=>{ const svg=host.querySelector('svg'), p=svg.createSVGPoint(); p.x=e.clientX; p.y=e.clientY; return p.matrixTransform(svg.getScreenCTM().inverse()); };
+  host.addEventListener('pointerdown',e=>{ if(!moveMode)return; const g=e.target.closest&&e.target.closest('g[data-mv]'); if(!g)return;
+    const o=st.layout[g.dataset.mv]||[0,0]; drag={g,key:g.dataset.mv,p0:pt(e),o:[+o[0]||0,+o[1]||0],bx:+g.dataset.bx,by:+g.dataset.by,cur:null};
+    try{ host.setPointerCapture(e.pointerId); }catch{} e.preventDefault(); });
+  host.addEventListener('pointermove',e=>{ if(!drag)return; const p=pt(e);
+    const dx=Math.round(Math.max(16-drag.bx,Math.min(504-drag.bx,drag.o[0]+p.x-drag.p0.x))), dy=Math.round(Math.max(16-drag.by,Math.min(284-drag.by,drag.o[1]+p.y-drag.p0.y)));
+    drag.cur=[dx,dy]; drag.g.setAttribute('transform',`translate(${dx},${dy})`); });
+  const end=()=>{ if(!drag)return; const d=drag; drag=null;
+    const moved=d.cur&&(Math.abs(d.cur[0]-d.o[0])>2||Math.abs(d.cur[1]-d.o[1])>2);
+    if(!moved){ if(/^[ab]\d+$/.test(d.key))toggleHide(d.key); else if(d.cur)d.g.setAttribute('transform',`translate(${d.o[0]},${d.o[1]})`); return; }     // 沒拖動＝點一下：撥桿／按鈕藏起來或放回來（兩支搖桿不能藏）
+    st.layout={...st.layout,[d.key]:d.cur}; st.profile.layout={...st.layout}; setDraftProfile(st.profile); };
+  host.addEventListener('pointerup',end); host.addEventListener('pointercancel',end);
+}
+function toggleHide(key,on){
+  const h=new Set(st.hide||[]); if(on===undefined?!h.has(key):on)h.add(key); else h.delete(key);
+  st.hide=[...h]; if(st.hide.length)st.profile.hide=[...st.hide]; else delete st.profile.hide; setDraftProfile(st.profile); diagKey='';
+}
+/* 同一個開關同時回報成「撥桿」和「按鈕」（例：撥桿 6 一撥，鈕 3 也跟著亮）：兩者一起變了兩次以上、按鈕沒有單獨變過 → 提醒可以把那顆按鈕藏起來 */
+const dup={pb:null,ref:null,bt:{},at:{},pair:{},solo:{},done:{}};
+function dupWatch(gp,cfg){
+  const now=performance.now(), main=new Set(Object.values(cfg.axes||{}).map(a=>a.i));
+  if(!dup.pb||dup.pb.length!==gp.buttons.length){ dup.pb=gp.buttons.map(b=>b.pressed); dup.ref=[...gp.axes]; return; }
+  gp.axes.forEach((v,i)=>{ if(main.has(i))return; if(Math.abs(v-dup.ref[i])>0.6){ dup.ref[i]=v; dup.at[i]=now; } });
+  gp.buttons.forEach((b,i)=>{ if(b.pressed!==dup.pb[i]){ dup.pb[i]=b.pressed; dup.bt[i]={t:now,seen:false}; } });
+  for(const bi in dup.bt){ const e=dup.bt[bi]; if(e.seen)continue;
+    const ai=Object.keys(dup.at).find(a=>Math.abs(dup.at[a]-e.t)<260);
+    if(ai!==undefined){ e.seen=true; const k=bi+'|'+ai; dup.pair[k]=(dup.pair[k]||0)+1; }
+    else if(now-e.t>320){ e.seen=true; dup.solo[bi]=(dup.solo[bi]||0)+1; } }
+  const el=$('dup-msg'); if(!el)return;
+  const hit=Object.keys(dup.pair).find(k=>{ const [bi]=k.split('|'); return dup.pair[k]>=2&&!dup.solo[bi]&&!(st.hide||[]).includes('b'+bi)&&!dup.done[k]; });
+  if(!hit){ if(el.dataset.k){ el.dataset.k=''; el.style.display='none'; } return; }
+  if(el.dataset.k===hit)return; el.dataset.k=hit; const [bi,ai]=hit.split('|');
+  el.style.display=''; el.innerHTML=`<span class="warn">鈕 ${bi} 和撥桿 ${ai} 會一起動，應該是同一個開關。</span> <button id="b-dup-hide">把鈕 ${bi} 從圖上藏起來</button> <button id="b-dup-no">不用</button>`;
+  $('b-dup-hide').onclick=()=>{ toggleHide('b'+bi,true); el.dataset.k=''; el.style.display='none'; };
+  $('b-dup-no').onclick=()=>{ dup.done[hit]=1; el.dataset.k=''; el.style.display='none'; };
+}
 function render(){
+  render0(); mountGuide();
+}
+function render0(){
   renderSteps();
   const S=$('stage'), s=st.step;
   if(s===0){
@@ -198,7 +285,7 @@ function render(){
     S.innerHTML=`<h2>第 2 步：放開歸零</h2><p>抓到：<b class="ok">${esc(st.gpId)}</b></p>
       <p id="recog">${rg.html}</p>${rg.note?`<p class="sub">${rg.note}</p>`:''}
       <p class="big">${rg.known?'要重新設定的話：':''}雙手放開所有搖桿，然後按下面的按鈕</p>
-      <p class="sub">遙控器的油門桿不會自己彈回來沒關係，放著就好。</p>
+      <p class="sub">遙控器的油門桿不會自己彈回來沒關係，放著就好。</p><div id="sg"></div>
       <div class="row"><button class="primary" id="b-rest">✋ 我已經放開了${rg.known?'，重新設定':''}</button><button id="b-again">換一支搖桿</button>${rg.known?'<a class="btn" href="../index.html">不用設定，回入口</a>':''}</div>`;
     // 讀 0.8 秒取平均：有些搖桿（PS5、穿越機手把）放開時數值會在 0 附近一直跳，只讀一瞬間會讀到偏的
     $('b-rest').onclick=()=>{ const gp=curGp(); if(!gp||st.sampling)return;
@@ -207,30 +294,28 @@ function render(){
     $('b-again').onclick=reset;
   }else if(s===2){
     S.innerHTML=`<h2>第 3 步：油門</h2><p class="big">把<b class="warn">油門</b>桿先拉到最下面，再推到最上面，停住</p>
-      <p class="sub">油門＝控制上升下降的那支桿（美國手是左手上下）。</p><p id="hint" class="sub"></p>`;
+      <p class="sub">油門＝控制上升下降的那支桿（美國手是左手上下）。</p><p id="hint" class="sub"></p><div id="sg"></div>`;
   }else if(s===3){
     const t=st.throttleType;
     S.innerHTML=`<h2>第 4 步：油門類型</h2><p class="big">現在把手從油門桿上放開，然後按「放開了」</p>
-      <div class="row"><button class="primary" id="b-rel">✋ 放開了</button></div>
+      <div class="row"><button class="primary" id="b-rel">✋ 放開了</button></div><div id="sg"></div>
       <div id="tt" style="display:${t?'':'none'}">
         <p>偵測結果：<b class="ok" id="tt-txt"></b>　不對的話直接點另一顆改：</p>
         <div class="row">
           <button id="tt-center" class="${t==='center'?'on':''}">會彈回中間（遊戲手把）</button>
           <button id="tt-bottom" class="${t==='bottom'?'on':''}">不會彈回來（無人機遙控器）</button>
-          <button class="primary" id="b-next">下一步 →</button>
         </div>
         <p class="sub">不回中的搖桿：桿子在正中間＝懸停，往下＝下降。可切換彈簧的遙控器，換了彈簧請重跑一次精靈。</p>
       </div>`;
     if(t)$('tt-txt').textContent=(st.detected===t?'':'（已手動改）')+(t==='center'?'油門會回中':'油門不回中（遙控器型）');
     $('b-rel').onclick=()=>{ const gp=curGp(); if(!gp)return; detectThrottleType(gp); render(); };
     if(t){ $('tt-center').onclick=()=>{setThrottleType('center');render();};
-      $('tt-bottom').onclick=()=>{setThrottleType('bottom');render();};
-      $('b-next').onclick=()=>go(4); }
+      $('tt-bottom').onclick=()=>{setThrottleType('bottom');render();}; }
   }else if(s>=4&&s<=6){
     const [name,txt,tip]=[['yaw','把<b class="warn">機頭往右轉</b>的桿推到底，停住','美國手是左手往右。'],
       ['pitch','把<b class="warn">往前飛</b>的桿推到底，停住','美國手是右手往上。'],
       ['roll','把<b class="warn">往右飛</b>的桿推到底，停住','美國手是右手往右。']][s-4];
-    S.innerHTML=`<h2>第 ${s+1} 步：${AXN[name]}</h2><p class="big">${txt}</p><p class="sub">${tip}</p><p id="hint" class="sub"></p>`;
+    S.innerHTML=`<h2>第 ${s+1} 步：${AXN[name]}</h2><p class="big">${txt}</p><p class="sub">${tip}</p><p id="hint" class="sub"></p><div id="sg"></div>`;
   }else if(s===7){
     const b=BTN_STEPS[st.btnStep];
     const how=b[3]==='hold'?'按住你要當「<b class="warn">'+b[1]+'</b>」的按鈕；用撥桿的話，撥到「開」的那一邊'
@@ -249,9 +334,17 @@ function render(){
     else{ $('b-skip').onclick=()=>nextBtn(); $('b-skipall').onclick=()=>finishDetect(); }
   }else if(s===8){
     S.innerHTML=`<h2>第 9 步：確認方向</h2><p>動一動搖桿，畫面上的綠點要跟著你的手走（以美國手配置顯示）。</p>
+      <h2 style="margin-top:6px;text-align:center">① 搖桿範圍檢查</h2>
+      <p class="sub" style="text-align:center">兩支搖桿各沿著邊緣轉一圈，再放開。藍色外框＝推得到的範圍，四個方向都要接近 100%；放開後亮點要回到中間的小圈。</p>
+      <div id="sg8"></div>
+      <div class="row" style="justify-content:center"><button id="b-sg-clear">清除範圍，重畫一次</button><span class="sub" id="sg8-msg"></span></div>
+      <h2 style="margin-top:22px;text-align:center">② 按鍵對照圖</h2>
       <div class="row" style="justify-content:center"><span class="sub">示意圖外型（選最像的，不影響操作）：</span>
         ${SHAPES.map(([k,n])=>`<button data-shape="${k}" class="${(st.profile.shape||'')===k?'on':''}">${n}</button>`).join('')}</div>
       <div id="diag-s8" style="margin-top:8px"></div>
+      <div class="row" id="mv-row" style="justify-content:center;display:none"><button id="b-move">✥ 調整圖上的位置</button><button id="b-move-reset">↺ 位置還原</button>
+        <span class="sub" id="mv-msg">把圖排成跟你手上這支一樣（只改圖，不影響操作）</span></div>
+      <p class="sub" id="dup-msg" style="text-align:center;display:none"></p>
       <div class="lamps" style="margin-top:10px">${BTN_STEPS.map((b,i)=>`<span style="white-space:nowrap"><span class="lamp" id="lamp-${b[0]}">${b[1]}</span><button data-edit="${i}" title="只重設這一顆" style="padding:3px 8px;font-size:11px;margin-left:3px">✎ 改</button></span>`).join('')}</div>
       <p class="sub" style="text-align:center">按按看、撥撥看：圖上那顆和下面的燈會亮。寫「鍵盤」的＝這支搖桿沒指派，飛行時用鍵盤按。<br>
         <b>哪一顆不對，按它旁邊的「✎ 改」只重設那一顆</b>，其他都保留。</p>
@@ -266,6 +359,14 @@ function render(){
         <button class="primary" id="b-save">✅ 方向都對，儲存</button><button class="danger" id="b-redo">方向不對，重做</button></div>
       <p class="sub" id="save-msg"></p>
       <div class="row" id="up-row" style="display:none"><button id="b-upload">☁ 上傳給老師審核（通過後全班都能用）</button><span class="sub" id="up-msg"></span></div>`;
+    guide8=createStickGuide($('sg8'),{pct:true}); guide8.setDemo(null);
+    $('b-sg-clear').onclick=()=>guide8.clearTrace();
+    const isRc=(st.profile.shape||'')==='rc'; $('mv-row').style.display=isRc?'flex':'none'; if(!isRc)moveMode=false;
+    const mvPaint=()=>{ $('b-move').classList.toggle('on',moveMode); $('b-move').textContent=moveMode?'✔ 排好了':'✥ 調整圖上的位置';
+      $('mv-msg').textContent=moveMode?'拖＝移動位置；點一下＝藏起來／放回來（同一個開關重複出現的那顆可以藏起來）':'把圖排成跟你手上這支一樣（只改圖，不影響操作）'; $('diag-s8').classList.toggle('mv-on',moveMode); };
+    $('b-move').onclick=()=>{ moveMode=!moveMode; mvPaint(); diagKey=''; };
+    $('b-move-reset').onclick=()=>{ st.layout={}; st.hide=[]; delete st.profile.layout; delete st.profile.hide; setDraftProfile(st.profile); diagKey=''; dup.done={}; };
+    mvPaint(); bindMove($('diag-s8'));
     $('nm').value=st.name;
     $('nm').oninput=e=>st.name=e.target.value;
     S.querySelectorAll('[data-shape]').forEach(b=>b.onclick=()=>{ st.shape=st.profile.shape=b.dataset.shape; setDraftProfile(st.profile); render(); });
@@ -312,12 +413,16 @@ function render(){
     $('b-redo').onclick=()=>reset();    // 草稿沒寫入，原本的設定原封不動
   }
   // 第 3～8 步都有「上一步」（單顆修改時由「取消」負責）
+  // 2026-10-07 老師回饋「上一步、下一步不明顯」：固定放在最下面一列，左邊上一步、右邊下一步（可以按的時候會發亮）
   if(s>=2&&s<=7&&st.editOne==null){
-    S.insertAdjacentHTML('beforeend','<div class="row"><button id="b-back">← 上一步</button></div>');
+    const can=s===3&&!!st.throttleType;
+    const mid=s===3?(can?'確認油門類型後，按右邊的「下一步」':'先按上面的「✋ 放開了」'):s===7?'按下按鈕（或撥開關）後會自動到下一顆':'照上面的示範做，抓到後會自動到下一步';
+    S.insertAdjacentHTML('beforeend',`<div class="nav"><button id="b-back">← 上一步</button><span class="mid">${mid}</span><button id="b-next"${can?'':' disabled'}>${can?'下一步 →':'自動前往下一步'}</button></div>`);
     $('b-back').onclick=back;
+    if(can)$('b-next').onclick=()=>go(4);
   }
 }
-function go(n){ st.step=n; st.holdT=0; st.cand=null; st.base=null; st.pendSw=null; st.sampling=null; render(); }
+function go(n){ st.step=n; st.thr0=null; st.thrDown=null; st.holdT=0; st.cand=null; st.base=null; st.pendSw=null; st.sampling=null; render(); }
 
 /* ── 偵測邏輯 ── */
 function setThrottleType(t){ st.throttleType=t; }
@@ -346,7 +451,7 @@ function finishDetect(){
   st.axBtns=st.axBtns.filter(a=>!st.used.has(a.ax));     // 重設方向後，被拿去當搖桿軸的撥桿指派作廢
   const buttons={...st.buttons};
   st.profile={id:gp.id,name:niceName(st.gpId),labels:{...st.labels},axes,throttleType:st.throttleType,
-    shape:st.shape||shapeFor(gp,{throttleType:st.throttleType}),
+    shape:st.shape||shapeFor(gp,{throttleType:st.throttleType}),...(Object.keys(st.layout||{}).length?{layout:{...st.layout}}:{}),...((st.hide||[]).length?{hide:[...st.hide]}:{}),
     buttons,axBtns:st.axBtns.slice(),deadzone:+Math.max(0.08,Math.min(0.2,st.noise*3+0.03)).toFixed(3),expo:0,
     author:(()=>{try{return JSON.parse(localStorage.getItem('nd.student'))?.name||'';}catch{return '';}})(),
     created:new Date().toISOString().slice(0,10),browser:env.browser,os:env.os,status:'local'};
@@ -374,6 +479,7 @@ function tick(dt){
   }
   const gp=curGp();
   if(!gp){ const h=$('hint'); if(h)h.innerHTML='<span class="warn">搖桿斷線了，請重新接上。</span>'; return; }
+  if(guide&&s>=1&&s<=6)guide.update(guideVals(gp),{hold:(s===2||s>=4)?st.holdT/HOLD:0});
   drawRaw(gp);
   if(s===1&&st.sampling){
     const sp=st.sampling; sp.t+=dt; sp.n++;
@@ -440,6 +546,11 @@ function tick(dt){
   }else if(s===8&&input){
     input.update(dt);
     const cfg=gpCfgRead(gp), ax=n=>input.gpAxis(gp,n,cfg);
+    if(guide8&&$('sg8')){ guide8.update({L:{x:ax('yaw'),y:ax('throttle')},R:{x:ax('roll'),y:ax('pitch')}},{centerY:{L:cfg.throttleType!=='bottom'}});
+      const rc=guide8.reach(), low=[]; for(const [id,nm] of [['L','左手'],['R','右手']]){ const r=rc[id]; if(r.u+r.d+r.l+r.r<1.5)continue;
+        for(const [k,t] of [['u','上'],['d','下'],['l','左'],['r','右']]) if(r[k]<0.9)low.push(nm+'往'+t+'只到 '+Math.round(r[k]*100)+'%'); }
+      const m=$('sg8-msg'); if(m){ m.textContent=low.length?'⚠ '+low.slice(0,3).join('、')+'：再推到底一次；還是不到就按上面的「重設四個方向」':''; m.className=low.length?'sub warn':'sub'; } }
+    dupWatch(gp,cfg);
     BTN_STEPS.forEach(b=>{ const el=$('lamp-'+b[0]); if(!el)return;
       const ab=cfg.axBtns&&cfg.axBtns.find(a=>a.fn===b[0]);
       const hit=input.gpBtn(gp,b[0],cfg);
@@ -496,8 +607,8 @@ function tickDiagram(dt){
   if(!gp||!host)return;
   const inp=s8?input:viewInput; if(!s8)inp.update(dt);
   const cfg=gpCfgRead(gp), shape=shapeFor(gp,cfg);
-  const key=(s8?'8':'v')+gp.id+shape+gp.axes.length+'/'+gp.buttons.length+JSON.stringify([cfg?.buttons,cfg?.axBtns,cfg?.axes,cfg?.labels]);
-  if(key!==diagKey||!host.firstChild){ diagKey=key; diag=buildDiagram(host,{shape,gp,cfg});
+  const key=(s8?'8':'v')+gp.id+shape+gp.axes.length+'/'+gp.buttons.length+JSON.stringify([cfg?.buttons,cfg?.axBtns,cfg?.axes,cfg?.labels,cfg?.layout,cfg?.hide,s8&&moveMode]);
+  if(key!==diagKey||!host.firstChild){ diagKey=key; diag=buildDiagram(host,{shape,gp,cfg,edit:!!(s8&&moveMode)});
     if(!s8)$('view-name').innerHTML=`<b class="ok">${esc(cfg?.profileName||gp.id.substring(0,50))}</b>　${cfg?.profileName?'（用設定檔）':'（內建／標準設定）'}`; }
   diag.update(gp,inp,cfg);
 }

@@ -7,7 +7,8 @@
           斷網就留在佇列，恢復連線或下次開頁面自動補送。沒登入雲端＝不上傳，跟以前一樣只存本機。
    · 關卡不用改：progress.js 會自己載入這個檔並掛上 hook。
    ============================================================ */
-import { cloudInit, cloudUrl, cloudPost, cloudGet } from '../core/cloud-api.js';
+import { cloudInit, cloudUrl, cloudPost, cloudGet, localMode } from '../core/cloud-api.js';
+import { localEnqueue, localFlush } from './local-sync.js';
 import { ownerKeyOf, switchOwner } from './owner.js';
 
 const Q_KEY='nd.cloud.queue', AUTH_KEY='nd.cloud.auth', MAX_Q=200;
@@ -94,6 +95,10 @@ export async function login({school,classId,seat,name,pw},opt={}){
 
 /* progress.record() 之後呼叫：排進佇列並試著送出 */
 export function enqueue(levelId,result,merged,badges){
+  if(localMode()){      // 平板連老師的筆電上課：交給筆電的成績收件匣（data/local-sync.js），不找雲端
+    let s=null; try{ s=JSON.parse(localStorage.getItem('nd.student')||'null'); }catch{}
+    return localEnqueue(s,levelId,result,merged,badges);
+  }
   const a=auth(); if(!a)return;                       // 沒登入雲端＝只存本機
   const q=get(Q_KEY,[]);
   let metrics=result&&result.metrics||{}; try{ if(JSON.stringify(metrics).length>1400)metrics={note:'略'}; }catch{ metrics={}; }
@@ -111,7 +116,7 @@ export function enqueue(levelId,result,merged,badges){
 export async function flush(){
   if(_flushing)return; _flushing=true;
   try{
-    await cloudInit(); const a=auth();
+    await cloudInit(); if(localMode()){ localFlush(); return; } const a=auth();
     if(!cloudUrl()||!a)return;
     for(;;){
       const q=get(Q_KEY,[]); if(!q.length)break;
