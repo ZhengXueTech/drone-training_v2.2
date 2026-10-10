@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>newdrone｜改裝賽道：城市高樓</title>
+<!-- ============================================================
+     race-city.html — 改裝賽道第 3 條「城市高樓」（2026-10-10，第二階段；老師：做到 5 條以上、三個主題盡量不同）
+     · 大樓之間的街道穿梭，有一段要爬到屋頂高度飛越矮樓、一段穿過兩棟大樓之間的空橋下方
+     · 🌀 亂流區（大樓之間的風）：在裡面會被一陣一陣吹晃；機體越重越穩（大容量電池、護框有好處）
+     · 大樓會撞（撞到掉電、被彈開）；可以停在屋頂上（不算撞）
+     ============================================================ -->
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1a2e;font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #count{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);font-size:96px;color:#00eeff;font-weight:bold;
+    text-shadow:0 0 30px rgba(0,238,255,.7);pointer-events:none;z-index:30;display:none;}
+  #lap{position:fixed;right:12px;top:150px;z-index:21;background:rgba(6,16,28,.82);border:1px solid rgba(0,238,255,.5);border-radius:10px;
+    padding:6px 12px;color:#e6f7ff;font-size:13px;line-height:1.6;pointer-events:none;min-width:120px;}
+  #lap b{color:#00eeff;font-size:16px;}
+  body.nd-portrait #lap{top:110px;font-size:11px;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="count"></div>
+<div id="lap"></div>
+<script type="module">
+import * as THREE from 'three';
+import { runRace } from '../core/race.js';
+let seed=20261010; const rnd=()=>((seed=(seed*1664525+1013904223)>>>0)/4294967296);
+const CP=[[0,2.6,20],[15,3,19],[25,4.5,8],[24,9,-6],[12,11,-15],[-6,6,-18],[-19,3,-12],[-26,4,2],[-18,8.5,13],[-8,3.2,19]].map(a=>new THREE.Vector3(...a));
+const curve=new THREE.CatmullRomCurve3(CP,true,'catmullrom',0.5);
+const N=14, pts=curve.getSpacedPoints(N).slice(0,N);
+const BOOST=[3,10], CHARGE=[7];
+const rings=pts.map((p,i)=>({p,kind:BOOST.includes(i)?'boost':CHARGE.includes(i)?'charge':'ring',r:i===0?2.2:1.8}));
+const path=curve.getSpacedPoints(200), BX=34, BZ=26;
+const boxes=[], blds=[];
+/* 空橋：第 5 個控制點上方（環在橋下），兩端各一棟大樓 */
+const BR=CP[5];
+blds.push({x:BR.x,z:BR.z-6.5,w:4.5,d:3.5,h:15,c:0x4a5a78},{x:BR.x,z:BR.z+6.5,w:4.5,d:3.5,h:13,c:0x55607a});
+const bridge={x:BR.x,z:BR.z,w:1.6,d:9.5,h:9.4,y0:8.2};
+/* 街區：每 8 公尺一棟，太靠近航線就變矮（可以飛越屋頂）或拿掉 */
+for(let gx=-28;gx<=28;gx+=8)for(let gz=-20;gz<=20;gz+=8){
+  const x=gx+(rnd()-0.5)*2, z=gz+(rnd()-0.5)*2, w=4+rnd()*1.6, d=4+rnd()*1.6; let h=6+rnd()*12;
+  if(Math.hypot(x+7,z-23)<6||Math.hypot(x-0,z-20)<5)continue;                                // 停機坪、起點
+  if(blds.some(b=>Math.abs(b.x-x)<(b.w+w)/2+1&&Math.abs(b.z-z)<(b.d+d)/2+1))continue;
+  let low=1e9; for(const q of path){ if(Math.abs(q.x-x)<w/2+3.4&&Math.abs(q.z-z)<d/2+3.4)low=Math.min(low,q.y); }
+  if(low<1e9){ if(low>=6.5)h=Math.min(h,low-3); else continue; }
+  blds.push({x,z,w,d,h,c:[0x3b4a66,0x4a5a78,0x56627d,0x34405a][Math.floor(rnd()*4)]});
+}
+for(const b of blds)boxes.push({x:b.x,z:b.z,w:b.w,d:b.d,h:b.h});
+boxes.push(bridge);
+/* 亂流區：大樓夾起來的兩段街道 */
+const zA=curve.getPointAt(0.3), zB=curve.getPointAt(0.66);
+const zones=[{x:zA.x,z:zA.z,r:4.5,y0:0,h:14,k:7},{x:zB.x,z:zB.z,r:4.5,y0:0,h:14,k:7}];
+function winTex(){ const c=document.createElement('canvas'); c.width=64; c.height=128; const g=c.getContext('2d');
+  g.fillStyle='#ffffff'; g.fillRect(0,0,64,128);
+  for(let y=6;y<128;y+=14)for(let x=5;x<64;x+=15){ g.fillStyle=rnd()<0.45?'#ffe9a8':'#6b7a95'; g.fillRect(x,y,9,8); }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t; }
+function decorate(scene){
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(BX*2,BZ*2),new THREE.MeshStandardMaterial({color:0x2a2f38,roughness:1}));
+  ground.rotation.x=-Math.PI/2; ground.position.y=0.01; ground.receiveShadow=true; scene.add(ground);
+  const tex=winTex();
+  for(const b of blds){ const t=tex.clone(); t.needsUpdate=true; t.repeat.set(Math.max(1,Math.round(b.w/3)),Math.max(1,Math.round(b.h/4)));
+    const m=new THREE.Mesh(new THREE.BoxGeometry(b.w,b.h,b.d),new THREE.MeshStandardMaterial({color:b.c,map:t,roughness:0.8}));
+    m.position.set(b.x,b.h/2,b.z); m.castShadow=m.receiveShadow=true; scene.add(m);
+    const roof=new THREE.Mesh(new THREE.BoxGeometry(b.w+0.2,0.2,b.d+0.2),new THREE.MeshStandardMaterial({color:0x222833})); roof.position.set(b.x,b.h+0.1,b.z); scene.add(roof); }
+  const br=new THREE.Mesh(new THREE.BoxGeometry(bridge.w,bridge.h-bridge.y0,bridge.d),new THREE.MeshStandardMaterial({color:0x9fb3c8,metalness:0.3,roughness:0.4}));
+  br.position.set(bridge.x,(bridge.h+bridge.y0)/2,bridge.z); scene.add(br);
+  /* 亂流區：半透明的旋轉風圈 */
+  const grp=[];
+  for(const z of zones){ const g=new THREE.Group(); g.position.set(z.x,0,z.z);
+    for(let k=0;k<5;k++){ const r=new THREE.Mesh(new THREE.TorusGeometry(z.r*(0.55+k*0.1),0.05,6,40),new THREE.MeshBasicMaterial({color:0x93c5fd,transparent:true,opacity:0.28}));
+      r.rotation.x=Math.PI/2+(k-2)*0.12; r.position.y=1.5+k*2.2; g.add(r); }
+    const col=new THREE.Mesh(new THREE.CylinderGeometry(z.r,z.r,z.h,24,1,true),new THREE.MeshBasicMaterial({color:0x60a5fa,transparent:true,opacity:0.06,side:THREE.DoubleSide,depthWrite:false}));
+    col.position.y=z.h/2; g.add(col); scene.add(g); grp.push(g); }
+  const spin=()=>{ grp.forEach((g,i)=>{ g.rotation.y+=0.03+i*0.01; }); requestAnimationFrame(spin); }; spin();
+}
+const dir=pts[1].clone().sub(pts[N-1]).setY(0).normalize();
+runRace({levelId:'race-city',title:'城市高樓',bounds:{x:BX,z:BZ,y:16},sky:0x1a2238,fog:[30,80],rings,boxes,zones,decorate,
+  pit:new THREE.Vector3(-7,0,23),pitHint:'起點左後方的廣場',pitSignYaw:-Math.PI/2,
+  spawn:pts[0].clone().addScaledVector(dir,-4.5).setY(1.2),spawnYaw:Math.atan2(-dir.x,-dir.z),laps:3,
+  introHtml:'<p>🏙️ 大樓之間穿梭：<b>大樓會撞</b>（可以停在屋頂上）。有一段要<b>爬到屋頂高度</b>飛越矮樓、一段穿過<b>空橋下方</b>。</p><p>🌀 <b>藍色風圈＝亂流區</b>：會被一陣一陣吹晃，要一直小修正。<b>機體越重越穩</b>——大容量電池、護框在這裡有好處，但也比較慢，自己取捨。</p>'});
+</script>
+</body>
+</html>

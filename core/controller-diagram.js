@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    controller-diagram.js — 搖桿示意圖（Phase 7，2026-10-05）
    ------------------------------------------------------------
@@ -10,7 +11,7 @@
    功能標籤照設定檔；按鈕按下、撥桿撥動、桿子推動都會即時顯示。
    不依賴 three.js。
    ============================================================ */
-import { DEF_BTN } from './input.js';
+import { DEF_BTN, handSwapFor } from './input.js';
 
 export const SHAPES=[['pad-asym','手把（左桿在上）'],['pad-sym','手把（雙桿在下）'],['rc','遙控器']];
 export const FN_LABEL={confirm:'確認',back:'返回／暫停',gear:'檔位',mode:'模式',camCycle:'視角',pilotCycle:'站位',
@@ -107,7 +108,8 @@ export function buildDiagram(host,{shape,gp,cfg,edit}){
     if(std&&cfg?.axes){ fnBased=false;
       const cap=(ix,iy)=>{ const f=i=>{ const n=Object.keys(cfg.axes).find(k=>cfg.axes[k].i===i); return n?AX_LABEL[n]:'—'; };
         return `上下＝${f(iy)}　左右＝${f(ix)}`; };
-      capL=cap(0,1); capR=cap(2,3); }
+      capL=cap(0,1); capR=cap(2,3);
+      if(handSwapFor(cfg)){ const sw=t=>t.replace(/油門|前後/g,m=>m==='油門'?'前後':'油門'); capL=sw(capL)+'（日本手）'; capR=sw(capR); } }
   }
   // 沒指派到搖桿上的功能 → 提醒用鍵盤
   const have=new Set([...Object.values(map.btn),...Object.values(map.ax)].flat());

@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    systems/yaw-drone.js — C1 家族共用物理（ES Module）v1.0
    newdrone Phase 5｜抽出自 systems/soccer.js 的 SoccerDrone（不動 soccer.js 本體）

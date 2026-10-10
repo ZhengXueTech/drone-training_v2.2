@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
@@ -56,7 +57,8 @@ import { checkRingPass, ScoreKeeper } from '../core/systems/scoring.js';
 import { sfx } from '../core/audio.js';
 import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
-import { Challenge } from '../core/challenge.js';   // 2026-10-01 檔位（G／手把 Y）
+import { Challenge } from '../core/challenge.js';
+import { createXR } from '../core/xr.js';         // 2026-10-08 VR 模式（Quest）   // 2026-10-01 檔位（G／手把 Y）
 
 const LEVEL=getLevel('acro-freeflight');
 progress.migrateLegacy();
@@ -105,6 +107,12 @@ const rings=[
 ];
 rings.forEach((r,i)=>{r.rotation.y=[0.4,-0.8,1.2][i];engine.scene.add(r);});
 let ringCount=0, flightTime=0;
+
+/* ── VR 模式（2026-10-08）：站在場地南側邊線外看；進入 VR 會自動開始飛行 ── */
+const xr=createXR(engine,{stand:new THREE.Vector3(0,0,BOUND+1.5),
+  onStart:()=>{ if(!engine.simStarted)startGame(); if(engine.paused)togglePause(); },
+  onEnd:()=>{ hud.toast('已離開 VR','ok'); },
+  onButton:k=>{ if(k==='A'&&engine.simStarted)toggleBaseMode(); }});
 
 /* ── 模式：baseMode 是玩家自己選的持續狀態（M 鍵切換，跟其他訓練場慣例相同）；
    selfLevelHeld 是「按著才生效」的安全網——放開立刻回到 baseMode，
@@ -255,7 +263,8 @@ engine.start((dt,simStarted)=>{
   input.update(dt);
   ui.update(dt);
   if(engine.paused)return;
-  const p=input.player(0);
+  const p=xr.active?xr.player(input.player(0)):input.player(0);
+  xr.update(dt,drone);
   hud.setGpBar(p.device,{keyboard:'<kbd>G</kbd>檔位 <kbd>Space</kbd>自穩',
     gamepad:'<kbd>{mode}</kbd>切模式 <kbd>{selfLevel}</kbd>自穩 <kbd>{back}</kbd>暫停/結束',touch:'👆模式鈕・自穩鈕'});
   if(p.device==='gamepad'){
@@ -277,7 +286,7 @@ engine.start((dt,simStarted)=>{
     selfLevelGp=false;
   }
   const wasHeld=selfLevelHeld;
-  selfLevelHeld=selfLevelKey||selfLevelGp||selfLevelTouch;
+  selfLevelHeld=selfLevelKey||selfLevelGp||selfLevelTouch||xr.selfLevel;
   if(selfLevelHeld&&!wasHeld)selfLevelUses++;
   drone.mode=selfLevelHeld?'arcade':baseMode;
   if(simStarted){
@@ -301,14 +310,15 @@ engine.start((dt,simStarted)=>{
   }
   mesh.position.copy(drone.pos);
   mesh.quaternion.copy(drone.q);
-  mesh.visible=(rig.mode!=='fpv');
+  mesh.visible=xr.active||(rig.mode!=='fpv');
   if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*3.2;
   if(beacon&&beacon.visible){
     const d=engine.camera.position.distanceTo(drone.pos);
     beacon.scale.setScalar(THREE.MathUtils.clamp(d/12,1,2.8));
   }
   rig.portrait=hud.portrait;
-  rig.update(dt,drone,mesh);
+  if(!xr.active)rig.update(dt,drone,mesh);
+  else xr.setBoard([`${MODE_LABEL[drone.mode]||drone.mode}模式｜${xr.view==='side'?'場邊視角':'跟機視角'}`,`穿環 ${ringCount}　高度 ${drone.pos.y.toFixed(1)} m`,'右扳機＝自穩　A＝模式　B＝視角','X＝離開 VR']);
   hud.setTelemetry(drone.pos.y,drone.speed());
   hud.setProgress(`穿環 ${ringCount}・自穩 ${selfLevelUses} 次`);
   hud.setScore(score.score);

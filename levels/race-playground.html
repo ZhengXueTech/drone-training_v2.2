@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>newdrone｜改裝賽道：操場入門</title>
+<!-- ============================================================
+     race-playground.html — 改裝賽道第 1 條「操場入門」（2026-10-09，第一階段）
+     老師定案：像瑪利歐賽車的穿圈賽道；機體用機庫（pages/garage.html）組的；
+     第一階段＝計時賽＋幽靈機＋進站換電池＋加速環／充電環。
+     · 3 圈，依序穿過 10 個環（下一個環會亮），橘環＝加速、綠環＝充電 10%
+     · 電量低於 20% 會越來越沒力；降落到起點旁的「PIT」停機坪停 3 秒＝換滿電池
+     · 撞牆會掉電（護框機架掉比較少）
+     · 幽靈機＝自己這條賽道最快的那一次，半透明一起飛
+     成績＝3 圈總秒數（越少越好，data/score-rule.js 已列入）。
+     ============================================================ -->
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1a2e;font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #count{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);font-size:96px;color:#00eeff;font-weight:bold;
+    text-shadow:0 0 30px rgba(0,238,255,.7);pointer-events:none;z-index:30;display:none;}
+  #lap{position:fixed;right:12px;top:150px;z-index:21;background:rgba(6,16,28,.82);border:1px solid rgba(0,238,255,.5);border-radius:10px;
+    padding:6px 12px;color:#e6f7ff;font-size:13px;line-height:1.6;pointer-events:none;min-width:120px;}
+  #lap b{color:#00eeff;font-size:16px;}
+  body.nd-portrait #lap{top:110px;font-size:11px;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="count"></div>
+<div id="lap"></div>
+<script type="module">
+import * as THREE from 'three';
+import { runRace } from '../core/race.js';   // 2026-10-09 第二階段：賽道規則抽到 core/race.js，這裡只放賽道資料（行為跟第一階段相同）
+/* 賽道：橢圓上 10 個環，高度起伏；橘環＝加速（第 3、7 環）、綠環＝充電（第 5 環） */
+const A=19, B=12, N=10, BOOST=[3,7], CHARGE=[5];
+const rings=[];
+for(let i=0;i<N;i++){
+  const th=i/N*Math.PI*2;
+  rings.push({p:new THREE.Vector3(A*Math.sin(th),2.2+1.6*Math.sin(th*2+0.8)+(i===0?0:0.4),B*Math.cos(th)),
+    kind:BOOST.includes(i)?'boost':CHARGE.includes(i)?'charge':'ring'});
+}
+runRace({levelId:'race-playground',title:'操場入門',bounds:{x:26,z:18,y:10},rings,
+  pit:new THREE.Vector3(-7,0,16),pitHint:'起點左後方',pitSignYaw:-Math.PI/2,
+  spawn:new THREE.Vector3(-4.5,1.2,B),spawnYaw:-Math.PI/2,laps:3});
+</script>
+</body>
+</html>

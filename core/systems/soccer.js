@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    systems/soccer.js — FAI 無人機足球核心（ES Module）v1.0
    newdrone Phase 1｜移植自基本版 soccer-match.html（手感優先）

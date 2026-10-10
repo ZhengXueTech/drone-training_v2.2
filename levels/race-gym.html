@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>newdrone｜改裝賽道：室內體育館</title>
+<!-- ============================================================
+     race-gym.html — 改裝賽道第 4 條「室內體育館」（2026-10-10，第二階段）
+     · 小場地、有天花板（7 公尺）：一圈很短、環比較小，比的是精準和轉彎，不是極速
+     · 籃球架、排球網、看台、吊掛的橫幅都會撞；橫幅下方要壓低高度穿過
+     · 高速馬達在這裡不一定划算——小槳轉向靈活、輕量機架好控制
+     ============================================================ -->
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1a2e;font-family:'Share Tech Mono','Consolas',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+  body.nd-portrait #c{height:60%;}
+  #count{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);font-size:96px;color:#00eeff;font-weight:bold;
+    text-shadow:0 0 30px rgba(0,238,255,.7);pointer-events:none;z-index:30;display:none;}
+  #lap{position:fixed;right:12px;top:150px;z-index:21;background:rgba(6,16,28,.82);border:1px solid rgba(0,238,255,.5);border-radius:10px;
+    padding:6px 12px;color:#e6f7ff;font-size:13px;line-height:1.6;pointer-events:none;min-width:120px;}
+  #lap b{color:#00eeff;font-size:16px;}
+  body.nd-portrait #lap{top:110px;font-size:11px;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="count"></div>
+<div id="lap"></div>
+<script type="module">
+import * as THREE from 'three';
+import { runRace } from '../core/race.js';
+const CP=[[0,2,8.5],[9,1.6,8.2],[15,2.6,3],[14.5,2.2,-5],[8,4.2,-8.6],[-2,1.6,-8.6],[-11,2.4,-7.5],[-15.5,3,-1],[-13,1.8,6],[-6,3.6,9]].map(a=>new THREE.Vector3(...a));
+const curve=new THREE.CatmullRomCurve3(CP,true,'catmullrom',0.5);
+const N=12, pts=curve.getSpacedPoints(N).slice(0,N);
+const BOOST=[3], CHARGE=[8];
+const rings=pts.map((p,i)=>({p,kind:BOOST.includes(i)?'boost':CHARGE.includes(i)?'charge':'ring',r:i===0?1.9:1.5}));
+const BX=19, BZ=12, CEIL=7.2;
+const boxes=[
+  {x:0,z:0,w:0.12,d:9,h:2.45,y0:1.4},                          // 排球網（場中央）
+  {x:0,z:-4.6,w:0.2,d:0.2,h:2.5},{x:0,z:4.6,w:0.2,d:0.2,h:2.5}, // 網柱
+  {x:-17.8,z:0,w:0.2,d:1.8,h:4.1,y0:2.9},{x:17.8,z:0,w:0.2,d:1.8,h:4.1,y0:2.9},   // 籃板
+  {x:-18.6,z:0,w:1.2,d:0.5,h:4},{x:18.6,z:0,w:1.2,d:0.5,h:4},                     // 籃架
+  {x:0,z:-11.4,w:24,d:1.2,h:1.2},{x:0,z:-11.9,w:24,d:0.6,h:2.0},                   // 看台（北側，兩階）
+];
+/* 吊掛的橫幅：在兩個環的中間，要從下面壓低穿過 */
+const banners=[0.27,0.6].map(t=>{ const p=curve.getPointAt(t), tg=curve.getTangentAt(t); const across=Math.abs(tg.x)>Math.abs(tg.z);
+  return {x:p.x,z:p.z,w:across?0.15:5,d:across?5:0.15,h:CEIL,y0:Math.max(3.4,p.y+1.6)}; });
+boxes.push(...banners);
+/* 場上的標竿（繞過去）：在環與環中間偏一側 */
+const obstacles=[];
+for(let i=0;i<N;i+=2){ const t=(i+0.5)/N, p=curve.getPointAt(t), tg=curve.getTangentAt(t), s=i%4?1:-1;
+  const x=p.x+tg.z*1.9*s, z=p.z-tg.x*1.9*s; if(Math.abs(x)<BX-0.8&&Math.abs(z)<BZ-0.8)obstacles.push({x,z,r:0.12,h:2.2}); }
+function decorate(scene){
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(BX*2+8,BZ*2+8),new THREE.MeshStandardMaterial({color:0xb7834a,roughness:0.6}));
+  floor.rotation.x=-Math.PI/2; floor.position.y=0.012; floor.receiveShadow=true; scene.add(floor);
+  const lineM=new THREE.MeshBasicMaterial({color:0xffffff});
+  const addLine=(x,z,w,d)=>{ const l=new THREE.Mesh(new THREE.PlaneGeometry(w,d),lineM); l.rotation.x=-Math.PI/2; l.position.set(x,0.02,z); scene.add(l); };
+  addLine(0,0,0.1,BZ*1.6); addLine(0,BZ*0.8,BX*1.6,0.1); addLine(0,-BZ*0.8,BX*1.6,0.1); addLine(BX*0.8,0,0.1,BZ*1.6); addLine(-BX*0.8,0,0.1,BZ*1.6);
+  const cc=new THREE.Mesh(new THREE.RingGeometry(2.4,2.5,48),lineM); cc.rotation.x=-Math.PI/2; cc.position.y=0.02; scene.add(cc);
+  /* 牆和天花板 */
+  const wallM=new THREE.MeshStandardMaterial({color:0xd9dde3,roughness:0.9,side:THREE.BackSide});
+  const hall=new THREE.Mesh(new THREE.BoxGeometry(BX*2+8,CEIL+0.6,BZ*2+8),wallM); hall.position.y=(CEIL+0.6)/2; scene.add(hall);
+  for(let x=-15;x<=15;x+=6)for(const z of [-6,6]){ const lp=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.1,0.8),new THREE.MeshBasicMaterial({color:0xfffbe6})); lp.position.set(x,CEIL+0.2,z); scene.add(lp); }
+  const pl=new THREE.PointLight(0xfff4dd,40,40); pl.position.set(0,CEIL-0.5,0); scene.add(pl);
+  /* 障礙物外觀 */
+  const mk=(b,c,o=1)=>{ const m=new THREE.Mesh(new THREE.BoxGeometry(b.w,b.h-(b.y0||0),b.d),new THREE.MeshStandardMaterial({color:c,transparent:o<1,opacity:o})); m.position.set(b.x,((b.h)+(b.y0||0))/2,b.z); m.castShadow=true; scene.add(m); };
+  mk(boxes[0],0xffffff,0.55); mk(boxes[1],0x444444); mk(boxes[2],0x444444); mk(boxes[3],0xf5f5f5,0.85); mk(boxes[4],0xf5f5f5,0.85); mk(boxes[5],0x1f2937); mk(boxes[6],0x1f2937);
+  mk(boxes[7],0x2563eb); mk(boxes[8],0x1d4ed8);
+  banners.forEach((b,i)=>{ const h=1.1, m=new THREE.Mesh(new THREE.BoxGeometry(b.w,h,b.d),new THREE.MeshStandardMaterial({color:i?0xdc2626:0x16a34a})); m.position.set(b.x,b.y0+h/2,b.z); scene.add(m);
+    const rope=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,CEIL-b.y0-h),new THREE.MeshBasicMaterial({color:0x333333})); rope.position.set(b.x,(CEIL+b.y0+h)/2,b.z); scene.add(rope); });
+  for(const o of obstacles){ const p=new THREE.Mesh(new THREE.CylinderGeometry(o.r,o.r*1.4,o.h,8),new THREE.MeshStandardMaterial({color:0xf97316})); p.position.set(o.x,o.h/2,o.z); scene.add(p); }
+  const rim=n=>{ const r=new THREE.Mesh(new THREE.TorusGeometry(0.25,0.025,6,20),new THREE.MeshBasicMaterial({color:0xff5500})); r.rotation.x=Math.PI/2; r.position.set(n*17.4,3.05,0); scene.add(r); }; rim(-1); rim(1);
+}
+const dir=pts[1].clone().sub(pts[N-1]).setY(0).normalize();
+runRace({levelId:'race-gym',title:'室內體育館',bounds:{x:BX,z:BZ,y:CEIL},sky:0x2b2f36,rings,boxes,obstacles,decorate,
+  pit:new THREE.Vector3(-7,0,1.5),pitHint:'場地中間偏左（排球網旁邊）',pitSignYaw:Math.PI/2,
+  spawn:pts[0].clone().addScaledVector(dir,-3.5).setY(1.2),spawnYaw:Math.atan2(-dir.x,-dir.z),laps:3,
+  introHtml:'<p>🏀 室內小場地：<b>天花板只有 7 公尺</b>，環比較小、一圈很短，比的是<b>精準和轉彎</b>。</p><p>排球網、籃球架、看台、橘色標竿都會撞；兩條<b>吊掛的橫幅</b>要從下面壓低穿過。高速馬達在這裡不一定划算！</p>'});
+</script>
+</body>
+</html>

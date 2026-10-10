@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
@@ -121,6 +122,7 @@
 <footer>
   需以本機伺服器開啟（雙擊「啟動模擬器.bat」或 python -m http.server）——ES Modules 不支援 file:// 直開。<br>
   基本版（無人機飛行器_基本版）完全未更動，隨時可退回使用。
+  <div id="nd-license" style="margin-top:6px">© 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0：歡迎教學使用與分享，請標示作者、不得商用、改作請用相同條款｜<a href="pages/about.html" style="color:inherit;text-decoration:underline">關於與授權</a></div>
 </footer>
 <script type="module">
 import { localMode, edition, cloudInit, cloudUrl, schoolList, refreshSchools, centerUrl, classInfo, classLookup, classSet, classClear } from './core/cloud-api.js';
@@ -128,6 +130,7 @@ import { login as cloudLogin, status as cloudStatus, auth as cloudAuth, onCloudS
 const cloudOn=()=>!!cloudUrl();
 import { LEVELS } from './data/levels-manifest.js';
 import { progress } from './data/progress.js';
+import { getHand, toggleHand, handLabel, handDesc } from './core/hand.js';   // 2026-10-10 美國手／日本手
 import { CATEGORIES } from './data/level-categories.js';
 import { GATED, gateState, bindEgg, gateReady } from './data/gate.js';
 import { ownerStrict } from './data/owner.js';
@@ -282,6 +285,10 @@ function renderIdentityBadge(){
       :'<span id="id-cloud" style="color:#4ade80">📥 成績會交給老師的電腦</span>'; }
   el.innerHTML=`👤 <b>${esc(s.name)}</b>${meta?'　'+meta:''}${cloud?'　'+cloud:''}<button id="btn-edit-id">${anyCloud&&!cloudStatus().loggedIn?'登入':'修改'}</button>`;
   document.getElementById('btn-edit-id').addEventListener('click',()=>showIdentityGate(true));
+  // 2026-10-10 美國手／日本手：跟著這位飛手記，按一下切換（暫停選單也能切）
+  { const hb=document.createElement('button'); hb.id='btn-hand'; hb.title='美國手：左手油門／日本手：右手油門。按一下切換';
+    hb.textContent='✋ '+handLabel(); hb.addEventListener('click',()=>{ toggleHand(); hb.textContent='✋ '+handLabel(); toastMsg('已切換成 '+handLabel()+'：'+handDesc()); });
+    el.appendChild(hb); }
   // 考場代碼（要登入雲端才有）：沒在考＝「輸入考場代碼」；考核中＝顯示代碼、剩幾次、進入／結束
   if(cloudOn()&&cloudStatus().loggedIn){
     const ex=examState(), box=document.createElement('span'); box.id='id-exam'; box.style.marginLeft='6px';

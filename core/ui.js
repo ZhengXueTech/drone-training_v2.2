@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    ui.js — Modal 與搖桿選單焦點系統（ES Module）
    newdrone Phase 0｜gpSetFocus/gpNav/gpConfirm 全系統唯一實作
@@ -5,6 +6,7 @@
    ============================================================ */
 import { showKeys, keysVisible } from './keys-overlay.js';
 import { rewriteButtons, patchBackLinks } from './nav-flow.js';
+import { getHand, toggleHand, handLabel } from './hand.js';   // 2026-10-10 暫停選單切換美國手／日本手
 import { YawHold } from './gp-hold.js';                          // 2026-10-06 左搖桿左右推住＝確認／返回（沒有 A、B 鍵的遙控器用）   // 2026-10-05 關卡動線（離開回原分頁、下一關）
 
 'use strict';
@@ -61,6 +63,12 @@ export class UI{
     if(/暫停/.test(title)&&!buttons.some(b=>b.id==='b-keys')){
       let hasGp=false; try{ hasGp=[...(navigator.getGamepads?.()||[])].some(Boolean); }catch{}
       if(hasGp)buttons=[...buttons,{id:'b-keys',label:'🎮 按鍵圖',onClick:()=>showKeys({mode:'overlay'})}];
+    }
+    // 暫停選單多一顆「✋ 美國手／日本手」：按一下切換，不關選單（2026-10-10）
+    if(/暫停/.test(title)&&!buttons.some(b=>b.id==='b-hand')){
+      const hb={id:'b-hand',label:'✋ '+handLabel()+'｜按一下切換',onClick:()=>{ toggleHand(); const b=document.getElementById('b-hand'); if(b)b.textContent='✋ '+handLabel()+'｜按一下切換'; }};
+      const at=buttons.findIndex(b=>navAdded.includes(b.id)||b.id==='b-keys');   // 放在「回關卡列表／回首頁」前面
+      buttons=at<0?[...buttons,hb]:[...buttons.slice(0,at),hb,...buttons.slice(at)];
     }
     const bg=document.createElement('div');
     bg.className='nd-modal-bg'+(align==='top'?' nd-modal-bg--top':'');

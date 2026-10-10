@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    challenge.js — 挑戰條件系統（2026-10-01 新增，規劃書 v2.0 §3.9）
    ------------------------------------------------------------
@@ -16,6 +17,8 @@
      progress.record(id,{...result,...ch.recordFields()})
    ============================================================ */
 import { WindSystem } from './systems/wind.js';
+import './fault.js';
+import './tutorial.js';   // 2026-10-10 📖 飛之前的操作教學（親子體驗）   // 2026-10-08 🎲 神秘故障：import 就生效（開始畫面多一顆按鈕，預設關）
 
 const STORE='nd.settings.challenge';
 import { challengeAllow, WIND_LEVELS, GEAR_LABEL, loadPkConditions, savePkConditions, conditionTag } from './challenge-rules.js';

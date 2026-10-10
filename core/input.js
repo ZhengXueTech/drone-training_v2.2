@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    input.js — 三裝置統一輸入層（ES Module）
    newdrone Phase 1｜自基本版 exp/gamepad.js 升級
@@ -16,6 +17,7 @@
    v2.4：新增 crouch（蹲姿）按鈕語意——LB/b4；STARTRC 無空撥段故不支援
    ============================================================ */
 'use strict';
+import { getHand } from './hand.js';   // 2026-10-10 美國手／日本手（跟著飛手記）
 import { profileFor, profileToCfg, fetchFileProfiles, fetchCloudProfiles } from './controller-profiles.js';
 
 /* Phase 7（2026-10-04）：啟動時讀老師放進資料夾的搖桿設定檔；讀不到就當沒有 */
@@ -86,6 +88,10 @@ export function gpCfgRead(gp){
   try{return JSON.parse(localStorage.getItem(STORE_GPMAP)||'{}')[gp.id]||null;}catch{return null;}
 }
 
+/* 2026-10-10 日本手：只對「手把外型」的內建設定（Xbox／PS／PS2 轉接）把油門和前後對調；
+   搖桿精靈或設定檔（遙控器）是照功能指派的，照實體走、不對調；沒有設定（cfg=null）的手把在 gpAxis 已依 flightMode 選軸。 */
+export function handSwapFor(cfg){ return getHand()==='1'&&(cfg===_XBOX_360_CFG||cfg===_XBOX_ONE_HID_CFG||cfg===_PS2_USB_CFG); }
+function _swapTP(o){ const t=o.throttle; o.throttle=o.pitch; o.pitch=t; return o; }
 function _expo(v,e){return e>0?v*(1-e)+v*v*v*e:v;}
 const _clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
@@ -222,7 +228,7 @@ export class InputManager{
     this.backPauses=opts.backPauses!==false; this._backPrev=false;
     this._btnPrev={};          // 按鈕邊緣偵測
     this._menu={x:0,y:0,heldT:0,repT:0,armedX:true,armedY:true};
-    this.flightMode=()=>{try{return localStorage.getItem(STORE_MODE)||'2';}catch{return '2';}}
+    this.flightMode=()=>getHand();   // 2026-10-10：改成跟著飛手記（core/hand.js）；沒選過＝沿用舊的整台設定 droneSimFlightMode，再沒有＝美國手
   }
   /* 取得（必要時建立）某個鍵盤佈局的來源；同一佈局重用同一個 KeyboardSource，
      避免重複掛 window 監聽。this.keyboard 預設就是 opts.kbLayout（多半是 KB1）。 */
@@ -405,19 +411,22 @@ export class InputManager{
     if(gp){
       const cfg=gpCfgRead(gp);
       globalThis.__ndBtnLabels=this.btnLabels(gp);   // hud.setGpBar 依此把 {gear} 這類代號換成這支手把上的鍵名
-      return { device:'gamepad', id:gp.id,
+      const o={ device:'gamepad', id:gp.id,
         throttle:this.gpAxis(gp,'throttle',cfg), yaw:this.gpAxis(gp,'yaw',cfg),
         pitch:this.gpAxis(gp,'pitch',cfg), roll:this.gpAxis(gp,'roll',cfg),
         btn:(name)=>this.gpBtn(gp,name,cfg),
         btnEdge:(idx)=>this.gpBtnEdge(gp,idx),
         fnEdge:(name)=>this.gpFnEdge(gp,name,cfg) };
+      const sw=handSwapFor(cfg)||(!cfg&&getHand()==='1'); globalThis.__ndHandSwap=sw;   // hud 提示列依此改字
+      return handSwapFor(cfg)?_swapTP(o):o;
     }
     if(n===0){
       const src=this.touch.active()&&!this.keyboard.active()?this.touch:this.keyboard;
       const a=src.axes;
-      return { device:src===this.touch?'touch':'keyboard',
+      const o={ device:src===this.touch?'touch':'keyboard',
         throttle:a.throttle, yaw:a.yaw, pitch:a.pitch, roll:a.roll,
         btn:()=>false, btnEdge:()=>false };
+      return (src===this.touch&&getHand()==='1')?_swapTP(o):o;   // 日本手：觸控左桿上下＝前後、右桿上下＝油門
     }
     return { device:'none', throttle:0,yaw:0,pitch:0,roll:0, btn:()=>false, btnEdge:()=>false };
   }

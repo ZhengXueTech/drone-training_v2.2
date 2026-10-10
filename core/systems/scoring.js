@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    systems/scoring.js — 判定與計分（ES Module）
    newdrone Phase 0：穿環判定（寬鬆優先——skill 守則 5）＋計分器
@@ -18,7 +19,7 @@ export function checkRingPass(ring,dronePos,prevPos){
   const n=new THREE.Vector3(0,0,1).applyQuaternion(ring.quaternion);
   const d1=_prev.dot(n), d2=_rel.dot(n);
   if(d1*d2<0){ // 跨面
-    const dist=Math.sqrt(_rel.lengthSq()-d2*d2);
+    const dist=Math.sqrt(Math.max(0,_rel.lengthSq()-d2*d2));   // 2026-10-09：正中央穿過時浮點誤差會變成負數 → NaN → 判定沒穿過，夾成 0
     if(dist<r){ ring.userData.passed=true; return true; }
   }
   return false;

@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    hud.js — 統一 HUD（ES Module）v1.1
    newdrone Phase 1｜規劃書 5.7 HUD_LAYOUT（位置凍結）
@@ -16,6 +17,7 @@
 import * as THREE from 'three';
 import { glyph } from './controller-diagram.js';
 import { showKeys } from './keys-overlay.js';
+import { getHand } from './hand.js';   // 2026-10-10 美國手／日本手
 
 export const HUD_VERSION='1.2';
 const STORE_DENSITY='nd.settings.hudDensity';   // 'auto'|'full'|'lite'|'min'
@@ -338,7 +340,7 @@ export class HUD{
     const exText=(extra&&typeof extra==='object')?(extra[device]||''):(extra||'');
     const exHtml=exText?('・'+exText):'';
     if(device==='gamepad'){
-      let h='🎮 左桿 油門/偏航・右桿 俯仰/翻滾・<kbd>{camCycle}</kbd>視角・<kbd>{crouch}</kbd>蹲・<kbd>{confirm}</kbd>確認・<kbd>{back}</kbd>暫停'+exHtml;
+      let h=(globalThis.__ndHandSwap?'🎮 左桿 俯仰/偏航・右桿 油門/翻滾・':'🎮 左桿 油門/偏航・右桿 俯仰/翻滾・')+'<kbd>{camCycle}</kbd>視角・<kbd>{crouch}</kbd>蹲・<kbd>{confirm}</kbd>確認・<kbd>{back}</kbd>暫停'+exHtml;
       // 提示字串裡寫功能代號 {gear}、{action}…，這裡換成這支手把上實際的鍵名（input.player() 每幀提供；
       // 標準手把＝RT／LB…，PS＝R2／L1…，有設定檔的搖桿＝設定的鈕或撥桿，沒指派＝鍵盤按法）
       const L=globalThis.__ndBtnLabels||{confirm:'A',back:'B',camCycle:'≡',pilotCycle:'⧉',crouch:'十字↓',gear:'RT',mode:'LT',action:'LB',selfLevel:'RB'};
@@ -350,7 +352,7 @@ export class HUD{
       return;
     }
     this._gpHtml=null;
-    if(device==='touch') el.innerHTML='👆 左搖桿 油門/偏航・右搖桿 俯仰/翻滾'+exHtml;
+    if(device==='touch') el.innerHTML=(getHand()==='1'?'👆 左搖桿 俯仰/偏航・右搖桿 油門/翻滾':'👆 左搖桿 油門/偏航・右搖桿 俯仰/翻滾')+exHtml;
     else el.innerHTML='<kbd>W/S</kbd>油門 <kbd>A/D</kbd>偏航 <kbd>↑↓←→</kbd>俯仰/翻滾 <kbd>Shift</kbd>半舵 <kbd>C</kbd>視角 <kbd>V</kbd>站位 <kbd>Z</kbd>蹲 <kbd>M</kbd>模式 <kbd>Esc</kbd>暫停'+exHtml;
   }
   toast(msg,type='warn'){
