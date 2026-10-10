@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    level-categories.js — 關卡分類「單一真相來源」（ES Module）
    newdrone Phase 5.5｜index 選單分頁化
@@ -28,4 +29,7 @@ export const CATEGORIES=[
   { key:'pk', file:'levels-pk.html', emoji:'🆚', title:'情境體驗對戰（PK）',
     desc:'同場對戰版情境關卡，兩人分割畫面即時互相比拚',
     match: lv => lv.part==='D' && (lv.modes||[]).includes('pk-live') },
+  { key:'race', file:'levels-race.html', emoji:'🏁', title:'改裝賽道',
+    desc:'到機庫換馬達、槳葉、電池、機架，組一台自己的無人機跑穿圈賽道（2026-10-09 新增）',
+    match: lv => lv.part==='R' },
 ];

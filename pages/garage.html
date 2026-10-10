@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🔧</text></svg>">
+<title>newdrone｜機庫</title>
+<!-- ============================================================
+     garage.html — 機庫（改裝賽道第一階段，2026-10-09）
+     四類零件各三選一、全部開放；數值條即時變化；每個零件一句原理；小任務清單。
+     設定存 nd.garage.build（data/parts.js），賽道關卡讀同一份。
+     ============================================================ -->
+<style>
+  body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas','Microsoft JhengHei',monospace;
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:32px 16px;box-sizing:border-box;}
+  .wrap{width:100%;max-width:900px;}
+  .back a{color:#7aa3b8;text-decoration:none;font-size:12px;}
+  h1{font-size:24px;color:#00eeff;letter-spacing:3px;margin:12px 0 4px;}
+  p.sub{font-size:12px;color:#7aa3b8;margin:0 0 16px;line-height:1.7;}
+  .cols{display:grid;grid-template-columns:1.25fr 1fr;gap:16px;}
+  @media (max-width:760px){ .cols{grid-template-columns:1fr;} }
+  .box{background:#0b1626;border:1px solid rgba(0,238,255,.35);border-radius:12px;padding:14px 16px;}
+  .row{margin-bottom:14px;}
+  .row h3{margin:0 0 6px;font-size:14px;color:#facc15;}
+  .opts{display:flex;gap:8px;flex-wrap:wrap;}
+  .opts button{flex:1;min-width:90px;min-height:44px;font-family:inherit;font-size:13px;background:#0e2238;color:#cfefff;
+    border:1px solid rgba(0,238,255,.35);border-radius:10px;cursor:pointer;padding:8px;}
+  .opts button.on{background:#00eeff;color:#04202c;border-color:#00eeff;font-weight:bold;}
+  .why{font-size:12px;color:#9fc3d8;margin-top:6px;min-height:34px;line-height:1.5;}
+  .bar{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:13px;}
+  .bar span.n{width:40px;color:#cfefff;}
+  .bar .t{flex:1;height:12px;background:#132a40;border-radius:6px;overflow:hidden;position:relative;}
+  .bar .t i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#0ea5e9,#22d3ee);transition:width .25s;}
+  .bar .t b{position:absolute;left:50%;top:-2px;bottom:-2px;width:2px;background:rgba(250,204,21,.7);}
+  .bar span.v{width:30px;text-align:right;color:#7aa3b8;font-size:12px;}
+  .sum{font-size:13px;line-height:1.7;margin-top:10px;color:#e6f7ff;}
+  .miss{list-style:none;padding:0;margin:6px 0 0;font-size:13px;}
+  .miss li{padding:6px 0;border-bottom:1px solid rgba(0,238,255,.12);}
+  .miss li.done{color:#4ade80;}
+  .miss small{display:block;color:#7aa3b8;font-size:11px;}
+  .go{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;}
+  .go a,.go button{flex:1;text-align:center;min-height:46px;line-height:46px;font-family:inherit;font-size:15px;border-radius:10px;
+    text-decoration:none;cursor:pointer;border:2px solid #00eeff;background:#06243a;color:#cfefff;}
+  .go a.main{background:#00eeff;color:#04202c;font-weight:bold;}
+  footer{margin-top:24px;font-size:11px;color:#3b5c7a;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="back"><a href="levels-race.html">← 回改裝賽道</a></div>
+  <h1>🔧 機庫</h1>
+  <p class="sub">換零件，組一台適合賽道的無人機。<b>沒有最強的組合</b>：推力大就耗電、電池大就變重——想想這條賽道需要什麼。黃線＝標準機。</p>
+  <div class="cols">
+    <div class="box" id="parts"></div>
+    <div>
+      <div class="box">
+        <div id="bars"></div>
+        <div class="sum" id="sum"></div>
+      </div>
+      <div class="box" style="margin-top:12px">
+        <div style="color:#facc15;font-size:14px">🎯 小任務</div>
+        <ul class="miss" id="miss"></ul>
+      </div>
+      <div class="go">
+        <button id="b-reset">↺ 全部換回標準</button>
+        <a class="main" id="b-race" href="levels-race.html">🏁 選賽道出發</a>
+      </div>
+    </div>
+  </div>
+</div>
+<footer>零件設定存在這台電腦的瀏覽器裡，賽道會自動使用。</footer>
+<script type="module">
+import { PART_TYPES, loadBuild, saveBuild, partOf, specOf, bars, enduranceSec, buildLabel, MISSIONS, missionsDone, DEFAULT_BUILD } from '../data/parts.js';
+let build=loadBuild();
+const $=id=>document.getElementById(id);
+function render(){
+  $('parts').innerHTML=PART_TYPES.map(t=>{ const cur=partOf(t.key,build[t.key]);
+    return `<div class="row"><h3>${t.emoji} ${t.name}</h3><div class="opts">${t.opts.map(o=>
+      `<button data-t="${t.key}" data-o="${o.id}" id="p-${t.key}-${o.id}" class="${o.id===cur.id?'on':''}">${o.name}</button>`).join('')}</div>
+      <div class="why">${cur.why}</div></div>`; }).join('');
+  const s=specOf(build);
+  $('bars').innerHTML=bars(s).map(b=>`<div class="bar" data-k="${b.key}"><span class="n">${b.name}</span><span class="t"><i style="width:${b.v}%"></i><b></b></span><span class="v">${b.v}</span></div>`).join('');
+  const e=enduranceSec(s), std=enduranceSec(specOf(DEFAULT_BUILD));
+  $('sum').innerHTML=`這台：<b>${buildLabel(build)}</b><br>滿電大約可以飛 <b>${e} 秒</b>（標準機約 ${std} 秒）。3 圈大約：操場入門 50～90 秒、體育館 60～90 秒、森林峽谷 80～120 秒、城市高樓 90～130 秒、夜間霓虹 100～150 秒（看技術）。${e>=85?'續航很長：連最長的夜間霓虹都有機會不進站。':e>=65?'飛得夠快的話，操場有機會不進站跑完。':e>=40?'中途大概要進站 1 次。':'中途要進站 2 次以上。'}`;
+  const d=missionsDone();
+  $('miss').innerHTML=MISSIONS.map(m=>`<li class="${d[m.id]?'done':''}">${d[m.id]?'✅':'⬜'} ${m.name}${d[m.id]?`<small>完成（${d[m.id].build}）</small>`:`<small>${m.hint}</small>`}</li>`).join('');
+  document.querySelectorAll('.opts button').forEach(b=>b.onclick=()=>{ build={...build,[b.dataset.t]:b.dataset.o}; saveBuild(build); render(); document.getElementById(b.id)?.focus(); });
+}
+$('b-reset').onclick=()=>{ build={...DEFAULT_BUILD}; saveBuild(build); render(); };
+render();
+window.__garage={get build(){return build;}};
+</script>
+<script type="module" src="../core/gp-nav-boot.js"></script>
+</body>
+</html>

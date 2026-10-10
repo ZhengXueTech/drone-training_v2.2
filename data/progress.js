@@ -1,8 +1,10 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    progress.js — 學習歷程資料層（ES Module）
    newdrone Phase 0｜nd.* 命名空間（規劃書 6.1）＋舊資料一次性匯入
    ============================================================ */
 'use strict';
+import { pickBest } from './score-rule.js';             // 2026-10-08：計時關卡（第 2～4 關）秒數越少越好
 import { ownerKeyOf, switchOwner } from './owner.js';   // 2026-10-06：共用的平板換人時，成績不混在一起
 
 const K={ student:'nd.student',
@@ -95,13 +97,13 @@ export const progress={
     const old=_get(K.progress(levelId),{attempts:0});
     const merged={...old,...result,
       attempts:(old.attempts||0)+1,
-      bestScore:Math.max(old.bestScore??-Infinity,result.score??-Infinity),
+      bestScore:pickBest(levelId,old.bestScore,result.score),
       lastAttempt:new Date().toISOString()};
-    if(merged.bestScore===-Infinity)delete merged.bestScore;
+    if(merged.bestScore===undefined)delete merged.bestScore;
     // 2026-10-01 挑戰條件：每種條件各自記最佳分數（例 bestByChallenge['無定高・強風']=85）
     if(result.challenge&&result.score!=null){
       const m={...(old.bestByChallenge||{})};
-      m[result.challenge]=Math.max(m[result.challenge]??-Infinity,result.score);
+      m[result.challenge]=pickBest(levelId,m[result.challenge],result.score);
       merged.bestByChallenge=m;
     }
     _set(K.progress(levelId),merged);

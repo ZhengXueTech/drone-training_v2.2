@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    cloud-sync.js — 成績上雲（Phase 9 第一輪，2026-10-05）
    ------------------------------------------------------------
@@ -10,6 +11,7 @@
 import { cloudInit, cloudUrl, cloudPost, cloudGet, localMode } from '../core/cloud-api.js';
 import { localEnqueue, localFlush } from './local-sync.js';
 import { ownerKeyOf, switchOwner } from './owner.js';
+import { pickBest, isBetter } from './score-rule.js';
 
 const Q_KEY='nd.cloud.queue', AUTH_KEY='nd.cloud.auth', MAX_Q=200;
 const get=(k,f)=>{ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):f; }catch{ return f; } };
@@ -26,15 +28,15 @@ export function logout(){ try{ localStorage.removeItem(AUTH_KEY); }catch{} emit(
 export const defaultPw=(classId,seat)=>String(classId)+(/^\d$/.test(String(seat))?'0'+seat:String(seat));
 
 /* 把雲端的一關進度併進本機：取分數高的、次數多的，完成過就算完成 */
-function mergeLevel(local,remote){
+function mergeLevel(local,remote,id){
   if(!local)return remote;
   const out={...remote,...local};
   out.completed=!!(local.completed||remote.completed);
-  const bs=[local.bestScore,remote.bestScore].filter(x=>typeof x==='number');
-  if(bs.length)out.bestScore=Math.max(...bs);
+  const bs=pickBest(id,local.bestScore,remote.bestScore);
+  if(bs!==undefined)out.bestScore=bs;
   out.attempts=Math.max(local.attempts||0,remote.attempts||0);
   const m={...(remote.bestByChallenge||{})};
-  for(const k in (local.bestByChallenge||{}))m[k]=Math.max(m[k]??-Infinity,local.bestByChallenge[k]);
+  for(const k in (local.bestByChallenge||{}))m[k]=pickBest(id,m[k],local.bestByChallenge[k]);
   if(Object.keys(m).length)out.bestByChallenge=m;
   return out;
 }
@@ -67,16 +69,16 @@ export async function login({school,classId,seat,name,pw},opt={}){
   const mine={...who,name:r.name||who.name}, remote=r.progress||{};
   for(const id in (r.progress||{})){
     if(!/^[a-z0-9-]+$/i.test(id))continue;
-    const key='nd.progress.'+id, local=get(key,null), merged=mergeLevel(local,r.progress[id]);
+    const key='nd.progress.'+id, local=get(key,null), merged=mergeLevel(local,r.progress[id],id);
     if(JSON.stringify(merged)!==JSON.stringify(local)){ set(key,merged); restored++; }
   }
   // 補傳：這個人在這台裝置上有、雲端沒有（或雲端比較舊）的成績——離線時按「先不登入」飛的就是這種
   try{
-    const better=(l,c)=>!c||(l.completed&&!c.completed)||((l.bestScore??-Infinity)>(c.bestScore??-Infinity))||((l.attempts||0)>(c.attempts||0));
+    const better=(l,c,id)=>!c||(l.completed&&!c.completed)||(typeof l.bestScore==='number'&&isBetter(id,l.bestScore,c.bestScore))||((l.attempts||0)>(c.attempts||0));
     const q=get(Q_KEY,[]), queued=new Set(q.filter(x=>x._who&&ownerKeyOf(x._who)===ownerKeyOf(mine)).map(x=>x.levelId));
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i); if(!k||!k.startsWith('nd.progress.'))continue;
-      const id=k.slice(12), l=get(k,null); if(!l||!/^[a-z0-9-]+$/i.test(id)||queued.has(id)||!better(l,remote[id]))continue;
+      const id=k.slice(12), l=get(k,null); if(!l||!/^[a-z0-9-]+$/i.test(id)||queued.has(id)||!better(l,remote[id],id))continue;
       q.push({levelId:id,score:typeof l.bestScore==='number'?l.bestScore:null,completed:!!l.completed,challenge:'標準',mode:'practice',examCode:'',
         metrics:{note:'補傳本機紀錄'},progress:l,badges:get('nd.badges',[]).map(b=>({id:b.id,emoji:b.emoji,name:b.name,earnedAt:b.earnedAt})),device:'',at:l.lastAttempt||new Date().toISOString(),_who:mine,_url:cloudUrl()});
       pushed++;

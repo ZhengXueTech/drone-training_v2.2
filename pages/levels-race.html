@@ -4,8 +4,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🎯</text></svg>">
-<title>newdrone｜基礎訓練</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🏁</text></svg>">
+<title>newdrone｜改裝賽道</title>
 <style>
   body{margin:0;background:#0a0f1a;color:#cfefff;font-family:'Share Tech Mono','Consolas',monospace;
     min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 16px;box-sizing:border-box;}
@@ -30,8 +30,9 @@
 </head>
 <body>
 <div class="back"><a href="../index.html">← 回首頁</a></div>
-<h1>🎯 基礎訓練</h1>
-<p class="sub">地面安全、搖桿對應、緊急處置、飛行風險、單飛考核（含自由練習沙盒）</p>
+<h1>🏁 改裝賽道</h1>
+<p class="sub">先到機庫組一台自己的無人機，再上賽道比時間。橘環加速、綠環充電，電量不夠記得進站換電池。</p>
+<div class="grid" style="margin-bottom:16px"><a class="card" href="garage.html" id="card-garage"><h2>🔧 機庫</h2><p>換馬達、槳葉、電池、機架：推力、極速、靈敏、續航、耐撞，沒有最強的組合。還有小任務可以挑戰。</p></a></div>
 <div class="grid" id="grid-levels"></div>
 <footer>
   需以本機伺服器開啟（雙擊「啟動模擬器.bat」或 python -m http.server）——ES Modules 不支援 file:// 直開。
@@ -43,7 +44,7 @@ import { CATEGORIES } from '../data/level-categories.js';
 import { renderLevelGrid } from './levels-page-common.js';
 progress.migrateLegacy();
 
-const cat=CATEGORIES.find(c=>c.key==='basic');
+const cat=CATEGORIES.find(c=>c.key==='race');
 const levels=LEVELS.filter(cat.match);
 renderLevelGrid(document.getElementById('grid-levels'), levels, LEVELS, progress);
 </script>

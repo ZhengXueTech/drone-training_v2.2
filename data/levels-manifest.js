@@ -1,3 +1,4 @@
+/* newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 */
 /* ============================================================
    levels-manifest.js — 關卡清單「單一真相來源」（ES Module）
    newdrone Phase 1｜規劃書 6.4
@@ -627,5 +628,46 @@ export const LEVELS=[
     doneField:'completed', unlockAfter:null,
     emoji:'🏆', desc:'正式賽規教育版：起飛信號（搶飛判點球）、守門員不可進環、得分後退回半場、局間換電池量電壓、3戰2勝平手黃金進球；判定固定 FAI 正式標準。可選前鋒或守門後衛角色。',
     hint:'裁判只盯你——AI 全程守規矩・零犯規完賽有隱藏彩蛋字樣' },
+  { id:'race-playground', title:'改裝賽道 操場入門', part:'R', file:'levels/race-playground.html',
+    // 2026-10-09 改裝賽道第一階段（設計稿＝專案 claude/newdrone-改機設計.md）：用機庫（pages/garage.html）組的機體跑穿圈賽道，
+    // 3 圈計時賽＋幽靈機＋進站換電池＋加速／充電環。成績＝總秒數（越少越好），改裝機成績一起比。
+    modes:['solo'], maxSeats:1,
+    hud:{battery:true,wind:false,minimap:true,telemetry:true,gpbar:true,attitude:false},
+    metrics:[{key:'time',label:'總秒數'},{key:'bestLap',label:'最快一圈'},{key:'pits',label:'進站次數'},{key:'hits',label:'撞牆次數'},{key:'build',label:'機體'}],
+    doneField:'completed', unlockAfter:null,
+    emoji:'🏁', desc:'用機庫組好的無人機跑 3 圈穿圈賽道：橘環加速、綠環充電、電量不夠就降落 PIT 停機坪換電池，還有自己的幽靈機陪跑。',
+    hint:'先到「🔧 機庫」換零件・沒有最強的組合，想想這條賽道需要什麼' },
+  { id:'race-forest', title:'改裝賽道 森林峽谷', part:'R', file:'levels/race-forest.html',
+    // 2026-10-09 改裝賽道第二條（老師選的主題）：樹林穿梭、低飛過倒木、爬山脊、峽谷岩石、起霧。規則同操場入門（core/race.js）。
+    modes:['solo'], maxSeats:1,
+    hud:{battery:true,wind:false,minimap:true,telemetry:true,gpbar:true,attitude:false},
+    metrics:[{key:'time',label:'總秒數'},{key:'bestLap',label:'最快一圈'},{key:'pits',label:'進站次數'},{key:'hits',label:'撞擊次數'},{key:'build',label:'機體'}],
+    doneField:'completed', unlockAfter:null,
+    emoji:'🌲', desc:'在樹林間穿梭 14 個環：低飛穿過倒木、爬上山脊、閃過峽谷岩石，樹會撞、還起霧——大槳、小槳、護框各有用處。',
+    hint:'撞樹會掉電・護框機架比較耐撞・小槳轉彎比較靈活' },
+  { id:'race-city', title:'改裝賽道 城市高樓', part:'R', file:'levels/race-city.html',
+    // 2026-10-10 改裝賽道第三條：大樓街道穿梭、飛越屋頂、空橋下方、🌀 亂流區（機體越重越穩）。規則同操場入門（core/race.js）。
+    modes:['solo'], maxSeats:1,
+    hud:{battery:true,wind:false,minimap:true,telemetry:true,gpbar:true,attitude:false},
+    metrics:[{key:'time',label:'總秒數'},{key:'bestLap',label:'最快一圈'},{key:'pits',label:'進站次數'},{key:'hits',label:'撞擊次數'},{key:'build',label:'機體'}],
+    doneField:'completed', unlockAfter:null,
+    emoji:'🏙️', desc:'在大樓之間穿梭 14 個環：飛越屋頂、穿過空橋下方，還有會把你吹晃的亂流區——重一點的機體比較穩，但也比較慢。',
+    hint:'藍色風圈＝亂流區・大容量電池、護框比較不怕風' },
+  { id:'race-gym', title:'改裝賽道 室內體育館', part:'R', file:'levels/race-gym.html',
+    // 2026-10-10 改裝賽道第四條：室內小場地、天花板 7 公尺、小環、籃球架／排球網／看台／橫幅／標竿。比精準不比極速。
+    modes:['solo'], maxSeats:1,
+    hud:{battery:true,wind:false,minimap:true,telemetry:true,gpbar:true,attitude:false},
+    metrics:[{key:'time',label:'總秒數'},{key:'bestLap',label:'最快一圈'},{key:'pits',label:'進站次數'},{key:'hits',label:'撞擊次數'},{key:'build',label:'機體'}],
+    doneField:'completed', unlockAfter:null,
+    emoji:'🏀', desc:'室內小場地 12 個小環：有天花板、要從橫幅下面壓低穿過、繞過標竿和排球網。一圈很短，比的是精準和轉彎。',
+    hint:'高速馬達不一定划算・小槳轉向靈活' },
+  { id:'race-neon', title:'改裝賽道 夜間霓虹', part:'R', file:'levels/race-neon.html',
+    // 2026-10-10 改裝賽道第五條：夜晚、只有發光的環和霓虹柱；8 字形中間交叉一高一低。
+    modes:['solo'], maxSeats:1,
+    hud:{battery:true,wind:false,minimap:true,telemetry:true,gpbar:true,attitude:false},
+    metrics:[{key:'time',label:'總秒數'},{key:'bestLap',label:'最快一圈'},{key:'pits',label:'進站次數'},{key:'hits',label:'撞擊次數'},{key:'build',label:'機體'}],
+    doneField:'completed', unlockAfter:null,
+    emoji:'🌃', desc:'夜晚的 8 字形賽道 16 個環：四周很暗、只看得到發光的環和霓虹柱，中間交叉的地方一高一低，別穿錯層。',
+    hint:'看亮起來的那個環・爬升力強的機體比較輕鬆' },
 ];
 export function getLevel(id){ return LEVELS.find(l=>l.id===id)||null; }
