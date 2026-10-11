@@ -16,6 +16,14 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store, must-revalidate')
         self.send_header('Expires', '0')
         super().end_headers()
+    # 2026-10-11 首頁的平板連線 QR Code：回傳這台電腦在區網的網址
+    def do_GET(self):
+        if self.path.split('?')[0] == '/lan.json':
+            import json
+            scheme = 'https' if globals().get('HTTPS') else 'http'
+            b = json.dumps({'ok': True, 'urls': [f'{scheme}://{ip}:{PORT}/' for ip in _lan_ips()]}).encode('utf-8')
+            self.send_response(200); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b); return
+        return super().do_GET()
     # .js 一律以正確 MIME 供應（ES Modules 必須）
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
                       '.js': 'text/javascript', '.mjs': 'text/javascript'}
@@ -29,8 +37,22 @@ class ThreadingServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+def _lan_ips():
+    ips = set()
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('10.255.255.255', 1)); ips.add(s.getsockname()[0]); s.close()
+    except Exception: pass
+    try:
+        import socket
+        for a in socket.gethostbyname_ex(socket.gethostname())[2]: ips.add(a)
+    except Exception: pass
+    return sorted(i for i in ips if not i.startswith('127.'))
+
 with ThreadingServer(('', PORT), NoCacheHandler) as httpd:
     print(f'newdrone dev server (no-cache) on http://localhost:{PORT}/')
+    for _ip in _lan_ips():
+        print(f'  平板／手機請連：http://{_ip}:{PORT}/')
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

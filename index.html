@@ -69,6 +69,7 @@
 <h1>NEWDRONE</h1>
 <p class="sub">下一代無人機模擬器｜訓練關卡由 <code>data/levels-manifest.js</code> 動態產生</p>
 <div class="id-badge" id="id-badge"></div>
+<div id="lan-box"></div>   <!-- 2026-10-11 平板連線 QR Code（只在老師筆電本機開、而且伺服器有 /lan.json 時出現） -->
 
 <h3 class="sec">顯示設定</h3>
 <div class="scale-row" id="scale-row"></div>
@@ -122,7 +123,7 @@
 <footer>
   需以本機伺服器開啟（雙擊「啟動模擬器.bat」或 python -m http.server）——ES Modules 不支援 file:// 直開。<br>
   基本版（無人機飛行器_基本版）完全未更動，隨時可退回使用。
-  <div id="nd-license" style="margin-top:6px">© 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0：歡迎教學使用與分享，請標示作者、不得商用、改作請用相同條款｜<a href="pages/about.html" style="color:inherit;text-decoration:underline">關於與授權</a></div>
+  <div id="nd-license" style="margin-top:6px">© 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0：歡迎教學使用與分享，請標示作者、不得商用、改作請用相同條款｜歡迎來信告知使用：<a href="mailto:vvv9509@gmail.com" style="color:inherit;text-decoration:underline">vvv9509@gmail.com</a>｜<a href="pages/about.html" style="color:inherit;text-decoration:underline">關於與授權</a></div>
 </footer>
 <script type="module">
 import { localMode, edition, cloudInit, cloudUrl, schoolList, refreshSchools, centerUrl, classInfo, classLookup, classSet, classClear } from './core/cloud-api.js';
@@ -456,6 +457,35 @@ function renderCategories(){
 renderCategories();
 gateReady().then(all=>{ if(all)renderCategories(); });      // 活動版全部開放
 bindEgg(document.querySelector('h1'),()=>{ renderCategories(); toastMsg('🎉 你找到彩蛋了！全部關卡暫時開放，關掉瀏覽器就會恢復。'); });
+</script>
+<script src="vendor/qrcode-generator-1.4.4/qrcode.js"></script>   <!-- QR Code 產生器（MIT，Kazuhiko Arase） -->
+<script>
+/* 2026-10-11 平板連線 QR Code（老師：可以）：在老師筆電上用 localhost 開首頁時，顯示「平板／手機請連這個網址」＋ QR Code，
+   平板相機掃一下就連上。網址由啟動的伺服器 /lan.json 提供（tools/serve.py）；GitHub 線上版、別台電腦開的不顯示。 */
+(function(){
+  const h=location.hostname; if(!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(h))return;
+  fetch('lan.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{
+    if(!d||!d.urls||!d.urls.length||typeof qrcode!=='function')return;
+    let k=0; const box=document.getElementById('lan-box'); if(!box)return;
+    let hide=false; try{ hide=localStorage.getItem('nd.lanbox.hide')==='1'; }catch(e){}
+    function draw(){
+      const url=d.urls[k];
+      const q=qrcode(0,'M'); q.addData(url); q.make();
+      box.innerHTML=hide?'<button id="lan-show" style="font-family:inherit;font-size:12px;background:#0b1626;color:#7aa3b8;border:1px solid rgba(0,238,255,.3);border-radius:999px;padding:4px 12px;cursor:pointer">📱 顯示平板連線 QR Code</button>'
+        :'<div style="display:flex;gap:14px;align-items:center;background:#0b1626;border:1px solid rgba(0,238,255,.45);border-radius:12px;padding:10px 14px;margin:4px 0 8px;max-width:560px">'
+        +'<div style="background:#fff;padding:6px;border-radius:8px;line-height:0">'+q.createSvgTag({cellSize:4,margin:2,scalable:false})+'</div>'
+        +'<div style="font-size:13px;color:#cfefff;line-height:1.7">📱 <b>平板／手機／VR 頭盔請連這個網址</b><br>用相機掃左邊的 QR Code，或在瀏覽器輸入：<br>'
+        +'<b style="font-size:17px;color:#00eeff;user-select:all">'+url+'</b><br>'
+        +'<span style="color:#7aa3b8;font-size:11px">要跟這台電腦連同一個 Wi-Fi。'+(d.urls.length>1?'有好幾個網址時，連不上就按「換一個」。':'')+'</span><br>'
+        +(d.urls.length>1?'<button id="lan-next" style="font-family:inherit;font-size:11px;margin-right:6px">換一個（'+(k+1)+'/'+d.urls.length+'）</button>':'')
+        +'<button id="lan-hide" style="font-family:inherit;font-size:11px">收起來</button></div></div>';
+      const n=document.getElementById('lan-next'); if(n)n.onclick=()=>{ k=(k+1)%d.urls.length; draw(); };
+      const x=document.getElementById('lan-hide'); if(x)x.onclick=()=>{ hide=true; try{ localStorage.setItem('nd.lanbox.hide','1'); }catch(e){} draw(); };
+      const s=document.getElementById('lan-show'); if(s)s.onclick=()=>{ hide=false; try{ localStorage.removeItem('nd.lanbox.hide'); }catch(e){} draw(); };
+    }
+    draw();
+  }).catch(()=>{});
+})();
 </script>
 <script type="module" src="core/gp-nav-boot.js"></script>   <!-- 2026-10-06 選單可用搖桿操作（有接搖桿才載入） -->
 </body>
