@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing } from '../core/world.js';
@@ -183,22 +184,18 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'限電規劃',
-    html:`<p>🔋 電量只有 <b>35%</b>，而且消耗速度是平常的近 2 倍！</p>
+  startPanel(ui,{levelId:'t08',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🔋 限電規劃',
+    summary:'電量只有 <b>35%</b> 又耗得快：規劃路線，用好 3 個（各限一次）充電站，穿過全部 7 個檢查點。',
+    tags:['🟢 7 個檢查點（任意順序）','🟡 A/B/C 各用一次','⚡ 只充到 85%'],
+    rules:`<p>🔋 電量只有 <b>35%</b>，而且消耗速度是平常的近 2 倍！</p>
       <p>地圖上有 7 個檢查點（🟢，任意順序均可穿越）和 3 個充電站（🟡 A/B/C，
       <b>各只能使用一次</b>，只充到 85%）。你必須思考：先去哪個充電站？路線怎麼安排？
       才能完成全部 7 個檢查點。</p>
       <p>⚠️ 電量歸零後任務失敗（可重試）。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-go',label:'🔋 開始限電任務',onClick:startGame}].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+    startLabel:'🔋 開始限電任務',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

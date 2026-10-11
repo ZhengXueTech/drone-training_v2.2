@@ -38,6 +38,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { WindSystem } from '../core/systems/wind.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { sfx } from '../core/audio.js';
@@ -407,23 +408,16 @@ hud.attachTouch(input);
 let _gpConfirmPrev=false;
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 建築外牆巡檢',
-    html:`<p>操控無人機圍繞建築飛行，對牆面巡檢區進行掃描。</p>
+  startPanel(ui,{levelId:'x-inspection',title:'🏢 情境體驗 · 建築外牆巡檢',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'繞著建築飛，掃描每一格牆面；看到<b>橘色異常面板</b>飛近按 B 記錄。',
+    tags:['📏 保持掃描距離','🟧 異常按 B','🏢 每層都要掃'],
+    rules:`<p>操控無人機圍繞建築飛行，對牆面巡檢區進行掃描。</p>
       <p><strong>橘色異常面板</strong>需飛近後按 <b>B</b>／畫面右下角按鈕確認記錄，<br>
       維持適當掃描距離，涵蓋所有樓層高度。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:'🏢 初級（24格・3分・無風）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'⚡ 中級（36格・2:30・微風）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'💀 高級（36格・2分・強風）',onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'🏢 初級',hint:'24 格・3 分鐘・無風'},{v:'med',label:'⚡ 中級',hint:'36 格・2 分 30 秒・微風'},{v:'hard',label:'💀 高級',hint:'36 格・2 分鐘・強風'}],
+    onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff; curCfg=DIFF_CFG[diff];

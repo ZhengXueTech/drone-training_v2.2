@@ -34,6 +34,7 @@ import { sfx } from '../core/audio.js';
 import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 
 /* ============================================================
    情境體驗：投遞任務（移植自基本版 exp/exp-cargo.html）
@@ -261,24 +262,17 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?3:2)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 投遞任務',
-    html:`<p>從<b>取貨點</b>拿貨物（靠近自動拾取），依序飛到<b>3 個落點</b>低速靠近精準投下。</p>
+  startPanel(ui,{levelId:'x-cargo',title:'📦 情境體驗 · 投遞任務',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'到取貨點拿貨，依序飛到 3 個落點<b>慢慢靠近</b>投下，飛太快貨會掉！',
+    tags:['⏱ 90 秒','📦 一輪 +200','✨ 無掉落 +100'],
+    rules:`<p>從<b>取貨點</b>拿貨物（靠近自動拾取），依序飛到<b>3 個落點</b>低速靠近精準投下。</p>
       <p>⚡ <b>水平速度持續超限</b> → 貨物掉落　🚧 <b>碰到邊界</b> → 貨物掉落<br>
       完整投遞一輪 +200 分，全程無掉落再 +100 分加成。<br>
       ⏱ 限時 <b>90 秒</b>，看能送幾輪！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:'初級（限速5・大落點）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'中級（限速3.5）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'高級（限速2.5・小落點）',onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'初級',hint:'限速 5・大落點'},{v:'med',label:'中級',hint:'限速 3.5'},{v:'hard',label:'高級',hint:'限速 2.5・小落點'}],
+    onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;

@@ -45,6 +45,7 @@ import { InputManager } from '../core/input.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { buildDroneStyle } from '../core/drone-styles.js';
+import '../core/soccer-arena.js';   // 2026-10-11 足球場畫面升級（競技場外觀＋畫質選擇；物理規則不動）
 import { FIELD, TA, SOCCER_SEATS, SoccerDrone, buildSoccerField,
          resolveCollisions, checkGoal, SOCCER_FEEL } from '../core/systems/soccer.js';
 import { updateSoccerAI, AI_DIFF } from '../core/systems/ai.js';
@@ -112,6 +113,7 @@ const SF_OPTS=[
 ];
 let sfIdx=Math.max(0,SF_OPTS.findIndex(o=>o.code===progress.setting('soccerSFCode','std')));
 let SF=SF_OPTS[sfIdx].v, noHold=SF_OPTS[sfIdx].noHold;
+let holdOff=!!progress.setting('soccerHoldOff',false); if(holdOff)noHold=true;   // 2026-10-11 開賽前可單獨關掉定高（不必選專家機速）
 const DIFF_LABEL={easy:'😊 簡單',med:'⚡ 中等',hard:'💀 困難'};
 const ROLE_LABEL={striker:'⚽ 前鋒（可得分）',defender:'🛡 守門後衛'};
 
@@ -159,10 +161,11 @@ let gear2Used=false;
 function soccerChallenge(){
   const t=[]; const c=SF_OPTS[sfIdx].code;
   if(c!=='std')t.push(SF_OPTS[sfIdx].label);
+  if(holdOff&&!SF_OPTS[sfIdx].noHold)t.push('無定高');
   if(gear2Used||player.gear===2)t.push('二檔');
   return t.join('・');
 }
-function soccerChallengeFields(){ const t=soccerChallenge(); return {challenge:t||'標準',challengeCode:`sf-${SF_OPTS[sfIdx].code}-g${(gear2Used||player.gear===2)?2:1}`}; }
+function soccerChallengeFields(){ const t=soccerChallenge(); return {challenge:t||'標準',challengeCode:`sf-${SF_OPTS[sfIdx].code}-g${(gear2Used||player.gear===2)?2:1}${holdOff&&!SF_OPTS[sfIdx].noHold?'-h0':''}`}; }
 function toggleGear(){
   player.gear=player.gear===2?1:2;
   if(player.gear===2)gear2Used=true;
@@ -349,36 +352,38 @@ function updateReferee(dt){
 }
 
 /* ── Intro／暫停 ── */
-function showIntro(focusIdx=3){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
   ui.showModal({title:'🏆 無人機足球 擬真賽規版',
-    html:`<p>依 <b>FAI F9A-B／教育部 115 年賽規</b>：3 局×3 分鐘、3 戰 2 勝、
+    summary:'依 <b>FAI F9A-B／教育部 115 年賽規</b>：3 局×3 分鐘、3 戰 2 勝，平手打<b>黃金進球</b>，裁判會判違規！',
+    tags:['⏱ 3 局×3 分','⚖ 違規＝對方 +1','🟨 同局 3 次黃牌','🔋 每局一顆電池'],
+    html:role==='defender'?'<p style="color:#fbbf24;text-align:center;margin:0 0 6px">🛡 守門後衛：得分交給 AI 前鋒，你負責擋在環前防守——但不可進環！</p>':'',
+    rules:`<p>依 <b>FAI F9A-B／教育部 115 年賽規</b>：3 局×3 分鐘、3 戰 2 勝、
       平手打<b>黃金進球</b>；判定固定「整顆球完全穿過」正式標準。</p>
       <p>⚖ 裁判盯著你：<b>搶飛</b>（起飛信號前離地）、<b>守門員進環防守</b>、
       <b>得分後未退回半場即進攻</b>——都判對方點球（本關簡化為對方直接 +1，
       正式賽是前鋒單獨罰球）；同局 3 次違規＝🟨 黃牌本局停飛。</p>
       <p>🔋 每局一顆電池、局間維修換電池＋量電壓；低電量推力會衰減。</p>
       <p>C 視角・V 站位・Z／手把十字↓ 蹲・F 保護籠旋轉・G／手把 RT 切換檔位</p>
-      <p style="text-align:center;color:#7aa3b8">🛸 碰撞不再永遠對稱彈開：衝擊夠猛時可能撞球定桿換位、門前甚至可能兩機
-      一起捲入球門；起降貼地偶爾會有訊號異常（搖桿暫時打折），都是真實無人機常見現象。</p>
-      <p style="text-align:center;color:#9fc3d8">⚙ 機速：慢速有刷／標準＝推就走、放就停；<b>競速無刷＝放開搖桿還會往前滑、轉向更靈敏，要提早收桿</b>；<b>專家無定高＝競速無刷＋沒有定高，放開油門會往下掉</b>。</p>
-      ${noHold?'<p style="text-align:center;color:#fbbf24">⚠ 專家無定高：放開油門會直接下墜，需自己抓住懸停油門量（約推住四成），AI 隊友/對手不受影響</p>':''}
-      ${role==='defender'?'<p style="color:#fbbf24">🛡 守門後衛：得分交給 AI 前鋒，你負責擋在環前防守——但不可進環！</p>':''}`,
+      <p>🛸 碰撞不再永遠對稱彈開：衝擊夠猛時可能撞球定桿換位、門前甚至可能兩機
+      一起捲入球門；起降貼地偶爾會有訊號異常（搖桿暫時打折），都是真實無人機常見現象。</p>`,
+    settings:[
+      {id:'role',label:'角色',value:role,options:[{v:'striker',label:ROLE_LABEL.striker},{v:'defender',label:ROLE_LABEL.defender}],
+        hint:v=>v==='defender'?'得分交給 AI 前鋒，你擋在環前防守（不可進環）':'只有前鋒穿過對面球門環才得分',
+        onChange:v=>{ role=v; progress.setSetting('soccerRealRole',role); showIntro(); }},
+      {id:'sf',label:'機速',value:SF_OPTS[sfIdx].code,options:SF_OPTS.map(o=>({v:o.code,label:o.label})),
+        hint:v=>({slow:'推就走、放就停，最好控制',std:'推就走、放就停',race:'放開搖桿還會往前滑、轉向更靈敏，要提早收桿',expert:'競速無刷＋沒有定高，放開油門會往下掉'})[v],
+        onChange:v=>{ sfIdx=SF_OPTS.findIndex(o=>o.code===v); SF=SF_OPTS[sfIdx].v; noHold=SF_OPTS[sfIdx].noHold||holdOff; progress.setSetting('soccerSFCode',v); showIntro(); }},
+      {id:'diff',label:'AI 難度',value:diff,options:Object.keys(AI_DIFF).map(k=>({v:k,label:DIFF_LABEL[k]})),
+        onChange:v=>{ diff=v; progress.setSetting('soccerDiff',diff); }},
+      {id:'hold',label:'🧭 定高',value:(SF_OPTS[sfIdx].noHold||holdOff)?'0':'1',
+        options:[{v:'1',label:'開',disabled:SF_OPTS[sfIdx].noHold},{v:'0',label:'關'}],
+        hint:v=>SF_OPTS[sfIdx].noHold?'專家機速固定沒有定高':v==='0'?'放開油門會往下掉，要自己抓住懸停油門（AI 不受影響）':'放開油門會停在原本的高度',
+        onChange:v=>{ if(SF_OPTS[sfIdx].noHold)return; holdOff=v==='0'; progress.setSetting('soccerHoldOff',holdOff); noHold=holdOff; }},
+    ],
     buttons:[
-      {id:'b-role',label:'角色：'+ROLE_LABEL[role],onClick:()=>{
-        role=role==='striker'?'defender':'striker';
-        progress.setSetting('soccerRealRole',role); showIntro(0);}},
-      {id:'b-sf',label:'機速：'+SF_OPTS[sfIdx].label,onClick:()=>{
-        sfIdx=(sfIdx+1)%SF_OPTS.length;
-        SF=SF_OPTS[sfIdx].v; noHold=SF_OPTS[sfIdx].noHold;
-        progress.setSetting('soccerSFCode',SF_OPTS[sfIdx].code); showIntro(1);}},
-      {id:'b-diff',label:'AI 難度：'+DIFF_LABEL[diff],onClick:()=>{
-        const ks=Object.keys(AI_DIFF);
-        diff=ks[(ks.indexOf(diff)+1)%ks.length];
-        progress.setSetting('soccerDiff',diff); showIntro(2);}},
-      {id:'b-go',label:'進場！',onClick:startMatch},
+      {id:'b-go',label:'▶ 進場！',onClick:startMatch,primary:true},
       {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
-  ui.gpSetFocus(['b-role','b-sf','b-diff','b-go','b-back'],focusIdx);
 }
 function startMatch(){
   ui.closeModal(); sfx.play('click');

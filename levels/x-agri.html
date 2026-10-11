@@ -38,6 +38,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { WindSystem } from '../core/systems/wind.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { sfx } from '../core/audio.js';
@@ -428,23 +429,16 @@ hud.attachTouch(input);
 let _gpSprayPrev=false;
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 農業精準噴藥',
-    html:`<p>操控農噴機飛越 8×5 農田，<strong>高度需低於 3m</strong> 才能噴藥，覆蓋所有格子。</p>
+  startPanel(ui,{levelId:'x-agri',title:'🌾 情境體驗 · 農業精準噴藥',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'操控農噴機飛越 8×5 農田，<b>飛低於 3 m</b> 才噴得到，把每一格都噴到。',
+    tags:['🌱 8×5 農田','⬇ 高度 &lt; 3 m','🔋 補給站在西南角'],
+    rules:`<p>操控農噴機飛越 8×5 農田，<strong>高度需低於 3m</strong> 才能噴藥，覆蓋所有格子。</p>
       <p>按 <b>B</b>／畫面右下角按鈕<b>開關噴藥</b>（省藥水用）。注意藥水與電量，
       飛回西南角補給站可回充。避開樹木/電線桿！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:'🌾 初級（無障礙・120秒・半徑1.0m）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'⚡ 中級（4棵樹+微風・120秒・半徑0.85m）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'💀 高級（樹+電線桿+風・100秒・半徑0.70m）',onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'🌾 初級',hint:'無障礙・120 秒・噴灑半徑 1.0 m'},{v:'med',label:'⚡ 中級',hint:'4 棵樹＋微風・120 秒・半徑 0.85 m'},{v:'hard',label:'💀 高級',hint:'樹＋電線桿＋風・100 秒・半徑 0.70 m'}],
+    startLabel:'▶ 開始噴藥',onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff; curCfg=DIFF_CFG[diff];

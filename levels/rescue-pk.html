@@ -54,6 +54,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：搜救對戰（x-rescue 的 pk-live 版本，規劃書 §9 成本表中成本
@@ -162,6 +164,7 @@ const AI_SPD={easy:3.0,med:4.5,hard:6.0};
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 const wind=new WindSystem();
 
 engine.scene.background=new THREE.Color(0x7ab0d8);
@@ -432,23 +435,20 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 
-function showIntro(){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  showModal({title:'情境體驗 · 搜救對戰',
-    html:`<p>山難發生！P1／P2 在同一片山區搶搜同一組倖存者信標，飛到
+  startPanel(ui,{levelId:'rescue-pk',title:'⛰️ 情境體驗 · 搜救對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 在同一片山區搶找倖存者信標，先找到的算誰的，<b>比誰找得多</b>！',
+    tags:['🔍 進入偵測範圍＝尋獲','⛰ 小心地形','🔋 電量歸零停飛'],
+    rules:`<p>山難發生！P1／P2 在同一片山區搶搜同一組倖存者信標，飛到
       <strong>偵測範圍內</strong>即可尋獲，先找到的算誰的（不會被對方
       搶走），時間到或信標全部尋獲，比誰找得多！</p>
       <p>⚠️ 注意避開地形碰撞！電量持續消耗，歸零該玩家會停飛
-      （比賽不會因此結束）。</p>
-      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-easy',label:'🌿 初級（5人・3分・偵測7m）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'⚡ 中級（6人・2:30・偵測5.5m）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'💀 高級（8人・2分・偵測4m・強風）',onClick:()=>startGame('hard')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
+      （比賽不會因此結束）。</p>`,
+    diffs:[{v:'easy',label:'🌿 初級',hint:'5 人・3 分鐘・偵測 7 m'},{v:'med',label:'⚡ 中級',hint:'6 人・2 分 30 秒・偵測 5.5 m'},{v:'hard',label:'💀 高級',hint:'8 人・2 分鐘・偵測 4 m・強風'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;
@@ -501,7 +501,7 @@ addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

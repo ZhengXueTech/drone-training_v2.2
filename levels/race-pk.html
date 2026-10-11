@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- newdrone 無人機飛行模擬器 © 2026 何政學（新北市中正國中科技中心）｜授權 CC BY-NC-SA 4.0（姓名標示─非商業性─相同方式分享），見 LICENSE.md；請保留本聲明 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>newdrone｜改裝賽道：同學對戰</title>
+<!-- ============================================================
+     race-pk.html — 改裝賽道「同學對戰」（2026-10-11）
+     網址 ?track=race-forest 選賽道（預設操場入門）；席位在 pages/pairing.html?activity=race-pk 指派。
+     規則與畫面在 core/race-pk.js；賽道資料跟單人賽道共用 data/tracks/。
+     ============================================================ -->
+<script type="importmap">
+{ "imports": { "three": "../vendor/three-0.184.0/three.module.min.js" } }
+</script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c1a2e;font-family:'Share Tech Mono','Consolas','Microsoft JhengHei',monospace;}
+  #c{width:100%;height:100%;display:block;touch-action:none;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import { runRacePK, TRACKS } from '../core/race-pk.js';
+const q=new URLSearchParams(location.search).get('track');
+const id=TRACKS.some(t=>t.id===q)?q:'race-playground';
+const { TRACK } = await import(`../data/tracks/${id}.js`);
+runRacePK(TRACK);
+</script>
+</body>
+</html>

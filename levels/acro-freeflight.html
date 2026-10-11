@@ -58,6 +58,7 @@ import { sfx } from '../core/audio.js';
 import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { Challenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { createXR } from '../core/xr.js';         // 2026-10-08 VR 模式（Quest）   // 2026-10-01 檔位（G／手把 Y）
 
 const LEVEL=getLevel('acro-freeflight');
@@ -179,11 +180,13 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro / 暫停 ── */
-function showIntro(focusIdx=2){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'自由飛行練習場（角度／Acro 模式）',
-    html:`<p>這裡有三種飛行模式，按 <b>M</b> 依序切換：</p>
+  startPanel(ui,{levelId:'acro-freeflight',title:'🛩️ 自由飛行練習場',ch,
+    style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    summary:'練習<b>角度模式</b>和 <b>Acro 翻滾</b>，沒有任務門檻，想飛多久就飛多久。',
+    tags:['🟢 角度','🔴 Acro','🔵 街機','M 切換模式','空白鍵＝暫時自穩'],
+    rules:`<p>這裡有三種飛行模式，按 <b>M</b> 依序切換：</p>
       <p>🟢 <b>角度模式（預設）</b>：搖桿控制「傾斜角度」，最多約 35 度，<b>放開自動回平、不會翻</b>。
       新手和多數比賽機常用這種。<br>
       🔴 <b>Acro 模式</b>：搖桿控制「旋轉速度」，<b>推住不放會一直轉、整台翻過去</b>，放開也不會回正。
@@ -194,14 +197,7 @@ function showIntro(focusIdx=2){
       圓環只是練習用，這裡沒有任務門檻。</p>
       <p>🎮 切換模式：鍵盤 <b>M</b>／手把 <b>X</b>／畫面「模式」按鈕。⚙ 檔位：鍵盤 <b>G</b>／手把 <b>Y</b>。
       🏁 飛夠了：鍵盤 <b>Esc</b>／手把 <b>B</b>／畫面 ⏸ → 「結束飛行」看成績。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-start',label:'開始飛行',onClick:startGame},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style','b-challenge','b-start'],focusIdx);
+    startLabel:'▶ 開始飛行',onStart:()=>startGame()});
 }
 function startGame(){
   rebuildMesh();

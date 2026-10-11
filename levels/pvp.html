@@ -69,6 +69,7 @@ import { HUD, DENSITY_LABELS, attachTouchSeat } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { renderSplit } from '../core/camera.js';
 import { buildDroneStyle } from '../core/drone-styles.js';
+import '../core/soccer-arena.js';   // 2026-10-11 足球場畫面升級（競技場外觀＋畫質選擇；物理規則不動）
 import { FIELD, TA, SOCCER_SEATS, SoccerDrone, buildSoccerField,
          resolveCollisions, checkGoal } from '../core/systems/soccer.js';
 import { updateSoccerAI } from '../core/systems/ai.js';
@@ -139,6 +140,7 @@ let scores={A:0,B:0}, setsWon={A:0,B:0}, setGoals={A:0,B:0}, setLog=[];
 let cageSpin=false, crouch=false, returnWarned=false;
 let SF=progress.setting('pvpSF',1.0);
 let strict=progress.setting('pvpStrict',false);
+let holdOff=!!progress.setting('pvpHoldOff',false);   // 2026-10-11 定高開關（只套用真人席，AI 不受影響）
 const SF_OPTS=[{label:'慢速有刷',v:0.55},{label:'標準',v:1.0},{label:'競速無刷',v:1.8}];
 
 /* ── 相機：依人類席位數分兩大類（規劃書 5.3／7-8；2026-07-23 依實機回饋修正，
@@ -373,7 +375,8 @@ function showMatchEnd(){
   sfx.play(win?'finish':'fail');
   progress.record(ACT,{completed:true,score:scores.A,
     metrics:{goalsA:scores.A,goalsB:scores.B,setsA:setsWon.A,setsB:setsWon.B,
-      humanCount, result:win?'A':tie?'tie':'B',rule:strict?'fai':'practice'}});
+      humanCount, result:win?'A':tie?'tie':'B',rule:strict?'fai':'practice'},
+    ...(holdOff?{challenge:'無定高',challengeCode:'h0'}:{})});
   ui.showModal({title:win?'🏆 A隊獲勝！':tie?'🤝 平局':'💔 B隊獲勝',
     html:`<p style="text-align:center">節勝　A ${setsWon.A}：${setsWon.B} B</p>
       <p style="text-align:center">${setLog.map((s,i)=>`第${i+1}節 ${s.A}:${s.B}`).join('　')}</p>
@@ -385,7 +388,7 @@ function showMatchEnd(){
 }
 
 /* ── Intro／暫停 ── */
-function showIntro(focusIdx=2){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
   const sfCur=SF_OPTS.find(o=>o.v===SF)||SF_OPTS[1];
   const seatDesc=seatList.map((s,i)=>{
@@ -396,25 +399,32 @@ function showIntro(focusIdx=2){
       s.controller?.type==='keyboard'?`鍵盤${s.controller.layout}`:'觸控';
     return `${team}隊${role}：${who}`;
   }).join('　');
-  ui.showModal({title:'無人機足球 PVP',
-    html:`<p>⚽ FAI 規則：只有 <b>前鋒（striker）</b>穿過對面球門環才得分；進球後全隊須退回己方半場才能再進攻。</p>
+  ui.showModal({title:'⚽ 無人機足球 PVP',
+    summary:'A 隊對 B 隊：只有<b>前鋒</b>穿過對面球門環才得分，進球後全隊退回半場。',
+    tags:[`⏱ 每節 ${F.SET_DUR/60} 分鐘`,`🏆 ${F.N_SETS} 節 2 勝`,`👥 ${humanCount} 位真人`],
+    html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc}</div>`,
+    rules:`<p>⚽ FAI 規則：只有 <b>前鋒（striker）</b>穿過對面球門環才得分；進球後全隊須退回己方半場才能再進攻。</p>
       <p>每節 ${F.SET_DUR/60} 分鐘、共 ${F.N_SETS} 節，先拿 2 節勝出。</p>
-      <p style="font-size:11px;color:#7aa3b8">${seatDesc}</p>
       <p>${humanCount<=1?'C 視角（追蹤/FPV/俯視/飛手）・V 切換飛手站位・':humanCount>=2?'Q 切換多人視角（個人分格／共用飛手）・':''}Z/LB 蹲・F 保護籠旋轉</p>`,
+    settings:[
+      {id:'sf',label:'機速',value:String(sfCur.v),options:SF_OPTS.map(o=>({v:String(o.v),label:o.label})),
+        hint:v=>({'0.55':'推就走、放就停，最好控制','1':'推就走、放就停','1.8':'放開搖桿還會往前滑、轉向更靈敏，要提早收桿'})[v]||'',
+        onChange:v=>{ SF=+v; progress.setSetting('pvpSF',SF); }},
+      {id:'rule',label:'進球判定',value:strict?'1':'0',options:[{v:'0',label:'練習寬鬆'},{v:'1',label:'正式 FAI'}],
+        hint:v=>v==='1'?'整顆球要完全穿過球門環才算':'球心穿過內徑就算，比較容易進',
+        onChange:v=>{ strict=v==='1'; progress.setSetting('pvpStrict',strict); }},
+      {id:'hold',label:'🧭 定高',value:holdOff?'0':'1',options:[{v:'1',label:'開'},{v:'0',label:'關'}],
+        hint:v=>v==='0'?'所有真人都沒有定高，放開油門會往下掉（AI 不受影響，成績另外標示）':'放開油門會停在原本的高度',
+        onChange:v=>{ holdOff=v==='0'; progress.setSetting('pvpHoldOff',holdOff); }},
+    ],
     buttons:[
-      {id:'b-sf',label:'機速：'+sfCur.label,onClick:()=>{
-        const i=(SF_OPTS.indexOf(sfCur)+1)%SF_OPTS.length;
-        SF=SF_OPTS[i].v; progress.setSetting('pvpSF',SF); showIntro(0);}},
-      {id:'b-rule',label:'判定：'+(strict?'正式 FAI':'練習寬鬆'),onClick:()=>{
-        strict=!strict; progress.setSetting('pvpStrict',strict); showIntro(1);}},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-      {id:'b-go',label:'開賽！',onClick:startMatch}]});
-  ui.gpSetFocus(['b-sf','b-rule','b-pairing','b-go'],focusIdx);
+      {id:'b-go',label:'▶ 開賽！',onClick:startMatch,primary:true},
+      {id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}]});
 }
 function startMatch(){
   ui.closeModal(); sfx.play('click');
   engine.simStarted=true; phase='playing';
-  if(hud){hud.setMission('⚽ 第 1 節');hud.toast('開賽！','ok');}
+  if(hud){hud.setMission('⚽ 第 1 節');hud.toast(holdOff?'開賽！無定高：放開油門會下墜':'開賽！',holdOff?'warn':'ok');}
 }
 function togglePause(){
   if(!engine.simStarted||phase==='match_end')return;
@@ -453,7 +463,7 @@ engine.start((dt,simStarted)=>{
     // 人類席位：各自讀自己的控制器輸入
     humanIdx.forEach(i=>{
       const inp=input.playerFor(ctlFor(i));
-      drones[i].step(dt,inp,SF);
+      drones[i].step(dt,inp,SF,holdOff);
     });
     // AI 席位：各自沿用自己在大廳選的難度
     seatList.forEach((s,i)=>{

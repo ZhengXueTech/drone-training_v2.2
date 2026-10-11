@@ -54,6 +54,7 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 
 /* ============================================================
    情境體驗：守門對戰（x-goalkeeper 的 pk-live 版本，規劃書 §9 成本表
@@ -330,21 +331,18 @@ function seatDesc(){
     return `${PLABEL[i]}：${who}`;
   }).join('　');
 }
-function showIntro(focusIdx=0){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({title:'情境體驗 · 守門對戰',
-    html:`<p>席 0＝<strong>守門</strong>（防守球門），席 1＝<strong>前鋒</strong>（衝鋒進攻）——
+  startPanel(ui,{levelId:'goalkeeper-pk',title:'🥅 情境體驗 · 守門對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'席 0＝<b>守門</b>、席 1＝<b>前鋒</b>：守門擋下超過一半就贏，反之前鋒贏！',
+    tags:['🛡 一攻一守','🥅 穿過中心圈＝得分','💥 撞偏＝擋下'],
+    rules:`<p>席 0＝<strong>守門</strong>（防守球門），席 1＝<strong>前鋒</strong>（衝鋒進攻）——
       一攻一守的天生對戰結構，前鋒衝過來時守門靠近攔截或撞偏即可擋下！</p>
       <p>🥅 前鋒穿過球門中心圈算得分，撞偏／擦身算擋下，衝出底線也算擋下。<br>
-      比賽結束時比「擋下率」：守門擋下超過一半＝守門獲勝，反之前鋒獲勝。</p>
-      <p style="font-size:11px;color:#caa3b8">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-short', label:'⏱ 30 秒（快速）',onClick:()=>startGame('short')},
-      {id:'b-normal',label:'⏱ 60 秒（標準）',onClick:()=>startGame('normal')},
-      {id:'b-long',  label:'⏱ 90 秒（長場）',onClick:()=>startGame('long')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
-  ui.gpSetFocus(['b-short','b-normal','b-long','b-pairing'],focusIdx);
+      比賽結束時比「擋下率」：守門擋下超過一半＝守門獲勝，反之前鋒獲勝。</p>`,
+    diffLabel:'⏱ 時間',diffDefault:'normal',
+    diffs:[{v:'short',label:'30 秒',hint:'快速'},{v:'normal',label:'60 秒',hint:'標準'},{v:'long',label:'90 秒',hint:'長場'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(dur){
   pDur=dur;

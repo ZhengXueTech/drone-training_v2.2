@@ -54,6 +54,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：追逐對戰（x-chase 的 pk-live 版本，規劃書 §9 成本表低成本
@@ -131,6 +133,7 @@ const BOUND=12;
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 buildBasicField(engine.scene,{size:BOUND,sky:0x0d0806,skipCompassMark:true});
 const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
 const ARENA={minX:-(BOUND-1),maxX:BOUND-1,minY:0.5,maxY:8,minZ:-(BOUND-1),maxZ:BOUND-1};
@@ -338,21 +341,19 @@ function seatDesc(){
     return `${PLABEL[i]}：${who}`;
   }).join('　');
 }
-function showIntro(focusIdx=0){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
   ui_closeGuard();
-  showModal({title:'情境體驗 · 追逐對戰',
-    html:`<p>席 0＝<strong>追蹤者</strong>，席 1＝<strong>逃跑者</strong>——你追我逃的天生對戰結構，
+  startPanel(ui,{levelId:'chase-pk',title:'🏷 情境體驗 · 追逐對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'席 0＝<b>追蹤者</b>、席 1＝<b>逃跑者</b>：追到次數達標追蹤者贏，撐到時間到逃跑者贏！',
+    tags:['🏃 你追我逃','🏷 碰到＝標記','🔥 5 秒內連碰 Combo'],
+    rules:`<p>席 0＝<strong>追蹤者</strong>，席 1＝<strong>逃跑者</strong>——你追我逃的天生對戰結構，
       追蹤者要碰到逃跑者才算標記成功！</p>
       <p>🏷 標記到即 +1 次，5 秒內連續標記可疊加 Combo。<br>
-      追蹤者標記次數達標即獲勝，時間到還沒達標則逃跑者判定成功逃脫。</p>
-      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-short', label:'⏱ 30 秒（快速）',onClick:()=>startGame('short')},
-      {id:'b-normal',label:'⏱ 60 秒（標準）',onClick:()=>startGame('normal')},
-      {id:'b-long',  label:'⏱ 90 秒（長場）',onClick:()=>startGame('long')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
+      追蹤者標記次數達標即獲勝，時間到還沒達標則逃跑者判定成功逃脫。</p>`,
+    diffLabel:'⏱ 時間',diffDefault:'normal',
+    diffs:[{v:'short',label:'30 秒',hint:'快速'},{v:'normal',label:'60 秒',hint:'標準'},{v:'long',label:'90 秒',hint:'長場'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(dur){
   pDur=dur;
@@ -427,12 +428,12 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 function ui_closeGuard(){} // 保留擴充空間（目前不需要 gamepad 導覽）
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

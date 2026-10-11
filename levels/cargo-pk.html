@@ -54,6 +54,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：投遞對戰（x-cargo 的 pk-live 版本，規劃書 §9 成本表中成本
@@ -116,6 +118,7 @@ const BOUND=11;
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 buildBasicField(engine.scene,{size:BOUND,sky:0x0d0a05,skipCompassMark:true});
 const compassLandmarks=makeCompassLandmarks(engine.scene,{size:BOUND});
 
@@ -344,23 +347,20 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 
-function showIntro(){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  showModal({title:'情境體驗 · 投遞對戰',
-    html:`<p>P1／P2 共用同一個<strong>取貨點</strong>與<strong>3 個落點</strong>，各自獨立取貨→依序送達，
+  startPanel(ui,{levelId:'cargo-pk',title:'📦 情境體驗 · 投遞對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 共用取貨點和 3 個落點，各送各的，<b>比總得分</b>！飛太快貨會掉。',
+    tags:['⏱ 90 秒','📦 一輪 +200','✨ 無掉落 +100'],
+    rules:`<p>P1／P2 共用同一個<strong>取貨點</strong>與<strong>3 個落點</strong>，各自獨立取貨→依序送達，
       各送各的、比誰的總得分高！</p>
       <p>⚡ 水平速度持續超限 → 貨物掉落　🚧 碰到邊界 → 貨物掉落<br>
       完整投遞一輪 +200 分，全程無掉落再 +100 分加成，雙方共用同一套限速/落點難度。<br>
-      ⏱ 挑戰時間 <b>90 秒</b>！</p>
-      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-easy',label:'初級（限速5・大落點）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'中級（限速3.5）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'高級（限速2.5・小落點）',onClick:()=>startGame('hard')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
+      ⏱ 挑戰時間 <b>90 秒</b>！</p>`,
+    diffs:[{v:'easy',label:'初級',hint:'限速 5・大落點'},{v:'med',label:'中級',hint:'限速 3.5'},{v:'hard',label:'高級',hint:'限速 2.5・小落點'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;
@@ -414,7 +414,7 @@ addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

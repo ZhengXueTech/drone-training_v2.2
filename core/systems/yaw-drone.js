@@ -145,9 +145,10 @@ function _deflected(n,sign,maxAng){
   const ang=(Math.random()*2-1)*maxAng, cs=Math.cos(ang), sn=Math.sin(ang);
   return _bd.set((n.x*cs-n.z*sn)*sign,n.y*sign+(Math.random()*2-1)*0.25,(n.x*sn+n.z*cs)*sign).normalize();
 }
-export function blockImpact(gk,other,n,rng=Math.random){
+export function blockImpact(gk,other,n,rng=Math.random,maxKnock=null){   // maxKnock（2026-10-11）：撞飛機率上限，不傳＝原本機率
   const closing=Math.abs(_bi.copy(gk.vel).sub(other.vel).dot(n));
-  const pKnock=closing<1.5?0.05:closing<3.5?0.25:0.40, pStun=0.15;
+  let pKnock=closing<1.5?0.05:closing<3.5?0.25:0.40; const pStun=0.15;
+  if(maxKnock!=null)pKnock=Math.min(pKnock,maxKnock);
   const r=rng();
   if(r<pKnock){
     gk.vel.copy(_deflected(n,1,0.6)).multiplyScalar(Math.max(2.2,closing*0.85));

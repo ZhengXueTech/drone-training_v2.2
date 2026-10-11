@@ -42,6 +42,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { WindSystem } from '../core/systems/wind.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { sfx } from '../core/audio.js';
@@ -377,23 +378,16 @@ hud.attachTouch(input);
 let _gpThermalPrev=false;
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 山區搜救',
-    html:`<p>山難發生！操控無人機在崎嶇山區搜尋倖存者，飛到 <strong>1.5m</strong> 內即可尋獲。</p>
+  startPanel(ui,{levelId:'x-rescue',title:'⛰️ 情境體驗 · 山區搜救',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'在山區找到所有倖存者：飛到 <b>1.5 m</b> 內就算找到，按 B 開熱成像。',
+    tags:['🔍 1.5 m 內尋獲','🌡 熱成像 15 秒','⛰ 小心地形'],
+    rules:`<p>山難發生！操控無人機在崎嶇山區搜尋倖存者，飛到 <strong>1.5m</strong> 內即可尋獲。</p>
       <p>按 <b>B</b>／畫面右下角按鈕開啟<b>熱成像</b>，偵測距離大幅提升，限時 15 秒，冷卻 20 秒。<br>
       注意避開地形碰撞！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:'🌿 初級（5人・3分・熱成像7m）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'⚡ 中級（6人・2:30・熱成像5.5m）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'💀 高級（8人・2分・熱成像4m・強風）',onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'🌿 初級',hint:'5 人・3 分鐘・熱成像 7 m'},{v:'med',label:'⚡ 中級',hint:'6 人・2 分 30 秒・熱成像 5.5 m'},{v:'hard',label:'💀 高級',hint:'8 人・2 分鐘・熱成像 4 m・強風'}],
+    onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff; curCfg=DIFF_CFG[diff];

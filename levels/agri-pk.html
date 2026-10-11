@@ -54,6 +54,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：農噴對戰（x-agri 的 pk-live 版本，規劃書 §9 成本表中成本
@@ -177,6 +179,7 @@ const AI_LOW=20, AI_HIGH=85; // 資源管理遲滯門檻（低於 LOW 觸發返�
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 const wind=new WindSystem();
 
 /* ── 場地（沿單人版：深綠夜色霧＋泥土地面＋8×5 農田格，共用同一份，
@@ -507,23 +510,20 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 
-function showIntro(){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  showModal({title:'情境體驗 · 農噴對戰',
-    html:`<p>P1／P2 開農噴機搶同一片 8×5 農田，飛低於 3m 且藥水充足即
+  startPanel(ui,{levelId:'agri-pk',title:'🌾 情境體驗 · 農噴對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 搶同一片農田：飛低於 3 m <b>自動噴藥</b>，先噴到的格子算誰的，比誰佔得多！',
+    tags:['🌱 40 格','⬇ 高度 &lt; 3 m','🔋💧 補給站回充'],
+    rules:`<p>P1／P2 開農噴機搶同一片 8×5 農田，飛低於 3m 且藥水充足即
       <strong>自動噴藥</strong>（拿掉單人版的手動開關），先噴到的格子
       永久算誰的，時間到或 40 格全部有主，比誰佔的格子多！</p>
       <p>🔋 電量／💧 藥水任一座補給站都能回充；電量歸零該玩家停飛
-      （比賽不會因此結束）。⚠️ 撞到樹木/電線桿會被推開彈開。</p>
-      <p style="font-size:11px;color:#a8c9a8">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-easy',label:'🌾 初級（無障礙・120秒・半徑1.0m）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'⚡ 中級（4棵樹+微風・120秒・半徑0.85m）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'💀 高級（樹+電線桿+風・100秒・半徑0.70m）',onClick:()=>startGame('hard')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
+      （比賽不會因此結束）。⚠️ 撞到樹木/電線桿會被推開彈開。</p>`,
+    diffs:[{v:'easy',label:'🌾 初級',hint:'無障礙・120 秒・半徑 1.0 m'},{v:'med',label:'⚡ 中級',hint:'4 棵樹＋微風・120 秒・半徑 0.85 m'},{v:'hard',label:'💀 高級',hint:'樹＋電線桿＋風・100 秒・半徑 0.70 m'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;
@@ -576,7 +576,7 @@ addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

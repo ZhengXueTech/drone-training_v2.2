@@ -34,6 +34,7 @@ import { InputManager } from '../core/input.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { buildDroneStyle } from '../core/drone-styles.js';
+import '../core/soccer-arena.js';   // 2026-10-11 足球場畫面升級（競技場外觀＋畫質選擇；物理規則不動）
 import { FIELD, TA, SOCCER_SEATS, SoccerDrone, buildSoccerField,
          resolveCollisions, checkGoal, SOCCER_FEEL } from '../core/systems/soccer.js';
 import { updateSoccerAI, AI_DIFF } from '../core/systems/ai.js';
@@ -81,6 +82,7 @@ const SF_OPTS=[
 ];
 let sfIdx=Math.max(0,SF_OPTS.findIndex(o=>o.code===progress.setting('soccerSFCode','std')));
 let SF=SF_OPTS[sfIdx].v, noHold=SF_OPTS[sfIdx].noHold;
+let holdOff=!!progress.setting('soccerHoldOff',false); if(holdOff)noHold=true;   // 2026-10-11 開賽前可單獨關掉定高（不必選專家機速）
 const DIFF_LABEL={easy:'😊 簡單',med:'⚡ 中等',hard:'💀 困難'};
 
 /* ── 相機（足球場 1/5 尺度——CAMERA_SPEC 係數不適用，沿基本版足球專屬參數） ── */
@@ -122,10 +124,11 @@ let gear2Used=false;
 function soccerChallenge(){
   const t=[]; const c=SF_OPTS[sfIdx].code;
   if(c!=='std')t.push(SF_OPTS[sfIdx].label);
+  if(holdOff&&!SF_OPTS[sfIdx].noHold)t.push('無定高');
   if(gear2Used||player.gear===2)t.push('二檔');
   return t.join('・');
 }
-function soccerChallengeFields(){ const t=soccerChallenge(); return {challenge:t||'標準',challengeCode:`sf-${SF_OPTS[sfIdx].code}-g${(gear2Used||player.gear===2)?2:1}`}; }
+function soccerChallengeFields(){ const t=soccerChallenge(); return {challenge:t||'標準',challengeCode:`sf-${SF_OPTS[sfIdx].code}-g${(gear2Used||player.gear===2)?2:1}${holdOff&&!SF_OPTS[sfIdx].noHold?'-h0':''}`}; }
 function toggleGear(){
   player.gear=player.gear===2?1:2;
   if(player.gear===2)gear2Used=true;
@@ -201,32 +204,32 @@ function showMatchEnd(){
 }
 
 /* ── Intro／暫停 ── */
-function showIntro(focusIdx=3){
+function showIntro(){   // 2026-10-11 統一開始畫面格式（一句重點＋規則收合＋分段設定）
   engine.simStarted=false;
-  ui.showModal({title:'無人機足球 3v3',
-    html:`<p>⚽ FAI 規則：只有 <b>striker</b>（你）穿過對面紅色球門環才得分；
-      進球後全隊須退回己方半場才能再進攻。</p>
-      <p>每節 ${F.SET_DUR/60} 分鐘、共 ${F.N_SETS} 節，先拿 2 節勝出。
-      隊友與對手由 AI 操控。</p>
-      <p>C 視角（追蹤/FPV/俯視/飛手）・V 站位・Z／手把十字↓ 蹲・F 保護籠旋轉・R 重置位置・G／手把 RT 切換檔位</p>
-      <p style="text-align:center;color:#7aa3b8">🛸 碰撞不再永遠對稱彈開：衝擊夠猛時可能撞球定桿換位（對方被打飛）、
-      在門前甚至可能兩機一起捲入球門；起降貼地偶爾會有訊號異常（搖桿暫時打折），都是真實無人機常見現象。</p>
-      <p style="text-align:center;color:#9fc3d8">⚙ 機速：慢速有刷／標準＝推就走、放就停；<b>競速無刷＝放開搖桿還會往前滑、轉向更靈敏，要提早收桿</b>；<b>專家無定高＝競速無刷＋沒有定高，放開油門會往下掉</b>。</p>
-      ${noHold?'<p style="text-align:center;color:#fbbf24">⚠ 專家無定高：放開油門會直接下墜，需自己抓住懸停油門量，AI 隊友/對手不受影響</p>':''}`,
+  ui.showModal({title:'⚽ 無人機足球 3v3',
+    summary:'你是<b>前鋒</b>：穿過對面<b style="color:#f87171">紅色球門環</b>就得分，隊友和對手由 AI 操控。',
+    tags:[`⏱ 每節 ${F.SET_DUR/60} 分鐘`,`🏆 ${F.N_SETS} 節 2 勝`,'🔁 進球後全隊退回半場'],
+    rules:`<p>⚽ FAI 規則：只有 <b>striker</b>（你）穿過對面紅色球門環才得分；進球後全隊須退回己方半場才能再進攻。</p>
+      <p>⌨ C 視角（追蹤／FPV／俯視／飛手）・V 站位・Z／手把十字↓ 蹲・F 保護籠旋轉・R 重置位置・G／手把 RT 切換檔位</p>
+      <p>🛸 碰撞不再永遠對稱彈開：衝擊夠猛時可能撞球定桿換位（對方被打飛）、在門前甚至可能兩機一起捲入球門；起降貼地偶爾會有訊號異常（搖桿暫時打折），都是真實無人機常見現象。</p>`,
+    settings:[
+      {id:'sf',label:'機速',value:SF_OPTS[sfIdx].code,options:SF_OPTS.map(o=>({v:o.code,label:o.label})),
+        hint:v=>({slow:'推就走、放就停，最好控制',std:'推就走、放就停',race:'放開搖桿還會往前滑、轉向更靈敏，要提早收桿',expert:'競速無刷＋沒有定高，放開油門會往下掉'})[v],
+        onChange:v=>{ sfIdx=SF_OPTS.findIndex(o=>o.code===v); SF=SF_OPTS[sfIdx].v; noHold=SF_OPTS[sfIdx].noHold||holdOff; progress.setSetting('soccerSFCode',v); showIntro(); }},
+      {id:'diff',label:'AI 難度',value:diff,options:Object.keys(AI_DIFF).map(k=>({v:k,label:DIFF_LABEL[k]})),
+        onChange:v=>{ diff=v; progress.setSetting('soccerDiff',diff); }},
+      {id:'rule',label:'進球判定',value:strict?'1':'0',options:[{v:'0',label:'練習寬鬆'},{v:'1',label:'正式 FAI'}],
+        hint:v=>v==='1'?'整顆球要完全穿過球門環才算':'球心穿過內徑就算，比較容易進',
+        onChange:v=>{ strict=v==='1'; progress.setSetting('soccerStrict',strict); }},
+      {id:'hold',label:'🧭 定高',value:(SF_OPTS[sfIdx].noHold||holdOff)?'0':'1',
+        options:[{v:'1',label:'開',disabled:SF_OPTS[sfIdx].noHold},{v:'0',label:'關'}],
+        hint:v=>SF_OPTS[sfIdx].noHold?'專家機速固定沒有定高':v==='0'?'放開油門會往下掉，要自己抓住懸停油門（AI 不受影響）':'放開油門會停在原本的高度',
+        onChange:v=>{ if(SF_OPTS[sfIdx].noHold)return; holdOff=v==='0'; progress.setSetting('soccerHoldOff',holdOff); noHold=holdOff; }},
+    ],
     buttons:[
-      {id:'b-sf',label:'機速：'+SF_OPTS[sfIdx].label,onClick:()=>{
-        sfIdx=(sfIdx+1)%SF_OPTS.length;
-        SF=SF_OPTS[sfIdx].v; noHold=SF_OPTS[sfIdx].noHold;
-        progress.setSetting('soccerSFCode',SF_OPTS[sfIdx].code); showIntro(0);}},
-      {id:'b-diff',label:'AI 難度：'+DIFF_LABEL[diff],onClick:()=>{
-        const ks=Object.keys(AI_DIFF);
-        diff=ks[(ks.indexOf(diff)+1)%ks.length];
-        progress.setSetting('soccerDiff',diff); showIntro(1);}},
-      {id:'b-rule',label:'判定：'+(strict?'正式 FAI':'練習寬鬆'),onClick:()=>{
-        strict=!strict; progress.setSetting('soccerStrict',strict); showIntro(2);}},
-      {id:'b-go',label:'開賽！',onClick:startMatch},
+      {id:'b-go',label:'▶ 開賽！',onClick:startMatch,primary:true},
       {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'}]});
-  ui.gpSetFocus(['b-sf','b-diff','b-rule','b-go','b-back'],focusIdx);
+  ui.gpSetFocus(['b-go','b-back'],0);
 }
 function startMatch(){
   ui.closeModal(); sfx.play('click');

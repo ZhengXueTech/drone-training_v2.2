@@ -38,6 +38,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { WindSystem } from '../core/systems/wind.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { sfx } from '../core/audio.js';
@@ -433,43 +434,27 @@ hud.attachTouch(input);
 let _gpBoostPrev=false;
 
 /* ── Intro／難度選擇／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+let introScen='bridge';
+function showIntro(){   // 2026-10-11 統一開始畫面格式：情境＋難度各一列（原本兩層選單）
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 橋梁/電塔巡檢',
-    html:`<p>飛到各巡檢節點附近並<strong>懸停</strong>，進度條累滿即完成該區段。</p>
+  try{ const v=localStorage.getItem('nd.scen.x-bridge'); if(SCENARIOS[v])introScen=v; }catch{}
+  const tierHint=t=>()=>{ const c=getCfg(introScen,t); return `${fmtTime(c.time)}・${windLabel(c.wind)}`; };
+  startPanel(ui,{levelId:'x-bridge',title:'🌉 情境體驗 · 橋梁/電塔巡檢',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'飛到巡檢節點旁邊<b>懸停</b>，進度條累滿就完成一段；別撞到結構物！',
+    tags:['🛰 懸停掃描','⚡ B＝掃描加速','🚧 避開橋墩鋼纜'],
+    rules:`<p>飛到各巡檢節點附近並<strong>懸停</strong>，進度條累滿即完成該區段。</p>
       <p>按 <b>B</b>／畫面右下角按鈕啟動<b>精密掃描加速</b>（3× 速度，持續 5 秒，冷卻 15 秒）。<br>
-      注意避開橋墩、鋼纜、電塔等結構物！先選情境，下一步再選難度。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-bridge',label:'🌉 橋梁（8段）',onClick:()=>showDiffPicker('bridge')},
-      {id:'b-tower', label:'⚡ 電塔（10段）',onClick:()=>showDiffPicker('tower')},
-      {id:'b-wire',  label:'💀 高壓線（12段）',onClick:()=>showDiffPicker('wire')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-bridge','b-tower','b-wire'],focusIdx);
+      注意避開橋墩、鋼纜、電塔等結構物！難度會影響時間、風力、掃描速度、碰撞懲罰、耗電。</p>`,
+    pre:[{id:'scen',label:'🗺️ 情境',value:introScen,options:[{v:'bridge',label:'🌉 橋梁'},{v:'tower',label:'⚡ 電塔'},{v:'wire',label:'💀 高壓線'}],
+      hint:v=>({bridge:'8 段',tower:'10 段',wire:'12 段'})[v],
+      onChange:v=>{ introScen=v; try{ localStorage.setItem('nd.scen.x-bridge',v); }catch{}
+        const h=document.querySelector('#row-diff .np-hint'), on=document.querySelector('#row-diff .np-opts button.on');
+        if(h&&on){ const t=['easy','med','hard'][[...on.parentNode.children].indexOf(on)]; h.innerHTML=tierHint(t)(); } }}],
+    diffs:['easy','med','hard'].map(t=>({v:t,label:DIFF_TIERS[t].name,hint:tierHint(t)})),
+    onStart:d=>startGame(introScen,d)});
 }
 /* 情境／難度兩層選擇：使用者明確要求橋梁/電塔/高壓線三種情境要各自能再選簡單/中等/困難，
    不要像 v1.0 那樣把「選情境」跟「選難度」綁死成同一組三選一。 */
-function showDiffPicker(scenarioKey,focusIdx=1){
-  engine.simStarted=false; playing=false;
-  const s=SCENARIOS[scenarioKey];
-  ui.showModal({
-    title:'情境體驗 · '+s.label,
-    html:`<p>選擇本次巡檢的難度（影響時間、風力、掃描速度、碰撞懲罰、耗電）：</p>`,
-    buttons:[
-      {id:'b-back',label:'← 返回情境選擇',onClick:()=>showIntro(0)},
-      ...['easy','med','hard'].map(tier=>{
-        const cfg=getCfg(scenarioKey,tier);
-        return{id:'b-diff-'+tier,
-          label:`${DIFF_TIERS[tier].name}（${fmtTime(cfg.time)}・${windLabel(cfg.wind)}）`,
-          onClick:()=>startGame(scenarioKey,tier)};
-      }),
-    ],align:'top'});
-  ui.gpSetFocus(['b-back','b-diff-easy','b-diff-med','b-diff-hard'],focusIdx);
-}
 function startGame(scenarioKey,tier){
   pScenario=scenarioKey; pTier=tier; curCfg=getCfg(scenarioKey,tier);
   gameTimer=curCfg.time; totalTime=curCfg.time; scannedCount=0; collisionCount=0; lastCollisionT=-2;
@@ -523,7 +508,7 @@ function finishGame(){
       <p>成績已記錄（nd.progress.x-bridge）。</p>`,
     buttons:[
       {id:'b-retry',label:'再試一次',onClick:()=>startGame(pScenario,pTier)},
-      {id:'b-diff',label:'換難度',onClick:()=>showDiffPicker(pScenario)},
+      {id:'b-diff',label:'換難度',onClick:()=>showIntro()},
       {id:'b-back',label:'返回入口',onClick:()=>location.href='../index.html'},
     ]});
 }

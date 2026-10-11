@@ -54,6 +54,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：橋梁/電塔巡檢對戰（x-bridge 的 pk-live 版本，規劃書 §9
@@ -170,6 +172,7 @@ const AI_SPD={easy:3.0,med:4.5,hard:6.0};
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 const wind=new WindSystem();
 
 /* ── 場地（沿單人版：天空藍霧＋地面/水面雙層平面，橋梁/電塔/高壓線
@@ -528,38 +531,28 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 
-function showIntro(){
+let introScen='bridge';
+function showIntro(){   // 2026-10-11 統一開始畫面格式：情境＋難度各一列（原本兩層選單）
   engine.simStarted=false; playing=false;
-  showModal({title:'情境體驗 · 橋梁/電塔巡檢對戰',
-    html:`<p>P1／P2 在同一座結構共同巡檢，飛到節點附近<strong>懸停</strong>
+  try{ const v=localStorage.getItem('nd.scen.bridge-pk'); if(SCENARIOS[v])introScen=v; }catch{}
+  const tierHint=t=>()=>{ const c=getCfg(introScen,t); return `${fmtTime(c.time)}・${windLabel(c.wind)}`; };
+  startPanel(ui,{levelId:'bridge-pk',title:'🌉 情境體驗 · 橋梁/電塔巡檢對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 一起巡檢同一座結構：飛到節點旁<b>懸停</b>掃描，先完成的算誰的，比誰完成得多！',
+    tags:['🛰 懸停掃描','🚧 避開結構物','🔋 電量歸零停飛'],
+    rules:`<p>P1／P2 在同一座結構共同巡檢，飛到節點附近<strong>懸停</strong>
       累積掃描進度，先完成的節點永久算誰的，時間到或全部節點掃描完成，
       比誰完成得多！</p>
       <p>⚠️ 注意避開橋墩/鋼纜/電塔等結構物！電量持續消耗，歸零該玩家會
-      停飛（比賽不會因此結束）。先選情境，下一步再選難度。</p>
-      <p style="font-size:11px;color:#c9b389">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-bridge',label:'🌉 橋梁（8段）',onClick:()=>showDiffPicker('bridge')},
-      {id:'b-tower', label:'⚡ 電塔（10段）',onClick:()=>showDiffPicker('tower')},
-      {id:'b-wire',  label:'💀 高壓線（12段）',onClick:()=>showDiffPicker('wire')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
-}
-function showDiffPicker(scenarioKey){
-  engine.simStarted=false; playing=false;
-  const s=SCENARIOS[scenarioKey];
-  showModal({title:'情境體驗 · '+s.label+' 對戰',
-    html:`<p>選擇本次巡檢對戰的難度（影響時間、風力、掃描速度、碰撞懲罰、耗電）：</p>`,
-    buttons:[
-      {id:'b-back',label:'← 返回情境選擇',onClick:showIntro},
-      ...['easy','med','hard'].map(tier=>{
-        const cfg=getCfg(scenarioKey,tier);
-        return{id:'b-diff-'+tier,
-          label:`${DIFF_TIERS[tier].name}（${fmtTime(cfg.time)}・${windLabel(cfg.wind)}）`,
-          onClick:()=>startGame(scenarioKey,tier)};
-      }),
-    ]});
+      停飛（比賽不會因此結束）。難度會影響時間、風力、掃描速度、碰撞懲罰、耗電。</p>`,
+    pre:[{id:'scen',label:'🗺️ 情境',value:introScen,options:[{v:'bridge',label:'🌉 橋梁'},{v:'tower',label:'⚡ 電塔'},{v:'wire',label:'💀 高壓線'}],
+      hint:v=>({bridge:'8 段',tower:'10 段',wire:'12 段'})[v],
+      onChange:v=>{ introScen=v; try{ localStorage.setItem('nd.scen.bridge-pk',v); }catch{}
+        const h=document.querySelector('#row-diff .np-hint'), on=document.querySelector('#row-diff .np-opts button.on');
+        if(h&&on){ const t=['easy','med','hard'][[...on.parentNode.children].indexOf(on)]; h.innerHTML=tierHint(t)(); } }}],
+    diffs:['easy','med','hard'].map(t=>({v:t,label:DIFF_TIERS[t].name,hint:tierHint(t)})),
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(introScen,d)});
 }
 function startGame(scenarioKey,tier){
   P[0]=freshP(); P[1]=freshP();
@@ -612,7 +605,7 @@ addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

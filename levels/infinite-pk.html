@@ -55,6 +55,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：無限穿環對戰（x-infinite 的 pk-live 版本，規劃書 §9 成本表
@@ -148,6 +150,7 @@ const AI_AGGR={easy:0.7,med:1.0,hard:1.4};
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 buildBasicField(engine.scene,{size:BOUND,sky:0x0b0f19,skipCompassMark:true});
 
 /* ── 兩台真機體（都是 C2 家族 Drone(arcade)；機體樣式改用可染色的
@@ -361,24 +364,22 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 
-function showIntro(){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  showModal({title:'情境體驗 · 無限穿環對戰',
-    html:`<p>P1／P2 各自擁有一條獨立的無限賽道（並排放置，互不干擾），
+  startPanel(ui,{levelId:'infinite-pk',title:'🌀 情境體驗 · 無限穿環對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 各自一條無限賽道，每 6 環地圖<b>重組</b>，時間到<b>比總分</b>！',
+    tags:['🟢 穿環得分','💥 撞柱 −30','🚨 擦到巡邏機 −15'],
+    rules:`<p>P1／P2 各自擁有一條獨立的無限賽道（並排放置，互不干擾），
       依序穿環得分，每過 6 環地圖<b>全面重組</b>：圈數越高障礙/AI 越多、
       越快，第 3 圈起還會上下漂移！</p>
       <p>🟢 穿環：+100×連擊×圈數分，連續穿越疊加 Combo 倍率<br>
       💥 撞障礙柱：-30 分　🚨 擦身 AI 巡邏機：-15 分<br>
-      時間到比總分，看誰能在固定時間內衝更高分！</p>
-      <p style="font-size:11px;color:#9fc3d8">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-short', label:'⏱ 60 秒（快速）',onClick:()=>startGame('short')},
-      {id:'b-normal',label:'⏱ 90 秒（標準）',onClick:()=>startGame('normal')},
-      {id:'b-long',  label:'⏱ 120 秒（長場）',onClick:()=>startGame('long')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
+      時間到比總分，看誰能在固定時間內衝更高分！</p>`,
+    diffLabel:'⏱ 時間',diffDefault:'normal',
+    diffs:[{v:'short',label:'60 秒',hint:'快速'},{v:'normal',label:'90 秒',hint:'標準'},{v:'long',label:'120 秒',hint:'長場'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(dur){
   pDur=dur;
@@ -431,7 +432,7 @@ addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

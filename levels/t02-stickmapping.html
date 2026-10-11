@@ -36,6 +36,8 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { handLabel, handDesc } from '../core/hand.js';   // 2026-10-11 說明補日本手
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing } from '../core/world.js';
 import { buildDroneStyle, droneStyleGet } from '../core/drone-styles.js';
@@ -182,17 +184,20 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  const bg=ui.showModal({
-    title:'搖桿位置對應教學',
-    html:`<p>🕹️ 這一關把「油門、偏航、俯仰、翻滾」四個動作拆開來，一次只練一個，
+  startPanel(ui,{levelId:'t02',
+    title:'🕹️ 搖桿位置對應教學',
+    summary:'油門、偏航、俯仰、翻滾<b>一次只練一個</b>，練熟才解鎖下一個，最後四軸全開飛一段。',
+    tags:['W/S 油門','A/D 偏航','↑/↓ 俯仰','←/→ 翻滾',`✋ ${handLabel()}`],
+    rules:`<p>🕹️ 這一關把「油門、偏航、俯仰、翻滾」四個動作拆開來，一次只練一個，
       練熟一個才會解鎖下一個，最後一關把四個軸全部打開，飛一段綜合路線。</p>
       <p>按鍵配置（Model 2 美國手，跟主遊戲一致）：<br>
       <b>W / S</b> 油門（上升/下降）　<b>A / D</b> 偏航（左轉/右轉）<br>
-      <b>↑ / ↓</b> 俯仰（前傾/後仰）　<b>← / →</b> 翻滾（左傾/右傾）</p>`,
-    buttons:[{id:'b-go',label:'開始第一項：油門練習',onClick:startGame}]});
-  ui.gpSetFocus(['b-go'],0);
+      <b>↑ / ↓</b> 俯仰（前傾/後仰）　<b>← / →</b> 翻滾（左傾/右傾）</p>
+      <p>🎮 手把／平板觸控：目前是 <b>${handLabel()}</b>——${handDesc()}。<br>
+      遙控器是日本手的同學，到首頁名字旁的「✋」或暫停選單切換成日本手再練。</p>`,
+    startLabel:'▶ 開始第一項：油門練習',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

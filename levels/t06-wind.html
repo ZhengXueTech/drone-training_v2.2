@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
 import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
@@ -138,21 +139,18 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=1){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'第六關 逆風飛行',
-    html:`<p>🌬️ 風向與風力持續變化，會不斷把無人機往旁邊推——
+  startPanel(ui,{levelId:'t06',style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🌬️ 第六關 逆風飛行',
+    summary:'風會一直把你往旁邊推：看右上角<b>風向箭頭</b>，往反方向推桿修正，穿過 8 個檢查點。',
+    tags:['🟢 8 個檢查點','🚧 中央障礙柱','🔋 充電站','📊 抗風分數'],
+    rules:`<p>🌬️ 風向與風力持續變化，會不斷把無人機往旁邊推——
       看右上角風向箭頭（指向被吹去的方向），往反方向推桿補正。</p>
       <p>🟢 依序穿過 8 個檢查點　🚧 避開中央障礙柱<br>
       🔋 電量會消耗，可到黃色充電站補充<br>
       📊 結算顯示抗風分數與高度穩定度</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;   // 點一下換下一款（背景即時預覽）
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},  // 焦點留在樣式鈕，可連按
-      {id:'b-go',label:'開始逆風飛行',onClick:startGame}],align:'top'});  // 對話框靠上，讓下方跟機視角看得到機體本人
-  ui.gpSetFocus(['b-style','b-go'],focusIdx);   // 預設焦點在「開始」
+    startLabel:'▶ 開始逆風飛行',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

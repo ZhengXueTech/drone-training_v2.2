@@ -54,6 +54,8 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
+import { UI } from '../core/ui.js';
 
 /* ============================================================
    情境體驗：建築外牆巡檢對戰（x-inspection 的 pk-live 版本，規劃書 §9
@@ -145,6 +147,7 @@ const AI_SPD={easy:2.2,med:3.4,hard:4.8};
 const lowQ=innerWidth<600;
 const engine=new Engine(document.getElementById('c'),{lowQuality:lowQ});
 const input=new InputManager();
+const ui=new UI(input);   // 2026-10-11 開始畫面用統一面板（含手把選單導航）
 const wind=new WindSystem();
 
 /* ── 場地（沿單人版：天空藍霧＋地面＋建築本體＋周邊城市剪影，幾何
@@ -501,23 +504,20 @@ function showModal({title,html,buttons}){
   });
   document.body.appendChild(wrap);
 }
-function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); }
+function closeModal(){ document.querySelectorAll('.nd-modal').forEach(el=>el.remove()); ui.closeModal(); }
 
-function showIntro(){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  showModal({title:'情境體驗 · 建築外牆巡檢對戰',
-    html:`<p>P1／P2 圍繞同一棟建築巡檢，飛到面板前<strong>懸停</strong>
+  startPanel(ui,{levelId:'inspection-pk',title:'🏢 情境體驗 · 建築外牆巡檢對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 繞同一棟建築，飛到面板前<b>懸停</b>掃描，先完成的算誰的；橘色異常分數更高！',
+    tags:['🛰 懸停掃描','🟧 異常加分','🔋 電量歸零停飛'],
+    rules:`<p>P1／P2 圍繞同一棟建築巡檢，飛到面板前<strong>懸停</strong>
       累積掃描進度，先完成的面板永久算誰的。<strong>橘色異常面板</strong>
       判定方式相同，只是分數權重更高，掃描時請留意持續閃爍的警示！</p>
       <p>⚠️ 注意避開建築本體碰撞！電量持續消耗，歸零該玩家會停飛
-      （比賽不會因此結束）。</p>
-      <p style="font-size:11px;color:#c9b8a3">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-easy',label:'🏢 初級（24格・3分・無風）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'⚡ 中級（36格・2:30・微風）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'💀 高級（36格・2分・強風）',onClick:()=>startGame('hard')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
+      （比賽不會因此結束）。</p>`,
+    diffs:[{v:'easy',label:'🏢 初級',hint:'24 格・3 分鐘・無風'},{v:'med',label:'⚡ 中級',hint:'36 格・2 分 30 秒・微風'},{v:'hard',label:'💀 高級',hint:'36 格・2 分鐘・強風'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(diff){
   P[0]=freshP(); P[1]=freshP();
@@ -572,7 +572,7 @@ addEventListener('keydown',e=>{ if(e.code==='Escape')togglePause(); });
 
 /* ── 主迴圈 ── */
 engine.start((dt,simStarted)=>{
-  input.update(dt);
+  input.update(dt); ui.update(dt);
   if(engine.paused)return;
   pkc.update(dt);
 

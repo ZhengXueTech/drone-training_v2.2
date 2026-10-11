@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing } from '../core/world.js';
 import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
@@ -170,22 +171,19 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=1){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'綜合障礙賽（單飛考核）',
-    html:`<p>🏁 這是 A 部分訓練的最終驗收，把之前學過的技能整合在同一趟航程：</p>
+  startPanel(ui,{levelId:'t05',style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🏁 綜合障礙賽（單飛考核）',
+    summary:'A 部分最終驗收：依序穿過 <b>6 個光環</b>，閃障礙和巡邏機、記得充電，完成後產生飛行報告。',
+    tags:['🟢 6 個檢查點','🚧 障礙柱','🚁 巡邏機','🔋 充電站'],
+    rules:`<p>🏁 這是 A 部分訓練的最終驗收，把之前學過的技能整合在同一趟航程：</p>
       <p>🟢 依序穿過全部 6 個檢查點光環（順序固定，不能跳過）<br>
       🚧 閃避灰色障礙柱（撞到會計入碰撞次數，不會強制中斷）<br>
       🚁 留意橘色巡邏無人機，太靠近會計入擦身次數<br>
       🔋 電池持續消耗，記得去黃色充電站補充<br><br>
       完成後會產生一份完整飛行報告，記錄你的整體表現。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      {id:'b-go',label:'🚀 開始障礙賽',onClick:startGame}],align:'top'});
-  ui.gpSetFocus(['b-style','b-go'],focusIdx);
+    startLabel:'🚀 開始障礙賽',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

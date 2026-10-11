@@ -38,6 +38,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Guide } from '../core/guide.js';
 import { buildBasicField } from '../core/world.js';
 import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
@@ -204,21 +205,17 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'精準降落',
-    html:`<p>🎯 本關訓練最關鍵的實戰技能：精準落地。</p>
+  startPanel(ui,{levelId:'t07',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🎯 精準降落',
+    summary:'飛到降落墊正上方<b>慢慢垂直下降</b>，在墊上停 1.5 秒；3 回合，墊子越來越小。',
+    tags:['🔵 3 m','🟡 2 m','🔴 1.2 m','⚠ 下降 &gt; 2 m/s＝墜機'],
+    rules:`<p>🎯 本關訓練最關鍵的實戰技能：精準落地。</p>
       <p>飛到降落墊正上方，<b>緩慢垂直下降</b>至地面，並在墊上維持 1.5 秒完成降落。共 3 回合，
       降落墊會越來越小：🔵 大型(3m)　🟡 中型(2m)　🔴 小型(1.2m)。</p>
       <p>⚠️ 下降速度過快（&gt;2 m/s）將判定為墜機，不計分（會重來這一回合，不影響其他回合）。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-go',label:'🎯 開始精準降落訓練',onClick:startGame}].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+    startLabel:'🎯 開始精準降落訓練',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

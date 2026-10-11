@@ -30,6 +30,21 @@ function _load(){
 }
 function _save(c){ try{ localStorage.setItem(STORE,JSON.stringify(c)); }catch{} }
 
+/* 挑戰條件的設定列（單人 Challenge／對戰 PkChallenge 共用；pk＝雙方相同、比賽中不能切檔、AI 不套用） */
+function condRows(c,persist,pk){
+  const r=[], dev=()=>c.input?.player?.(0)?.device||'keyboard';
+  if(c.allow.hold)r.push({id:'hold',label:'🧭 定高',value:c.hold?'1':'0',options:[{v:'1',label:'開'},{v:'0',label:'關'}],
+    hint:v=>v==='1'?'放開油門會停在原本的高度':('放開油門會往下掉，高度自己抓（成績另外標示）'+(pk?'；AI 維持定高':'')
+      +(!pk&&(dev()==='keyboard'||dev()==='touch')?'<br><span style="color:#fbbf24">⚠ '+(dev()==='touch'?'手機觸控':'鍵盤')+'很難抓油門，建議用手把或遙控器</span>':'')),
+    onChange:v=>{ c.hold=v==='1'; persist(); }});
+  if(c.allow.wind)r.push({id:'wind',label:'🌬️ 環境風',value:String(c.wind),options:[{v:'0',label:'無風'},{v:'1',label:'微風'},{v:'2',label:'強風'}],
+    hint:v=>v==='0'?'':(pk?'所有機體一起被吹（含 AI）':'會被吹走，要自己修正')+'（成績另外標示）',onChange:v=>{ c.wind=+v; persist(); }});
+  if(c.allow.gear)r.push({id:'gear',label:'⚙ 檔位',value:String(c.gear),options:[{v:'1',label:'一檔（穩）'},{v:'2',label:'二檔（快）'}],
+    hint:v=>pk?(v==='2'?'真人都用二檔，比賽中不能切；AI 維持一檔':'比賽中不能切檔'):(v==='2'?'速度更快、更難收；飛行中也能按 G／手把檔位鍵切換':'飛行中可按 G／手把檔位鍵切換'),
+    onChange:v=>{ c.gear=+v; persist(); }});
+  return r;
+}
+
 export class Challenge{
   constructor({levelId,input,ui,hud=null,allow=null}){
     this.levelId=levelId; this.input=input; this.ui=ui; this.hud=hud;
@@ -83,6 +98,8 @@ export class Challenge{
     if(!this.any)return null;
     return {id:'b-challenge',label:'⚙ 挑戰條件：'+(this.isStandard?'標準':this.tag()),onClick:()=>this.openMenu(back)};
   }
+  /* 統一開始畫面用（2026-10-11）：定高／風／檔位各一列分段選擇，取代「⚙ 挑戰條件」子選單 */
+  settingsRows(){ return condRows(this,()=>this._persist(),false); }
   openMenu(back,focus=0){
     const dev=this.input?.player?.(0)?.device||'keyboard';
     const warn=(!this.hold&&(dev==='keyboard'||dev==='touch'))
@@ -175,6 +192,8 @@ export class PkChallenge{
   code(){ return `h${this.hold?1:0}w${this.wind}g${this.gear}`; }
   recordFields(){ return {challenge:this.tag()||'標準',challengeCode:this.code()}; }
   topTag(){ return this.isStandard?'':`<b style="color:#fbbf24">⚠ ${this.tag()}</b>　`; }
+  /* 統一開始畫面（2026-10-11）：條件直接在開始畫面選（雙方相同），也同步回席位大廳的設定 */
+  settingsRows(){ return condRows(this,()=>savePkConditions(this),true); }
   introHtml(){
     if(!this.any)return '';
     return `<p style="font-size:12px;color:${this.isStandard?'#9fc3d8':'#fbbf24'}">⚙ 挑戰條件（雙方相同）：<b>${this.isStandard?'標準':this.tag()}</b>`+

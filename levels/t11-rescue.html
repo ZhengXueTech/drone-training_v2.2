@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
 import { Guide } from '../core/guide.js';
 import { buildBasicField } from '../core/world.js';
@@ -151,23 +152,19 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'搜救任務',
-    html:`<p>🆘 緊急任務！有 6 名倖存者分散在廣大地區，需要你用無人機找到他們。</p>
+  startPanel(ui,{levelId:'t11',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🆘 搜救任務',
+    summary:'沒有地圖：靠近 16 m 才偵測得到 SOS，找到 <b>6 名倖存者</b>後回出發點。',
+    tags:['📡 16 m 偵測','🔴 2 m 內確認','🟢 回出發點','🔋 2 座充電站'],
+    rules:`<p>🆘 緊急任務！有 6 名倖存者分散在廣大地區，需要你用無人機找到他們。</p>
       <p><b>你沒有地圖，也沒有方向指引</b>——靠近 16m 內才會偵測到 SOS 信標。</p>
       <p>🔴 到達 2m 內即確認找到，信標會熄滅<br>
       ✅ 找到所有 6 名後，返回綠色<b>出發點</b>完成任務<br>
       🔋 電量持續消耗，地圖中有 2 座充電站（各限用一次，可充到 100%）</p>
       <p>💡 訣竅：把地圖分成區塊，有系統地搜索——天空中的紅色光柱是遠處可見的求救訊號</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-go',label:'🆘 開始搜救任務',onClick:startGame}].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+    startLabel:'🆘 開始搜救任務',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

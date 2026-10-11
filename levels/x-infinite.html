@@ -29,6 +29,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { buildBasicField, makeRing, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { checkRingPass } from '../core/systems/scoring.js';
@@ -209,23 +210,17 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 動態變形挑戰',
-    html:`<p>記憶地圖沒用了！每過 6 個檢查點，地圖會<b>全面亂數重組</b>：圈數越高，
+  startPanel(ui,{levelId:'x-infinite',title:'🌀 情境體驗 · 動態變形挑戰',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'每過 6 個檢查點地圖就<b>亂數重組</b>，越後面越難，撐越久分數越高！',
+    tags:['🟢 穿環加秒','💥 撞柱 −3 秒','🚨 擦到巡邏機 −1 秒'],
+    rules:`<p>記憶地圖沒用了！每過 6 個檢查點，地圖會<b>全面亂數重組</b>：圈數越高，
       障礙柱與巡邏機<b>數量越多、速度越快</b>，第 3 圈起還會<b>上下漂移</b>！</p>
       <p>🟢 <b>穿過光環</b>：加秒＋加分，連續穿越疊加 Combo 倍率<br>
       💥 <b>撞到障礙柱</b>：扣 3 秒　🚨 <b>擦身 AI 巡邏機</b>：扣 1 秒<br>
       ⏱ 倒數歸零就結束，盡量撐久一點、衝更高分！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-start',label:'🚀 挑戰未知賽道',onClick:startGame},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-start'],focusIdx);
+    startLabel:'🚀 挑戰未知賽道',onStart:()=>startGame()});
 }
 function startGame(){
   checkpointIndex=0; totalCheckpointsPassed=0; currentLoop=1;

@@ -8,7 +8,7 @@
    雲端程式 tools/gas/Code.gs 的 LOWER_BETTER 要和這裡一致。
    這個檔案不 import 任何東西，避免模組互相引用。
    ============================================================ */
-export const LOWER_BETTER=new Set(['t02','t03','t04','race-playground','race-forest','race-city','race-gym','race-neon']);   // 2026-10-09 改裝賽道：總秒數
+export const LOWER_BETTER=new Set(['t02','t03','t04','race-playground','race-forest','race-city','race-gym','race-neon','race-pk']);   // 2026-10-09 改裝賽道：總秒數
 export const lowerBetter=id=>LOWER_BETTER.has(String(id));
 /* 兩個成績取比較好的；其中一個不是數字就回另一個；都不是回 undefined */
 export function pickBest(id,a,b){

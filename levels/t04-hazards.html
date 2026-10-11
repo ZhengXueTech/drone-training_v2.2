@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing, makeCompassLandmarks } from '../core/world.js';
 import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
@@ -237,20 +238,17 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=1){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'飛行風險與環境應對',
-    html:`<p>⚠️ 這一關練習兩個真實飛行中常遇到的狀況：</p>
+  startPanel(ui,{levelId:'t04',style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'⚠️ 飛行風險與環境應對',
+    summary:'閃障礙、半路換電池飛到終點；再頂著<b>陣風</b>依序穿過檢查點。',
+    tags:['① 墜機後果與換電池','② 陣風干擾'],
+    rules:`<p>⚠️ 這一關練習兩個真實飛行中常遇到的狀況：</p>
       <p><b>①墜機後果與換電池</b>：從起點飛到終點，途中閃避障礙柱（撞到會讓機體受損），
       並在半路的充電站補充電量，兩者歸零都會迫降失敗。<br>
       <b>②陣風環境干擾</b>：飛行中會隨機出現側風把機身吹偏，看風向箭頭即時反向修正，依序穿過檢查點。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;   // 點一下換下一款（背景即時預覽）
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},  // 焦點留在樣式鈕，可連按
-      {id:'b-go',label:'開始第一項：墜機後果與換電池',onClick:startGame}],align:'top'});
-  ui.gpSetFocus(['b-style','b-go'],focusIdx);
+    startLabel:'▶ 開始第一項：墜機後果與換電池',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

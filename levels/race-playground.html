@@ -35,19 +35,9 @@
 <div id="count"></div>
 <div id="lap"></div>
 <script type="module">
-import * as THREE from 'three';
-import { runRace } from '../core/race.js';   // 2026-10-09 第二階段：賽道規則抽到 core/race.js，這裡只放賽道資料（行為跟第一階段相同）
-/* 賽道：橢圓上 10 個環，高度起伏；橘環＝加速（第 3、7 環）、綠環＝充電（第 5 環） */
-const A=19, B=12, N=10, BOOST=[3,7], CHARGE=[5];
-const rings=[];
-for(let i=0;i<N;i++){
-  const th=i/N*Math.PI*2;
-  rings.push({p:new THREE.Vector3(A*Math.sin(th),2.2+1.6*Math.sin(th*2+0.8)+(i===0?0:0.4),B*Math.cos(th)),
-    kind:BOOST.includes(i)?'boost':CHARGE.includes(i)?'charge':'ring'});
-}
-runRace({levelId:'race-playground',title:'操場入門',bounds:{x:26,z:18,y:10},rings,
-  pit:new THREE.Vector3(-7,0,16),pitHint:'起點左後方',pitSignYaw:-Math.PI/2,
-  spawn:new THREE.Vector3(-4.5,1.2,B),spawnYaw:-Math.PI/2,laps:3});
+import { runRace } from '../core/race.js';
+import { TRACK } from '../data/tracks/race-playground.js';   // 2026-10-11 賽道資料搬到 data/tracks/（對戰模式共用），內容不變
+runRace(TRACK);
 </script>
 </body>
 </html>

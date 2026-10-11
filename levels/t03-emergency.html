@@ -63,6 +63,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing } from '../core/world.js';
 import { buildDroneStyle, droneStyleGet, droneStyleSet, DRONE_STYLES } from '../core/drone-styles.js';
@@ -319,20 +320,17 @@ hud.attachTouch(input);
 document.getElementById('kill-btn').addEventListener('pointerdown',e=>{e.preventDefault();attemptKillSwitch();});
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=1){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  const bg=ui.showModal({
-    title:'緊急處置教學',
-    html:`<p>🛡️ 這一關練習三種真實飛行中可能遇到的危急狀況：</p>
+  startPanel(ui,{levelId:'t03',style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🛡️ 緊急處置教學',
+    summary:'練三種危急狀況：<b>緊急停止</b>、<b>訊號失靈</b>、<b>被擦撞失控</b>，學會冷靜處理。',
+    tags:['① Kill Switch','② 訊號失靈','③ 擦撞失控'],
+    rules:`<p>🛡️ 這一關練習三種真實飛行中可能遇到的危急狀況：</p>
       <p><b>①緊急停止（Kill Switch）</b>：按 <b>SPACE</b>（手把 <b>A 鍵</b>、觸控點<b>紅色按鈕</b>）立刻切斷動力，是萬不得已才用的最後手段。<br>
       <b>②訊號突然失靈</b>：學習在訊號中斷時保持冷靜，不要瘋狂按鍵。<br>
       <b>③被其他無人機擦撞失控</b>：學習在姿態失控後，冷靜等待並重新穩定機身。</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      {id:'b-go',label:'開始第一項：緊急停止教學',onClick:startGame}],align:'top'});
-  ui.gpSetFocus(['b-style','b-go'],focusIdx);
+    startLabel:'▶ 開始第一項：緊急停止',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

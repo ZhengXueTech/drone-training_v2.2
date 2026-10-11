@@ -28,6 +28,23 @@ export const FIELD={
   SET_DUR:180, N_SETS:3,       // 每節 180 秒、3 節制
 };
 
+/* ── 2026-10-11 開賽前場地設定（老師：球門高度、FIDA 8×4×3 場地都要能選；FIDA 要醒目標示、注意球門與底線）──
+   在這裡（模組載入時、其他常數算出來之前）就改好 FIELD，後面的出發點、半場、球門判定全部跟著用新值。
+   設定存 nd.settings.soccerField＝{preset:'fai'|'fida', gy:球門中心高}；開始畫面改了會重新載入頁面。
+   · FAI F9A-B（SC4 2026 B.2.2／B.3）：6×3×3、球門離底線 1 m、外徑 70／內徑 40 cm、高度沒規定（預設沿用 2.5）
+   · FIDA Class 20（2023 Rule Book §1）：8×4×3、球門離底線 1.5 m、外徑 50／內徑 30 cm、中心高 1.8～2.2 m */
+export const FIELD_PRESETS={
+  fai: {label:'FAI F9A-B 6×3×3',FL:6,FW:3,FH:3,HL:3,HW:1.5,GZ:2.0,GI:0.20,GO:0.35,GT:0.075,GR:0.275,gys:[1.8,2.0,2.2,2.5],gy:2.5},
+  fida:{label:'FIDA Class 20 8×4×3',FL:8,FW:4,FH:3,HL:4,HW:2,GZ:2.5,GI:0.15,GO:0.25,GT:0.05,GR:0.20,gys:[1.8,2.0,2.2],gy:2.0},
+};
+export const FIELD_SETUP=(()=>{ let v={}; try{ v=JSON.parse(localStorage.getItem('nd.settings.soccerField'))||{}; }catch{}
+  const preset=v.preset==='fida'?'fida':'fai', P=FIELD_PRESETS[preset], gy=P.gys.includes(+v.gy)?+v.gy:P.gy;
+  return {preset,gy}; })();
+{ const P=FIELD_PRESETS[FIELD_SETUP.preset];
+  for(const k of ['FL','FW','FH','HL','HW','GZ','GI','GO','GT','GR'])FIELD[k]=P[k];
+  FIELD.GY=FIELD_SETUP.gy; }
+export function saveFieldSetup(s){ try{ localStorage.setItem('nd.settings.soccerField',JSON.stringify(s)); }catch{} }
+
 /* ── 物理常數（基本版原值；速度倍率 SF 由關卡傳入）── */
 export const SOCCER_PHYS={
   GRAVITY:-9.81, HOVER:9.81,
@@ -37,6 +54,8 @@ export const SOCCER_PHYS={
 };
 
 export const TA=0, TB=1;
+let _arenaHook=null;
+export function setArenaHook(h){ _arenaHook=h; }   // core/soccer-arena.js 註冊；沒註冊＝經典場地
 
 /* 速度檔位（2026-08-03 新增，使用者回饋「碰撞真實感」C 項）：真實足球
    無人機比賽選手會切一檔（穩）／二檔（衝）——這裡只調水平推進力道
@@ -86,10 +105,12 @@ export const SOCCER_STARTS=[
 ];
 
 /* ── 場地建構（地板/標線/籠網/球門環）── */
-export function buildSoccerField(scene){
+/* 2026-10-11 足球場畫面升級：場地外觀抽成兩種——「經典」＝原本這段程式一字不改搬進 buildClassicDeco()；
+   「競技場」＝core/soccer-arena.js（畫質 低／中／高，可在開始畫面與暫停選單切換）。球門環與物理完全不動。 */
+export function buildClassicDeco(scene,root=scene){
   const F=FIELD;
-  scene.background=new THREE.Color(0x040810);
-  scene.fog=new THREE.FogExp2(0x04080e,0.032);
+  root.background=new THREE.Color(0x040810);
+  root.fog=new THREE.FogExp2(0x04080e,0.032);
   scene.add(new THREE.AmbientLight(0x0a1830,3.5));
   const dl=new THREE.DirectionalLight(0x4488aa,.8); dl.position.set(2,8,-2); scene.add(dl);
   const dl2=new THREE.DirectionalLight(0x223355,.35); dl2.position.set(-3,4,4); scene.add(dl2);
@@ -122,6 +143,11 @@ export function buildSoccerField(scene){
   const pilG=new THREE.CylinderGeometry(.022,.022,F.FH,6);
   [[-HW,-HL],[HW,-HL],[-HW,HL],[HW,HL]].forEach(([x,z])=>{
     const p=new THREE.Mesh(pilG,pilM); p.position.set(x,F.FH/2,z); scene.add(p);});
+}
+export function buildSoccerField(scene){
+  const F=FIELD;
+  const deco=new THREE.Group(); scene.add(deco);
+  if(_arenaHook)_arenaHook.build(scene,deco); else buildClassicDeco(deco,scene);
   // 球門環（直立於 XY 平面、開口朝 Z——基本版已驗證勿加 rotation.x）
   const goals=[];
   [{z:-F.GZ,col:0x2266ff,em:0x001155},{z:F.GZ,col:0xff2233,em:0x550011}].forEach(d=>{
@@ -138,6 +164,7 @@ export function buildSoccerField(scene){
     wire.position.set(0,F.GY+wl/2,d.z); scene.add(wire);
     goals.push({mesh:torus,light:gl,z:d.z});
   });
+  if(_arenaHook&&_arenaHook.goals)_arenaHook.goals(goals,scene,deco);
   return goals;
 }
 

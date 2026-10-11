@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
 import { Guide } from '../core/guide.js';
 import { buildBasicField, makeRing } from '../core/world.js';
@@ -152,23 +153,19 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'動態障礙',
-    html:`<p>🔶 本關障礙物不再靜止——它們會持續移動！</p>
+  startPanel(ui,{levelId:'t09',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🔶 動態障礙',
+    summary:'障礙物會<b>一直動</b>：看準節奏，在空隙出現時快速通過 6 個檢查點。',
+    tags:['↔️ 左右擺動','↕️ 上下振動','🔄 圓形軌道','🔋 中央充電站'],
+    rules:`<p>🔶 本關障礙物不再靜止——它們會持續移動！</p>
       <p>↔️ <b>左右擺動</b>：在通道內來回移動<br>
       ↕️ <b>上下振動</b>：在你的飛行高度附近震動<br>
       🔄 <b>圓形軌道</b>：繞著中心點旋轉</p>
       <p>🟢 依序穿越 6 個綠色檢查點・⏳ 觀察節奏，在安全空隙出現時快速通過<br>
       🔋 留意電量，充電站在地圖中央</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-go',label:'🔶 開始動態障礙訓練',onClick:startGame}].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+    startLabel:'🔶 開始動態障礙訓練',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

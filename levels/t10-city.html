@@ -28,6 +28,7 @@ import { Drone } from '../core/physics.js';
 import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
 import { Guide } from '../core/guide.js';
 import { buildBasicField } from '../core/world.js';
@@ -155,23 +156,19 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?2:1)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false;
-  ui.showModal({
-    title:'城市峽谷',
-    html:`<p>🏙️ 歡迎進入城市環境飛行訓練——最考驗操控精準度的場景。</p>
+  startPanel(ui,{levelId:'t10',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; droneStyleSet(DRONE_STYLES[i].code); rebuildMesh(); }},
+    title:'🏙️ 城市峽谷',
+    summary:'在建築間的<b>狹窄廊道</b>穿梭，依序到達 6 個紫色航點；建議按 C 切 FPV 視角。',
+    tags:['🟣 6 個航點','🏢 擦牆＝碰撞','🔋 中央充電站','📷 建議 FPV'],
+    rules:`<p>🏙️ 歡迎進入城市環境飛行訓練——最考驗操控精準度的場景。</p>
       <p>密集的建築群之間只有<b>狹窄廊道</b>，你必須精準地穿梭其中，不能擦到任何牆面。</p>
       <p>🟣 依序到達 6 個紫色光球航點<br>
       🏢 擦到建築物計入碰撞次數（並被彈開）<br>
       🔋 電量正常消耗，地圖中央有充電站</p>
       <p>⚠️ 建議按 C 切換到 FPV 視角，更容易判斷廊道寬度</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          droneStyleSet(DRONE_STYLES[styleIdx].code);rebuildMesh();showIntro(0);}},
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-go',label:'🏙️ 進入城市峽谷',onClick:startGame}].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-go'],focusIdx);
+    startLabel:'🏙️ 進入城市峽谷',onStart:()=>startGame()});
 }
 function startGame(){
   ui.closeModal(); sfx.play('click');

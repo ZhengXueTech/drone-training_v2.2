@@ -157,6 +157,13 @@ UI.prototype.showModal=function(args){
     S.pendingReveal=false; S.guessing=true; S.saved=args; S.deferFocus=null;
     return guessModal(this);
   }
+  // 統一開始畫面（有 settings）：神秘故障做成一列設定（2026-10-11）
+  if(Array.isArray(args.settings)&&btns.some(b=>/^(b-go|b-start|b-easy|b-diff-.+)$/.test(b.id))&&!(e&&e.simStarted)&&!args.settings.some(r=>r.id==='fault')){
+    const row={id:'fault',label:'🎲 神秘故障',value:String(level),options:[0,1,2].map(k=>({v:String(k),label:LV_LABEL[k]})),
+      hint:v=>v==='0'?'':v==='1'?'飛到一半偷偷出狀況（輕：搖桿偏移或單邊無力），飛完先猜再揭曉，猜對有徽章':'飛到一半偷偷出狀況（重：五種都有可能），飛完先猜再揭曉，猜對有徽章',
+      onChange:v=>setFaultLevel(+v)};
+    return _show.call(this,{...args,settings:[...args.settings,row]});
+  }
   // 開始畫面：多一顆神秘故障（放在開始鈕或第一個難度鈕前面）
   const iStart=btns.findIndex(b=>/^(b-go|b-start|b-easy|b-diff-.+)$/.test(b.id));   // 開始鈕；情境關是難度鈕（簡單／中等／困難）
   if(iStart>=0&&!(e&&e.simStarted)&&!btns.some(b=>b.id==='b-fault')){

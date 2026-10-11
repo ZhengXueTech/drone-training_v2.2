@@ -29,6 +29,7 @@ import { CAM_LABELS, CAMERA_SPEC } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件（定高＋檔位）
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { makeHeadingBeacon } from '../core/world.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { sfx } from '../core/audio.js';
@@ -277,7 +278,7 @@ function resolveInterceptions(){
       a.scored=true; a.resetTimer=1.5; a.tumble=true;
       const dist=Math.sqrt(d2), n=diff.divideScalar(dist);
       // 2026-10-03：撞擊結果改機率分段（彈開／定桿／守門被撞飛），見 yaw-drone.js blockImpact()
-      const tier=blockImpact(gkDrone,a,n);
+      const tier=blockImpact(gkDrone,a,n,Math.random,pDiff==='easy'?0.05:null);   // 2026-10-11 老師：簡單難度撞飛機率降到 5%（中等／困難不變）
       if(tier==='knock'){ hud.toast('💥 擋下，但被撞飛了！快回防','warn'); sfx.play('fail'); }
       else { hud.toast('✋ 擋下！','ok'); sfx.play('ok'); }
     }
@@ -338,24 +339,17 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?3:2)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 守門挑戰',
-    html:`<p>操控守門無人機防守球門，阻擋 <strong>AI 前鋒</strong> 衝鋒穿越。</p>
+  startPanel(ui,{levelId:'x-goalkeeper',title:'🥅 情境體驗 · 守門挑戰',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'守住球門！把衝過來的 <b>AI 前鋒</b>攔下或撞偏。',
+    tags:['⏱ 60 秒','🤖 AI 前鋒衝鋒','🥅 穿過中心圈＝失守'],
+    rules:`<p>操控守門無人機防守球門，阻擋 <strong>AI 前鋒</strong> 衝鋒穿越。</p>
       <p>🤖 AI 前鋒會從對面全速衝來，靠近攔截或撞偏它們可以擋下！<br>
       🥅 前鋒若穿過球門中心圈算失守，撞偏／擦身則算擋下。<br>
       ⏱ 限時 <b>60 秒</b>，擋越多越好！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:DIFF_LABEL.easy,onClick:()=>startGame('easy')},
-      {id:'b-med', label:DIFF_LABEL.med, onClick:()=>startGame('med')},
-      {id:'b-hard',label:DIFF_LABEL.hard,onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'😊 簡單',hint:'1 台・慢速'},{v:'med',label:'⚡ 中等',hint:'2 台・中速'},{v:'hard',label:'💀 困難',hint:'3 台・高速'}],
+    onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;

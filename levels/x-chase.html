@@ -29,6 +29,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { buildBasicField, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { sfx } from '../core/audio.js';
@@ -297,25 +298,18 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?3:2)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 追蹤訓練',
-    html:`<p>場內有一台<strong>粉紅 AI 無人機</strong>做蛇形閃避，你必須追上並<strong>觸碰</strong>它。</p>
+  startPanel(ui,{levelId:'x-chase',title:'🏷 情境體驗 · 追蹤訓練',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'追上蛇形閃避的<b>粉紅 AI 無人機</b>並碰到它，你越靠近它閃越快！',
+    tags:['⏱ 60 秒','🏷 碰到 +100','🔥 5 秒內連碰 Combo'],
+    rules:`<p>場內有一台<strong>粉紅 AI 無人機</strong>做蛇形閃避，你必須追上並<strong>觸碰</strong>它。</p>
       <p>🏷 <b>觸碰標記</b>：+100 分，5 秒內連續標記可疊加 Combo！<br>
       🤖 <b>AI 反應</b>：你越靠近，AI 閃得越快——練習預判路徑！<br>
       📡 <b>畫面邊緣箭頭</b>：AI 不在視野內時會指引方向。<br>
       ⏱ 挑戰時間 <b>60 秒</b>，盡量多標記！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:'初級（慢AI・大觸碰）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'中級（中等AI・標準）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'高級（快AI・小觸碰）',onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'初級',hint:'慢 AI・觸碰範圍大'},{v:'med',label:'中級',hint:'中等 AI・標準範圍'},{v:'hard',label:'高級',hint:'快 AI・觸碰範圍小'}],
+    onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;

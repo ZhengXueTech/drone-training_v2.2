@@ -29,6 +29,7 @@ import { CameraRig, CAM_LABELS } from '../core/camera.js';
 import { HUD, DENSITY_LABELS } from '../core/hud.js';
 import { UI } from '../core/ui.js';
 import { Challenge } from '../core/challenge.js';   // 2026-10-01 挑戰條件
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 import { buildBasicField, makeHeadingBeacon, makeCompassLandmarks } from '../core/world.js';
 import { buildDroneStyle, DRONE_STYLES } from '../core/drone-styles.js';
 import { WindSystem } from '../core/systems/wind.js';
@@ -175,23 +176,16 @@ hud.onPauseButton(togglePause);
 hud.attachTouch(input);
 
 /* ── Intro／暫停／結算 ── */
-function showIntro(focusIdx=(ch.any?3:2)){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({
-    title:'情境體驗 · 懸停挑戰',
-    html:`<p>操控無人機停在地面圓圈正上方。風會從隨機方向吹來，讓你偏移；圓圈也會逐漸縮小。</p>
+  startPanel(ui,{levelId:'x-hover',title:'🎯 情境體驗 · 懸停挑戰',ch,style:{get:()=>styleIdx,set:i=>{ styleIdx=i; rebuildMesh(); }},
+    summary:'停在地面圓圈正上方，風會把你吹走、圓圈會越縮越小。',
+    tags:['⏱ 60 秒','✅ 圈內 +10/秒','❌ 圈外 −20/秒'],
+    rules:`<p>操控無人機停在地面圓圈正上方。風會從隨機方向吹來，讓你偏移；圓圈也會逐漸縮小。</p>
       <p>✅ <b>在圈內</b>：+10 分/秒　❌ <b>出圈外</b>：-20 分/秒（最低 0 分）<br>
       ⏱ 挑戰時間 <b>60 秒</b>，看最後能拿幾分！</p>`,
-    buttons:[
-      {id:'b-style',label:'機體樣式：'+DRONE_STYLES[styleIdx].name,
-        onClick:()=>{styleIdx=(styleIdx+1)%DRONE_STYLES.length;
-          rebuildMesh();showIntro(0);}}, // 只在本次瀏覽切換造型，不寫回全域設定，避免汙染訓練關卡的機體選擇
-      ch.introButton(()=>showIntro(1)),
-      {id:'b-easy',label:'初級（弱風・5m→2m）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'中級（中風・4m→1.2m）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'高級（強風・3m→0.5m）',onClick:()=>startGame('hard')},
-    ].filter(Boolean),align:'top'});
-  ui.gpSetFocus(['b-style',...(ch.any?['b-challenge']:[]),'b-easy','b-med','b-hard'],focusIdx);
+    diffs:[{v:'easy',label:'初級',hint:'弱風・圓圈 5 m → 2 m'},{v:'med',label:'中級',hint:'中風・圓圈 4 m → 1.2 m'},{v:'hard',label:'高級',hint:'強風・圓圈 3 m → 0.5 m'}],
+    onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;

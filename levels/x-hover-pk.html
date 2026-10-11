@@ -58,6 +58,7 @@ import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
 import { seats as seatSvc } from '../data/seats.js';
 import { PkChallenge } from '../core/challenge.js';
+import { startPanel } from '../core/start-panel.js';   // 2026-10-11 統一開始畫面
 
 /* ============================================================
    情境體驗：懸停對戰（x-hover 的 pk-live 版本，規劃書 9 節「單人關卡
@@ -236,21 +237,17 @@ function seatDesc(){
     return `${PLABEL[i]}：${who}`;
   }).join('　');
 }
-function showIntro(focusIdx=1){
+function showIntro(){   // 2026-10-11 統一開始畫面格式
   engine.simStarted=false; playing=false;
-  ui.showModal({title:'情境體驗 · 懸停對戰',
-    html:`<p>P1／P2 各自操控無人機停在自己那側地面圓圈正上方（並排放置，互不干擾）。
+  startPanel(ui,{levelId:'x-hover-pk',title:'🎯 情境體驗 · 懸停對戰',ch:pkc,html:`<div style="font-size:12.5px;color:#cfefff;background:rgba(6,16,28,.6);border-radius:10px;padding:4px 12px;margin:0 0 8px">${seatDesc()}</div>`,buttons:[{id:'b-pairing',label:'🪑 重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT}],
+    summary:'P1／P2 各停在自己的圓圈上方，同一陣風、圈一起縮小，<b>比誰分數高</b>！',
+    tags:['⏱ 60 秒','✅ 圈內 +10/秒','❌ 圈外 −20/秒'],
+    rules:`<p>P1／P2 各自操控無人機停在自己那側地面圓圈正上方（並排放置，互不干擾）。
       兩人共用同一陣風，圈也會同步縮小，比誰的穩定分先拉開差距！</p>
       <p>✅ <b>在圈內</b>：+10 分/秒　❌ <b>出圈外</b>：-20 分/秒（最低 0 分）<br>
-      ⏱ 挑戰時間 <b>60 秒</b></p>
-      <p style="font-size:11px;color:#7aa3b8">${seatDesc()}</p>${pkc.introHtml()}`,
-    buttons:[
-      {id:'b-easy',label:'初級（弱風・5m→2m）',onClick:()=>startGame('easy')},
-      {id:'b-med', label:'中級（中風・4m→1.2m）',onClick:()=>startGame('med')},
-      {id:'b-hard',label:'高級（強風・3m→0.5m）',onClick:()=>startGame('hard')},
-      {id:'b-pairing',label:'重新指派席位',onClick:()=>location.href='../pages/pairing.html?activity='+ACT},
-    ]});
-  ui.gpSetFocus(['b-easy','b-med','b-hard','b-pairing'],focusIdx);
+      ⏱ 挑戰時間 <b>60 秒</b></p>`,
+    diffs:[{v:'easy',label:'初級',hint:'弱風・圓圈 5 m → 2 m'},{v:'med',label:'中級',hint:'中風・圓圈 4 m → 1.2 m'},{v:'hard',label:'高級',hint:'強風・圓圈 3 m → 0.5 m'}],
+    startLabel:'▶ 開始對戰',onStart:d=>startGame(d)});
 }
 function startGame(diff){
   pDiff=diff;
