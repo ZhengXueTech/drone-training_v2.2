@@ -26,6 +26,7 @@ import { WIND_LEVELS } from './challenge-rules.js';
 import { sfx } from './audio.js';
 import { progress } from '../data/progress.js';
 import { seats as seatSvc } from '../data/seats.js';
+import { itemStations, createItemBoxes, rollItem, ITEM_INFO } from './items.js';   // 2026-10-12 🎁 道具站
 import { PART_TYPES, loadBuild, partOf, specOf, buildLabel, BASE_DRAIN, enduranceSec, DEFAULT_BUILD } from '../data/parts.js';
 
 export const TRACKS=[
@@ -53,7 +54,8 @@ const buildOf=i=>isAI(i)?{...DEFAULT_BUILD}:builds[i];
 const WKEY='nd.race.wind', JKEY='nd.race.jam';
 let windLv=0, jamOn=false;
 try{ windLv=Math.max(0,Math.min(2,+localStorage.getItem(WKEY)||0)); jamOn=localStorage.getItem(JKEY)==='1'; }catch{}
-const condTag=()=>[windLv?WIND_LEVELS[windLv].label:'',jamOn?'干擾區':''].filter(Boolean).join('・');
+const IKEY='nd.racepk.items'; let itemOn=true; try{ itemOn=localStorage.getItem(IKEY)!=='0'; }catch{}   // 對戰預設開
+const condTag=()=>[windLv?WIND_LEVELS[windLv].label:'',jamOn?'干擾區':'',itemOn?'道具':''].filter(Boolean).join('・');
 
 /* ── 引擎與場景 ── */
 const engine=new Engine(document.getElementById('c'),{lowQuality:true});
@@ -134,6 +136,8 @@ for(const j of JAMS){ const col=new THREE.Mesh(new THREE.CylinderGeometry(j.r,j.
   const rim=new THREE.Mesh(new THREE.RingGeometry(j.r-0.12,j.r,40),new THREE.MeshBasicMaterial({color:0xff3355,transparent:true,opacity:0.7,side:THREE.DoubleSide}));
   rim.rotation.x=-Math.PI/2; rim.position.set(j.x,0.05,j.z); jamG.add(rim); }
 jamG.visible=jamOn;
+const items=createItemBoxes(engine.scene,itemStations(T,[...ZONES,...JAMS])); items.visible=itemOn;
+const shieldGeo=new THREE.SphereGeometry(0.75,20,14);
 
 /* ── 機體（每席一台；零件倍率套在街機常數上，同 race.js） ── */
 class PkDrone extends Drone{
@@ -154,7 +158,8 @@ for(let i=0;i<N_SEATS;i++){
   const d=new PkDrone({mode:'arcade',bounds:{x:BX,z:BZ,y:T.bounds.y||10},spawn:sp},specOf(buildOf(i)));
   d.yaw=T.spawnYaw; drones.push(d);
   const m=buildDroneStyle(DRONE_STYLES[0].code,{tint:COLORS[i]}); engine.scene.add(m); meshes.push(m);
-  P.push({sp,target:0,lap:0,laps:[],lapStart:0,battery:100,pits:0,pitT:0,boostT:0,hits:0,hitCD:0,finished:false,time:null,prev:d.pos.clone(),
+  const sh=new THREE.Mesh(shieldGeo,new THREE.MeshBasicMaterial({color:COLORS[i],transparent:true,opacity:0.22,depthWrite:false})); sh.visible=false; engine.scene.add(sh);
+  P.push({sp,target:0,lap:0,laps:[],lapStart:0,battery:100,pits:0,pitT:0,boostT:0,slowT:0,shield:false,shMesh:sh,items:0,hits:0,hitCD:0,finished:false,time:null,prev:d.pos.clone(),
     delay:[],inJam:false,aiPit:false,progress:0});
 }
 
@@ -237,6 +242,20 @@ const devIcon=c=>c?.type==='gamepad'?'🎮':c?.type==='keyboard'?'⌨':c?.type==
 function progressOf(i){ const p=P[i], d=drones[i]; if(p.finished)return 1e6-p.time;
   const r=rings[p.target].position; return p.lap*1000+((p.target-1+NR)%NR)*10+(10-Math.min(10,d.pos.distanceTo(r)/4)); }
 function ranking(){ return [...Array(N_SEATS).keys()].sort((a,b)=>progressOf(b)-progressOf(a)); }
+/* 🎁 道具效果（拿到立刻生效）。風暴彈打「排在自己前面一名」的人：被吹偏＋減速 2 秒；對方有護盾就擋掉 */
+function useItem(i,k,ord){
+  const p=P[i], d=drones[i]; p.items++;
+  if(!isAI(i))sfx.play('ring');
+  if(k==='boost')p.boostT=3;
+  else if(k==='charge'){ p.battery=Math.min(100,p.battery+25); if(!isAI(i))sfx.play('charge'); }
+  else if(k==='shield')p.shield=true;
+  else if(k==='storm'){ const r=ord.indexOf(i), j=r>0?ord[r-1]:-1;
+    if(j<0||P[j].finished){ p.boostT=3; paneMsg(i,'⚡ 前面沒人，改成加速 3 秒！'); return; }
+    if(P[j].shield){ P[j].shield=false; paneMsg(j,`🛡️ 護盾擋下 P${i+1} 的風暴彈！`); paneMsg(i,`🌪️ P${j+1} 用護盾擋掉了`); return; }
+    const t=drones[j], a=Math.random()*Math.PI*2; t.vel.x+=Math.cos(a)*4; t.vel.z+=Math.sin(a)*4; P[j].slowT=2;
+    paneMsg(j,`🌪️ 被 P${i+1} 的風暴彈打中！`); paneMsg(i,`🌪️ 打中 P${j+1}！`); return; }
+  paneMsg(i,ITEM_INFO[k].msg);
+}
 
 /* ── AI：照環的順序飛（環與環之間的直線航線都驗證過不會撞），電量低就去 PIT ── */
 function aiInput(i){
@@ -284,6 +303,9 @@ function showIntro(){   // 2026-10-11 統一開始畫面格式
       {id:'jam',label:'📡 干擾區',value:jamOn?'1':'0',options:[{v:'0',label:'關'},{v:'1',label:'開'}],
         hint:v=>v==='1'?'紅色區域：自己那格畫面會閃、操控慢半拍':'',
         onChange:v=>{ jamOn=v==='1'; jamG.visible=jamOn; try{ localStorage.setItem(JKEY,jamOn?'1':'0'); }catch{} }},
+      {id:'items',label:'🎁 道具站',value:itemOn?'1':'0',options:[{v:'0',label:'關'},{v:'1',label:'開'}],
+        hint:v=>v==='1'?'飛過「？」神秘箱立刻生效：⚡ 加速、🔋 補電、🛡️ 護盾、🌪️ 風暴彈（打前一名）；落後的人比較容易拿到好道具':'',
+        onChange:v=>{ itemOn=v==='1'; items.visible=itemOn; try{ localStorage.setItem(IKEY,v); }catch{} }},
       {id:'cam',label:'📷 視角',value:camDefault,options:PK_CAMS.map(m=>({v:m,label:CAM_LABELS[m]})),
         hint:v=>v==='fpv'?'第一人稱，最刺激也最難':v==='ground'?'站在場邊看飛機，像真實飛手':'在機體後方跟著飛，最好上手',
         onChange:v=>{ camDefault=v; try{ localStorage.setItem(CKEY,v); }catch{} humans.forEach((si,k)=>setPaneCam(k,v)); }},
@@ -305,7 +327,8 @@ function showBuilder(i){   // 2026-10-11 統一格式：四類零件＝四列分
 function startRace(){
   ui.closeModal(); sfx.play('click');
   drones.forEach((d,i)=>{ d.spec=specOf(buildOf(i)); d.reset(P[i].sp); d.yaw=T.spawnYaw; d.vel.set(0,0,0);
-    Object.assign(P[i],{target:0,lap:0,laps:[],lapStart:0,battery:100,pits:0,pitT:0,boostT:0,hits:0,hitCD:0,finished:false,time:null,delay:[],inJam:false,aiPit:false}); P[i].prev.copy(d.pos); });
+    Object.assign(P[i],{target:0,lap:0,laps:[],lapStart:0,battery:100,pits:0,pitT:0,boostT:0,slowT:0,shield:false,items:0,hits:0,hitCD:0,finished:false,time:null,delay:[],inJam:false,aiPit:false}); P[i].prev.copy(d.pos); });
+  items.reset(); items.visible=itemOn;
   wind.randomize(windLv?WIND_LEVELS[windLv].v:0);
   raceT=0; firstFinishT=null; countT=3; phase='count'; engine.simStarted=true; cdShown='';
 }
@@ -325,7 +348,7 @@ function finishAll(){
       <td>${p.finished?`<b>${p.time.toFixed(1)}</b> 秒`:`沒跑完（第 ${Math.max(1,p.lap)} 圈）`}</td><td>進站 ${p.pits}</td><td>撞 ${p.hits}</td><td>${isAI(i)?'標準機':buildLabel(builds[i])}</td></tr>`; }).join('');
   const best=order.map(i=>P[i]).find(p=>p.finished);
   progress.record(ACT,{completed:true,...(best?{score:Math.round(best.time*10)/10}:{}),
-    ...(condTag()?{challenge:condTag(),challengeCode:(windLv?'w'+windLv:'')+(jamOn?'j1':'')}:{}),
+    ...(condTag()?{challenge:condTag(),challengeCode:(windLv?'w'+windLv:'')+(jamOn?'j1':'')+(itemOn?'i1':'')}:{}),
     metrics:{track:T.levelId,winner:'P'+(order[0]+1),humans:humans.length,
       results:order.map(i=>({seat:'P'+(i+1),ai:isAI(i),time:P[i].time,pits:P[i].pits,hits:P[i].hits,build:isAI(i)?'標準機':buildLabel(builds[i])}))}});
   ui.showModal({title:`🏁 ${trackName()} 對戰結果　🏆 P${order[0]+1} 獲勝！`,
@@ -361,7 +384,7 @@ engine.start(dt=>{
       const work=Math.min(1,Math.abs(inp.throttle)+Math.hypot(inp.pitch,inp.roll));
       if(p.pitT<=0)p.battery-=BASE_DRAIN*d.spec.drain*(0.6+0.4*work)/d.spec.cap*dt;
       p.battery=Math.max(0,p.battery); d.battK=p.battery<20?0.55+0.45*p.battery/20:1;
-      p.boostT=Math.max(0,p.boostT-dt); d.boostK=p.boostT>0?1.4:1;
+      p.boostT=Math.max(0,p.boostT-dt); p.slowT=Math.max(0,p.slowT-dt); d.boostK=p.slowT>0?0.6:p.boostT>0?1.4:1;
       const onPad=Math.hypot(d.pos.x-PIT.x,d.pos.z-PIT.z)<2&&d.pos.y<0.8&&d.hSpeed()<1.5;
       if(onPad&&p.battery<99){ p.pitT+=dt; if(p.pitT>=3){ p.battery=100; p.pits++; p.pitT=0; paneMsg(i,'🔋 換好電池！'); sfx.play('charge'); } }
       else p.pitT=0;
@@ -372,7 +395,9 @@ engine.start(dt=>{
     if(racing&&!p.finished){
       turbulence(d,d.spec,dt);
       p.hitCD=Math.max(0,p.hitCD-dt);
-      if((d.collided||collide(d))&&p.hitCD===0){ p.hits++; p.hitCD=0.6; p.battery=Math.max(0,p.battery-4/d.spec.dur); }
+      if((d.collided||collide(d))&&p.hitCD===0){ p.hitCD=0.6;
+        if(p.shield){ p.shield=false; paneMsg(i,'🛡️ 護盾擋下這一撞！'); } else { p.hits++; p.battery=Math.max(0,p.battery-4/d.spec.dur); } }
+      if(itemOn&&items.take(d.pos)){ const ord=ranking(); useItem(i,rollItem(ord.indexOf(i),N_SEATS),ord); }
       const r=rings[p.target]; r.userData.passed=false;
       if(checkRingPass(r,d.pos,p.prev)){
         r.userData.passed=false;
@@ -401,6 +426,8 @@ engine.start(dt=>{
   if(racing){ const humansDone=humans.every(i=>P[i].finished), allDone=P.every(p=>p.finished);
     if(allDone||(humans.length&&humansDone)||(firstFinishT!==null&&raceT-firstFinishT>=30))finishAll(); }
   // 畫面
+  items.update(dt);
+  P.forEach((p,i)=>{ p.shMesh.visible=p.shield&&racing; if(p.shield)p.shMesh.position.copy(drones[i].pos); });
   drones.forEach((d,i)=>{ meshes[i].position.copy(d.pos); meshes[i].quaternion.copy(d.q); if(meshes[i].userData.spin)meshes[i].userData.spin.rotation.y+=dt*3.2*(d.boostK||1); });
   humans.forEach((si,k)=>{ if(camMode[k]==='follow')updateCam(cams[k],drones[si]); else rigs[k].update(dt,drones[si],meshes[si]); });
   const order=ranking();
@@ -418,7 +445,7 @@ engine.start(dt=>{
     +(firstFinishT!==null&&phase==='race'?`　⌛ 剩 ${Math.max(0,30-(raceT-firstFinishT)).toFixed(0)} 秒`:''):`🏁 ${trackName()}　${condTag()||'標準'}`;
 });
 showIntro();
-window.__racePK={P,drones,rings,seatList,humans,camMode,get phase(){ return phase; },get raceT(){ return raceT; },jams:JAMS,
+window.__racePK={P,drones,rings,seatList,humans,camMode,items,useItem,ranking,get phase(){ return phase; },get raceT(){ return raceT; },jams:JAMS,
   finishNow:()=>{ P.forEach((p,i)=>{ p.finished=true; p.time=60+i*3; }); finishAll(); }};
 addEventListener('beforeunload',()=>engine.dispose());
 }

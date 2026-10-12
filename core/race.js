@@ -25,7 +25,8 @@ import { WIND_LEVELS } from './challenge-rules.js';
 import { sfx } from './audio.js';
 import { progress } from '../data/progress.js';
 import { getLevel } from '../data/levels-manifest.js';
-import { createXR, isHeadset } from './xr.js';   // 2026-10-11 🥽 VR（FPV 眼鏡／沉浸駕駛艙）
+import { createXR, isHeadset } from './xr.js';
+import { itemStations, createItemBoxes, rollItem, ITEM_INFO } from './items.js';   // 2026-10-12 🎁 道具站   // 2026-10-11 🥽 VR（FPV 眼鏡／沉浸駕駛艙）
 import './tutorial.js';   // 2026-10-10 📖 飛之前的操作教學
 import { loadBuild, specOf, buildLabel, BASE_DRAIN, enduranceSec, markMissions } from '../data/parts.js';
 
@@ -113,9 +114,12 @@ const JKEY='nd.race.jam'; let jamOn=false; try{ jamOn=localStorage.getItem(JKEY)
    FPV Acro＝第一人稱、不會自己回正（真實 FPV 競速）。FPV 的成績與幽靈機另外記 */
 const FKEY='nd.race.fly'; let fly='std'; try{ const v=localStorage.getItem(FKEY); if(['std','angle','acro'].includes(v))fly=v; }catch{}
 const FLY_LABEL={std:'一般（自穩）',angle:'FPV 角度',acro:'FPV Acro'}, FLY_MODE={std:'arcade',angle:'angle',acro:'pro'};
-const gkey=()=>'nd.race.ghost.'+TRACK+(windLv?'.w'+windLv:'')+(jamOn?'.j':'')+(fly==='std'?'':fly==='acro'?'.fa':'.fg');
-const condTag=()=>[fly==='std'?'':FLY_LABEL[fly],windLv?WIND_LEVELS[windLv].label:'',jamOn?'干擾區':''].filter(Boolean).join('・');
-const condCode=()=>(fly==='std'?'':fly==='acro'?'fa':'fg')+(windLv?'w'+windLv:'')+(jamOn?'j1':'');
+/* 2026-10-12 🎁 道具站（只在一般模式；單人預設關，開了成績另外記） */
+const IKEY='nd.race.items'; let itemOn=false; try{ itemOn=localStorage.getItem(IKEY)==='1'; }catch{}
+const itemsActive=()=>itemOn&&fly==='std';
+const gkey=()=>'nd.race.ghost.'+TRACK+(windLv?'.w'+windLv:'')+(jamOn?'.j':'')+(fly==='std'?'':fly==='acro'?'.fa':'.fg')+(itemsActive()?'.i':'');
+const condTag=()=>[fly==='std'?'':FLY_LABEL[fly],windLv?WIND_LEVELS[windLv].label:'',jamOn?'干擾區':'',itemsActive()?'道具':''].filter(Boolean).join('・');
+const condCode=()=>(fly==='std'?'':fly==='acro'?'fa':'fg')+(windLv?'w'+windLv:'')+(jamOn?'j1':'')+(itemsActive()?'i1':'');
 let ghostData=null; const loadGhost=()=>{ ghostData=null; try{ ghostData=JSON.parse(localStorage.getItem(gkey())); }catch{} }; loadGhost();
 const windLabel=()=>'🌬️ 風：'+(windLv?WIND_LEVELS[windLv].label:'無風')+'（按一下換）';
 const jamLabel=()=>'📡 干擾區：'+(jamOn?'開':'關')+'（按一下換）';
@@ -128,18 +132,29 @@ let vrOK=isHeadset()||/[?&]vr=1/.test(location.search);
    ②看板一直在正中央擋視線 → 放到視野下方、縮小，按鍵說明只在剛進來的前 8 秒顯示，Y 可整個收起來 */
 let vrReady=false, vrHintT=0;
 const xr=createXR(engine,{stand:T.spawn.clone().setY(0),views:['goggle','cockpit'],get view(){ return vrView; },fpvTilt:0.35,
-  boardPos:{y:-0.62,z:-1.0,tilt:-0.7,scale:0.8},boardToggle:true,hideButton:true,   // 賽道用開始畫面上的「🥽 進入 VR」鈕，不另外浮一顆（避免兩顆都按到）
+  boardPos:{y:-0.62,z:-1.0,tilt:-0.7,scale:0.8},boardToggle:true,hideButton:true,
+  guide:{keys:['A／右扳機＝開始倒數','右扳機按住＝暫時自穩','B＝換看法（眼鏡／駕駛艙）','Y＝收起下方看板','X＝離開 VR'],foot:'準備好就按 A！'},
+  tutKeys:'<b>A／右扳機</b>＝在起點按一下開始倒數　<b>右扳機按住</b>＝暫時自穩救機　<b>B</b>＝換看法（FPV 眼鏡／沉浸駕駛艙）　<b>Y</b>＝收起看板　<b>X</b>＝離開 VR<br>第一次玩建議用 <b>FPV 眼鏡</b>，比較不會暈。',   // 賽道用開始畫面上的「🥽 進入 VR」鈕，不另外浮一顆（避免兩顆都按到）
   
-  onStart:()=>{ if(engine.paused)togglePause(); vrHintT=8; if(phase==='intro'||phase==='done')vrPrepare(); },
+  onStart:()=>{ if(engine.paused)togglePause(); vrHintT=8; if(phase==='intro'||phase==='done'){ vrPrepare(); xr.openMenu('🏁 '+T.title); } else xr.showGuide(false); },   // 比賽中重新戴上就不擋畫面
   onEnd:()=>{ vrReady=false; xr.setBig(''); hud.toast('已離開 VR','ok'); },
-  onButton:k=>{ if(k==='A'&&vrReady)vrGo(); if(k==='B')vrHintT=4; }});
+  onButton:k=>{ if(k==='B')vrHintT=4; },
+  /* 2026-10-12 VR 選單（老師：黑畫面時學生亂按就開始了）：進 VR／完賽後先出選單，選「開始倒數」才開始 */
+  menu:()=>[{label:()=>phase==='done'?'▶ 再跑一次':'▶ 開始倒數',act:()=>{ xr.closeMenu(); vrGo(); }},
+    {label:()=>'看法：'+(xr.view==='goggle'?'FPV 眼鏡':'沉浸駕駛艙'),left:()=>vrSetView(),right:()=>vrSetView()},
+    {label:()=>'飛行方式：'+FLY_LABEL[fly],left:()=>vrSetFly(-1),right:()=>vrSetFly(1)},
+    ...(fly==='std'?[{label:()=>'道具站：'+(itemOn?'開':'關'),left:()=>vrSetItems(),right:()=>vrSetItems()}]:[]),
+    {label:()=>'離開 VR',act:()=>xr.exit()}]});
+function vrSetView(){ vrView=xr.view==='goggle'?'cockpit':'goggle'; try{ localStorage.setItem(VKEY,vrView); }catch{} xr.setView(vrView); }
+function vrSetFly(d){ const L=['std','angle','acro']; fly=L[(L.indexOf(fly)+d+3)%3]; try{ localStorage.setItem(FKEY,fly); }catch{} items.visible=itemsActive(); }
+function vrSetItems(){ itemOn=!itemOn; try{ localStorage.setItem(IKEY,itemOn?'1':'0'); }catch{} items.visible=itemsActive(); }
 function vrPrepare(){   // 停在起點、還沒開始倒數
   ui.closeModal(); engine.simStarted=true; phase='ready'; vrReady=true;
   drone.reset(SPAWN); drone.yaw=T.spawnYaw; drone.vel.set(0,0,0); drone.mode=FLY_MODE[fly];
   drone.tilt.pitch=drone.tilt.roll=0; drone.q.setFromEuler(new THREE.Euler(0,T.spawnYaw,0,'YXZ'));
 }
-function vrGo(){ vrReady=false; startRace(); }
-window.__vrTest={start:()=>{ vrHintT=8; if(phase==='intro'||phase==='done')vrPrepare(); },press:k=>{ if(k==='A'&&vrReady)vrGo(); }};   // 測試用（頭盔外模擬 onStart／按 A）
+function vrGo(){ vrReady=false; xr.showGuide(false); startRace(); }
+window.__vrTest={start:()=>{ vrHintT=8; if(phase==='intro'||phase==='done'){ vrPrepare(); xr.openMenu('🏁 '+T.title); } },press:k=>{ if(k==='A'&&xr.menuOpen)xr._sim.step({},false,true); }};   // 測試用（頭盔外模擬 onStart／按 A）
 if(navigator.xr&&navigator.xr.isSessionSupported)navigator.xr.isSessionSupported('immersive-vr').then(ok=>{ if(ok&&!vrOK){ vrOK=true; if(phase==='intro'&&ui.modalOpen)showIntro(); } }).catch(()=>{});
 
 /* ── 狀態 ── */
@@ -207,18 +222,21 @@ function showIntro(){   // 2026-10-11 統一開始畫面格式
       {id:'jam',label:'📡 干擾區',value:jamOn?'1':'0',options:[{v:'0',label:'關'},{v:'1',label:'開'}],
         hint:v=>v==='1'?'賽道上紅色區域：畫面會閃、操控慢半拍（像訊號被干擾）；成績另外記':'',
         onChange:v=>{ jamOn=v==='1'; try{ localStorage.setItem(JKEY,jamOn?'1':'0'); }catch{} jamShow(); }},
+      {id:'items',label:'🎁 道具站',value:itemOn?'1':'0',options:[{v:'0',label:'關'},{v:'1',label:'開'}],
+        hint:v=>v==='1'?'賽道上有發光的「？」神秘箱，飛過去碰到就生效：⚡ 加速、🔋 補電、🛡️ 護盾（只在一般模式；成績另外記）':'',
+        onChange:v=>{ itemOn=v==='1'; try{ localStorage.setItem(IKEY,v); }catch{} items.visible=itemsActive(); }},
       {id:'fly',label:'🎮 飛行方式',value:fly,options:[{v:'std',label:'一般（自穩）'},{v:'angle',label:'FPV 角度'},{v:'acro',label:'FPV Acro'}],
         hint:v=>v==='std'?'放開搖桿會自己停住、鏡頭跟在後面，最好上手':
           (v==='angle'?'第一人稱鏡頭；放開搖桿會回平，但<b>油門要自己抓</b>（放開會往下掉）':'第一人稱鏡頭；<b>推多少轉多少、放開也不會回正</b>，真實 FPV 競速的飛法，最難')+
           '。按住 空白鍵／手把 RB 可暫時自穩救機；成績另外記',
-        onChange:v=>{ fly=v; try{ localStorage.setItem(FKEY,v); }catch{} }},
+        onChange:v=>{ fly=v; try{ localStorage.setItem(FKEY,v); }catch{} items.visible=itemsActive(); }},
       ...(vrOK?[{id:'vrview',label:'🥽 VR 看法',value:vrView,options:[{v:'goggle',label:'FPV 眼鏡'},{v:'cockpit',label:'沉浸駕駛艙'}],
         hint:v=>v==='goggle'?'眼前一塊大螢幕播機上鏡頭，轉頭畫面不跟著轉（跟真的 FPV 眼鏡一樣，比較不暈）':'人就坐在機上，可以轉頭看四周；最刺激，但翻滾時很容易暈',
         onChange:v=>{ vrView=v; try{ localStorage.setItem(VKEY,v); }catch{} xr.setView(v); }}]:[]),
     ],
     buttons:[{id:'b-start',label:'▶ 開始（倒數 3 秒）',onClick:startRace,primary:true},
              {id:'b-garage',label:'🔧 去機庫換零件',onClick:()=>{location.href='../pages/garage.html';}},
-             ...(vrOK?[{id:'b-vr',label:'🥽 進入 VR',onClick:()=>xr.enter()}]:[])],align:'top'});
+             ...(vrOK?[{id:'b-vr',label:'🥽 進入 VR',onClick:()=>xr.tryEnter()}]:[])],align:'top'});
   ui.gpSetFocus(['b-start','b-garage'],0);
 }
 function startRace(){
@@ -226,6 +244,7 @@ function startRace(){
   engine.simStarted=true; phase='count'; countT=3;
   drone.reset(SPAWN); drone.yaw=T.spawnYaw; drone.vel.set(0,0,0);
   drone.mode=FLY_MODE[fly]; drone.tilt.pitch=drone.tilt.roll=0; drone.q.setFromEuler(new THREE.Euler(0,T.spawnYaw,0,'YXZ'));   // FPV：姿態從水平朝前開始
+  items.reset(); items.visible=itemsActive(); shield=false;
   if(fly!=='std'&&rig.mode!=='fpv')rig.setMode('fpv'); else if(fly==='std'&&rig.mode==='fpv')rig.setMode('follow');
   syncModes();
   target=0; lap=0; laps=[]; battery=100; pits=0; pitT=0; boostT=0; hits=0; raceT=0; rec.length=0; recT=0; lowWarn=false;
@@ -252,6 +271,7 @@ function finish(){
     metrics:{time,bestLap:Math.round(best*10)/10,pits,hits,build:buildLabel(build)},
     ...(condTag()?{challenge:condTag(),challengeCode:condCode()}:{})});   // 老師定案：改裝機成績一起比，不分機型（機體只記在 metrics）
   const got=markMissions({finished:true,time,pits,hits,build,track:TRACK});
+  if(xr.active)setTimeout(()=>{ if(phase==='done'&&xr.active)xr.openMenu(`🏁 完賽！${time.toFixed(1)} 秒${isBest?'（新紀錄）':''}`); },1500);
   ui.showModal({title:'🏁 完賽！',
     html:`<p>⏱ 總時間 <b style="font-size:20px">${time.toFixed(1)}</b> 秒${isBest?'　🎉 <b style="color:#4ade80">新紀錄！</b>（幽靈機已更新）':`　（最佳 ${ghostData.time.toFixed(1)} 秒）`}</p>
       <p>每圈：${laps.map((t,i)=>`第${i+1}圈 ${t.toFixed(1)}`).join('｜')}　🔋 進站 ${pits} 次　💥 撞擊 ${hits} 次</p>
@@ -322,6 +342,17 @@ for(const j of JAMS){ const g=new THREE.Group(); g.position.set(j.x,0,j.z);
   jamG.add(g); }
 function jamShow(){ jamG.visible=jamOn; }
 jamShow();
+const items=createItemBoxes(engine.scene,itemStations(T,[...ZONES,...JAMS]));
+items.visible=itemsActive();
+let shield=false;
+const shieldMesh=new THREE.Mesh(new THREE.SphereGeometry(0.75,20,14),new THREE.MeshBasicMaterial({color:0x60a5fa,transparent:true,opacity:0.22,depthWrite:false}));
+shieldMesh.visible=false; engine.scene.add(shieldMesh);
+function useItem(k){
+  sfx.play('ring'); hud.toast(ITEM_INFO[k].msg,'ok');
+  if(k==='boost')boostT=3;
+  else if(k==='charge'){ battery=Math.min(100,battery+25); sfx.play('charge'); }
+  else if(k==='shield')shield=true;
+}
 /* 畫面干擾：低解析雜訊＋閃爍＋偶爾黑一下 */
 const $jam=document.createElement('canvas'); $jam.id='nd-jam'; $jam.width=160; $jam.height=90;
 $jam.style.cssText='position:fixed;inset:0;width:100%;height:100%;z-index:26;pointer-events:none;display:none;image-rendering:pixelated;mix-blend-mode:screen;';
@@ -356,8 +387,8 @@ engine.start((dt,simStarted)=>{
   let p=xr.active?xr.player(input.player(0)):input.player(0);
   xr.update(dt,drone);
   if(xr.active){ vrHintT=Math.max(0,vrHintT-dt);
-    if(phase==='ready'){ p={...p,throttle:0,yaw:0,pitch:0,roll:0}; if(xr.selfLevel)vrGo(); }
-    xr.setBig(phase==='count'?(countT>0?String(Math.ceil(countT)):'GO!'):phase==='ready'?'按 A':'',
+    if(phase==='ready'){ p={...p,throttle:0,yaw:0,pitch:0,roll:0}; if(!xr.menuOpen&&xr.armed)xr.openMenu('🏁 '+T.title); }
+    xr.setBig(phase==='count'?(countT>0?String(Math.ceil(countT)):'GO!'):'',
       phase==='count'?(countT>0?(Math.ceil(countT)===3?'#ef4444':'#facc15'):'#22c55e'):'#00eeff'); }
   hud.setGpBar(p.device);
   // FPV 模式的救機：按住 空白鍵／手把 RB（自穩鍵）／VR 右扳機＝暫時切成自穩，放開回到選的模式
@@ -399,7 +430,10 @@ engine.start((dt,simStarted)=>{
     // 撞牆
     hitCD=Math.max(0,hitCD-dt);
     const hitObs=collide();
-    if((drone.collided||hitObs)&&hitCD===0){ hits++; hitCD=0.6; battery=Math.max(0,battery-4/spec.dur); sfx.play('warn'); }
+    if((drone.collided||hitObs)&&hitCD===0){ hitCD=0.6;
+      if(shield){ shield=false; hud.toast('🛡️ 護盾擋下這一撞！','ok'); }
+      else { hits++; battery=Math.max(0,battery-4/spec.dur); sfx.play('warn'); } }
+    if(itemsActive()&&items.take(drone.pos))useItem(rollItem(0,1));
     // 環
     const r=rings[target]; r.userData.passed=false;
     if(checkRingPass(r,drone.pos,prevPos)){
@@ -424,6 +458,7 @@ engine.start((dt,simStarted)=>{
     ghost.position.set(a[1]+(b[1]-a[1])*k,a[2]+(b[2]-a[2])*k,a[3]+(b[3]-a[3])*k); ghost.rotation.set(0,a[4],0);
     if(raceT>P[P.length-1][0]+1)ghost.visible=false;
   }
+  items.update(dt); shieldMesh.visible=shield&&phase==='race'; if(shield)shieldMesh.position.copy(drone.pos);
   mesh.position.copy(drone.pos); mesh.quaternion.copy(drone.q);
   mesh.visible=rig.mode!=='fpv';
   if(mesh.userData.spin)mesh.userData.spin.rotation.y+=dt*(3.2*(drone.boostK||1));
@@ -431,7 +466,7 @@ engine.start((dt,simStarted)=>{
   if(!xr.active){ rig.update(dt,drone,mesh); if(rig.mode==='fpv'&&fly!=='std')engine.camera.rotateX(0.35); }   // FPV 鏡頭上仰約 20°（真實 FPV 機的鏡頭都往上翹，前衝時才看得到前方）
   else { mesh.visible=xr.view!=='cockpit';
     const info=`${raceT.toFixed(1)} 秒｜第 ${Math.max(1,Math.min(lap,LAPS))}/${LAPS} 圈｜🔋 ${Math.round(battery)}%`;
-    xr.setBoard(phase==='ready'?['準備好了嗎？',`按 A（或右扳機）開始倒數｜${xr.view==='goggle'?'FPV 眼鏡':'沉浸駕駛艙'}`,'B＝換看法　Y＝收起看板','X＝離開 VR']:
+    xr.setBoard(phase==='ready'?['準備好了嗎？','在選單選「▶ 開始倒數」','搖桿上下選、A 確定','X＝離開 VR']:
       phase==='done'?['🏁 完賽！',info,'拿下頭盔看成績']:
       vrHintT>0?[info,fly==='std'?'B＝換看法':'右扳機＝暫時自穩','B＝換看法　Y＝收起看板','X＝離開 VR']:[info]); }
   hud.setBattery(Math.round(battery));
@@ -448,7 +483,7 @@ engine.start((dt,simStarted)=>{
 hud.setMission(`改裝賽道：${T.title}（${LAPS} 圈）`);
 syncModes(); paintRings();
 showIntro();
-window.__race={get state(){ return {phase,lap,target,battery,pits,raceT,hits,boostT,inZone,windLv,jamOn,inJam,fly,mode:drone.mode,cam:rig.mode}; },xr,wind,jams:JAMS,drone,rings,spec,prevPos,track:T,
+window.__race={get state(){ return {phase,lap,target,battery,pits,raceT,hits,boostT,inZone,windLv,jamOn,inJam,fly,mode:drone.mode,cam:rig.mode,shield,itemOn:itemsActive()}; },xr,items,useItem,wind,jams:JAMS,drone,rings,spec,prevPos,track:T,
   setBattery:v=>{battery=v;}, finishNow:()=>{ laps=[20,21,22]; raceT=63; finish(); }};
 addEventListener('beforeunload',()=>engine.dispose());
 }

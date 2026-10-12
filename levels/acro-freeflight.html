@@ -111,9 +111,14 @@ let ringCount=0, flightTime=0;
 
 /* ── VR 模式（2026-10-08）：站在場地南側邊線外看；進入 VR 會自動開始飛行 ── */
 const xr=createXR(engine,{stand:new THREE.Vector3(0,0,BOUND+1.5),
-  onStart:()=>{ if(!engine.simStarted)startGame(); if(engine.paused)togglePause(); },
+  onStart:()=>{ if(engine.paused)togglePause(); xr.openMenu('🛩️ 自由飛行'); },   // 2026-10-12：進 VR 先出選單（黑畫面時亂按不會開始）
+  menu:()=>[{label:()=>engine.simStarted?'▶ 繼續飛':'▶ 開始飛',act:()=>{ xr.closeMenu(); if(!engine.simStarted)startGame(); }},
+    {label:()=>'視角：'+(xr.view==='side'?'場邊（比較不暈）':'跟機'),left:()=>xr.setView(xr.view==='side'?'follow':'side'),right:()=>xr.setView(xr.view==='side'?'follow':'side')},
+    {label:()=>'飛行模式：'+(MODE_LABEL[baseMode]||baseMode),left:()=>toggleBaseMode(),right:()=>toggleBaseMode()},
+    {label:()=>'離開 VR',act:()=>xr.exit()}],
   onEnd:()=>{ hud.toast('已離開 VR','ok'); },
-  onButton:k=>{ if(k==='A'&&engine.simStarted)toggleBaseMode(); }});
+  onButton:k=>{ if(k==='A'&&engine.simStarted)toggleBaseMode(); },
+  guide:{keys:['右扳機按住＝自穩救援','A＝切飛行模式','B＝切視角（場邊／跟機）','Y＝叫出／收起這塊說明','X＝離開 VR'],foot:'開始飛就會自己收起來',autoHide:15}});   // 2026-10-12 VR 裡的教學看板
 
 /* ── 模式：baseMode 是玩家自己選的持續狀態（M 鍵切換，跟其他訓練場慣例相同）；
    selfLevelHeld 是「按著才生效」的安全網——放開立刻回到 baseMode，
@@ -314,7 +319,7 @@ engine.start((dt,simStarted)=>{
   }
   rig.portrait=hud.portrait;
   if(!xr.active)rig.update(dt,drone,mesh);
-  else xr.setBoard([`${MODE_LABEL[drone.mode]||drone.mode}模式｜${xr.view==='side'?'場邊視角':'跟機視角'}`,`穿環 ${ringCount}　高度 ${drone.pos.y.toFixed(1)} m`,'右扳機＝自穩　A＝模式　B＝視角','X＝離開 VR']);
+  else xr.setBoard([`${MODE_LABEL[drone.mode]||drone.mode}模式｜${xr.view==='side'?'場邊視角':'跟機視角'}`,`穿環 ${ringCount}　高度 ${drone.pos.y.toFixed(1)} m`,'右扳機＝自穩　A＝模式　B＝視角','Y＝操作說明　X＝離開 VR']);
   hud.setTelemetry(drone.pos.y,drone.speed());
   hud.setProgress(`穿環 ${ringCount}・自穩 ${selfLevelUses} 次`);
   hud.setScore(score.score);

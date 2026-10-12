@@ -83,7 +83,9 @@ function keysHtml(dev){
   if(dev==='vr')return `<div class="keys">🎮 手把：左右兩支搖桿跟上面一樣（${handName()}）。<br><b>B</b>（Xbox）／<b>○</b>（PS）＝暫停　其他按鍵在暫停選單的「🎮 按鍵圖」</div>`;
   return `<div class="keys">🎮 手把（${handName()}）：${getHand()==='1'?'<b>左搖桿</b>＝前後＋轉向　<b>右搖桿</b>＝高度＋左右':'<b>左搖桿</b>＝高度＋轉向　<b>右搖桿</b>＝前後＋左右'}<br><b>B</b>（Xbox）／<b>○</b>（PS）＝暫停　其他按鍵在暫停選單的「🎮 按鍵圖」</div>`;
 }
-const VR_HTML=()=>`<div class="keys">🥽 VR（${handName()}）：${getHand()==='1'?'<b>左搖桿</b>＝前後＋轉向　<b>右搖桿</b>＝高度＋左右':'<b>左搖桿</b>＝高度＋轉向　<b>右搖桿</b>＝前後＋左右'}<br><b>右扳機按住</b>＝自穩救援　<b>A</b>＝切飛行模式　<b>B</b>＝切視角（場邊／跟機）　<b>X</b>＝離開 VR<br>跟機視角比較容易暈，小朋友建議用<b>場邊視角</b>。</div>`;
+/* 2026-10-12 VR 手把的按鍵依關卡不同（賽道：A＝開始倒數、B＝換看法、Y＝收起看板）→ 關卡可給 vrKeys 覆寫第二行 */
+let VR_KEYS=null;
+const VR_HTML=()=>`<div class="keys">🥽 VR（${handName()}）：${getHand()==='1'?'<b>左搖桿</b>＝前後＋轉向　<b>右搖桿</b>＝高度＋左右':'<b>左搖桿</b>＝高度＋轉向　<b>右搖桿</b>＝前後＋左右'}<br>${VR_KEYS||'<b>右扳機按住</b>＝自穩救援　<b>A</b>＝切飛行模式　<b>B</b>＝切視角（場邊／跟機）　<b>X</b>＝離開 VR<br>跟機視角比較容易暈，小朋友建議用<b>場邊視角</b>。'}</div>`;
 
 /* 搖桿節奏（一輪 6 秒）：停 0.6 → 推住 1.8 → 放開停 0.6 → 反方向推住 1.8 → 放開停 1.2；推和放都用 0.3 秒滑順過去 */
 function stickVal(ph){
@@ -92,11 +94,20 @@ function stickVal(ph){
   return seg(0.6,2.4)-seg(3.0,4.8);
 }
 let open=false;
-export function showTutorial(onDone){
+/* 2026-10-12（老師定案）：按「🥽 進入 VR」前先播一次平面教學——VR 手把頁放第一頁，接著四個基本動作；
+   最後一顆鈕＝「🥽 戴上頭盔，進入 VR」。每位飛手這次開瀏覽器播一次（跟一般教學分開記）。
+   onDone(gesture)：gesture＝true 代表是點按鈕／按鍵盤結束的（瀏覽器規定進 VR 一定要由點擊觸發，手把 A／B 不算）。 */
+const VKEY=()=>'nd.tut.vr.'+who();
+export function vrTutSeen(){ try{ if(navigator.webdriver&&sessionStorage.getItem('nd.tut.test')!=='1')return true; return sessionStorage.getItem(VKEY())==='1'; }catch{ return true; } }
+export function showVrTutorial(onDone,{keys=null}={}){
+  VR_KEYS=keys;
+  showTutorial(g=>{ try{ sessionStorage.setItem(VKEY(),'1'); }catch{} onDone&&onDone(g); },{vr:true});
+}
+export function showTutorial(onDone,opt={}){
   if(open)return; open=true;
   if(!document.getElementById('nd-tut-css')){ const st=document.createElement('style'); st.id='nd-tut-css'; st.textContent=CSS; document.head.appendChild(st); }
   const dev=device(); let steps;
-  const mkSteps=()=>{ steps=[...stepsFor(getHand()),...(dev==='vr'?[VR_STEP()]:[])]; }; mkSteps();
+  const mkSteps=()=>{ steps=opt.vr?[{...VR_STEP(),title:'🥽 戴頭盔之前：先認識 VR 手把'},...stepsFor(getHand()).filter(s=>s.k!=='keys')]:[...stepsFor(getHand()),...(dev==='vr'?[VR_STEP()]:[])]; }; mkSteps();
   const el=document.createElement('div'); el.id='nd-tut'; document.body.appendChild(el);
   let i=0, t0=performance.now(), raf=0, gpPrev={}, st={pos:0,ph:0,last:0};
   const draw=()=>{
@@ -106,18 +117,18 @@ export function showTutorial(onDone){
       ${s.k==='keys'?keysHtml(dev):s.k==='vr'?VR_HTML():svgFrame()}
       <div class="dots">${steps.map((_,j)=>`<i class="${j===i?'on':''}"></i>`).join('')}</div>
       <div class="btns">${i>0?'<button id="tut-prev">← 上一步</button>':''}
-        <button id="tut-skip">跳過，開始飛</button>
-        <button class="main" id="tut-next">${i<steps.length-1?'下一步 →':'🚀 開始飛！'}</button></div>
+        <button id="tut-skip">${opt.vr?'跳過，進入 VR':'跳過，開始飛'}</button>
+        <button class="main" id="tut-next">${i<steps.length-1?'下一步 →':opt.vr?'🥽 戴上頭盔，進入 VR':'🚀 開始飛！'}</button></div>
       <div class="hint">手把：A＝下一步、B＝跳過　鍵盤：Enter＝下一步、Esc＝跳過</div></div>`;
-    el.querySelector('#tut-next').onclick=next; el.querySelector('#tut-skip').onclick=done;
+    el.querySelector('#tut-next').onclick=()=>next(true); el.querySelector('#tut-skip').onclick=()=>done(true);
     el.querySelector('#tut-hand').onclick=()=>{ toggleHand(); mkSteps(); draw(); };   // 遙控器是日本手的同學，在教學裡就能切
     const pv=el.querySelector('#tut-prev'); if(pv)pv.onclick=()=>{ i=Math.max(0,i-1); t0=performance.now(); draw(); };
     t0=performance.now(); st={pos:0,ph:0,last:0};
   };
-  function next(){ if(i<steps.length-1){ i++; draw(); } else done(); }
-  function done(){ cancelAnimationFrame(raf); removeEventListener('keydown',onKey,true); el.remove(); open=false; markSeen(); onDone&&onDone(); }
-  function onKey(e){ if(e.code==='Enter'||e.code==='ArrowRight'||e.code==='Space'){ e.preventDefault(); e.stopPropagation(); next(); }
-    else if(e.code==='Escape'){ e.preventDefault(); e.stopPropagation(); done(); } }
+  function next(g=false){ if(i<steps.length-1){ i++; draw(); } else done(g); }
+  function done(g=false){ cancelAnimationFrame(raf); removeEventListener('keydown',onKey,true); el.remove(); open=false; if(!opt.vr)markSeen(); onDone&&onDone(g); }
+  function onKey(e){ if(e.code==='Enter'||e.code==='ArrowRight'||e.code==='Space'){ e.preventDefault(); e.stopPropagation(); next(true); }
+    else if(e.code==='Escape'){ e.preventDefault(); e.stopPropagation(); done(true); } }
   addEventListener('keydown',onKey,true);
   /* 動畫：左右搖桿自己動，右邊場景跟著動 */
   const loop=now=>{
