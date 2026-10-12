@@ -248,17 +248,54 @@ export function createXR(engine,opt={}){
     opt.onButton&&opt.onButton(k);
   }
   /* 換成 VR 手把的搖桿值，其他欄位（檔位、按鍵函式）沿用原本的 player 物件 */
+  /* 2026-10-12 也可以用 Xbox／一般手把飛 VR（老師問：Vive 棒狀手把沒有搖桿，改用 Xbox 搖桿可以嗎）：
+     頭盔手把和電腦手把一起讀，每個軸取推得比較大的那邊；手把的 A＝選單確定、十字鍵／搖桿＝選單移動、B＝換看法；
+     自穩救機＝手把 RB（race.js 照手把的「自穩」鍵）。手把的美國手／日本手由 input.js 處理過了。 */
+  const gpNav={x:0,y:0,a:false,b:false,menu:false,on:false};
+  function navStep(dt){
+    if(gpNav.on&&M.armed&&!M.open&&gpNav.b)press('B');
+    if(M.open){ const e=st._edge||{edge:{}};
+      if(gpNav.dpad)M.navT=0;   // 十字鍵每按一下就動一格
+      const S=st.sticks, S2=gpNav.on?{lx:Math.abs(S.lx)>Math.abs(gpNav.x)?S.lx:gpNav.x,ly:Math.abs(S.ly)>Math.abs(gpNav.y)?S.ly:gpNav.y,rx:S.rx,ry:S.ry}:S;
+      menuStep(S2,dt,e.tEdge,(e.edge&&e.edge.A)||(gpNav.on&&gpNav.a)); }
+    gpNav.dpad=false; gpNav.a=false; gpNav.b=false;
+  }
+  /* 2026-10-12 鍵盤也能在 VR 裡用（老師同意：給旁邊的老師／助教按比較方便）：
+     飛行＝W/S、A/D、方向鍵（跟平常一樣，由 input.js 讀）；選單開著時：方向鍵＝移動／換設定、Enter＝確定；
+     V＝換看法；Esc＝離開 VR。這幾個鍵在 VR 中先攔下來，不會觸發關卡原本的暫停選單。 */
+  const kb={x:0,y:0,ok:false};
+  function onKeyVR(e,force){
+    if(!st.active&&!force)return;
+    const stop=()=>{ e.preventDefault(); e.stopImmediatePropagation(); };
+    if(e.code==='Escape'){ stop(); if(!force)exit(); return; }
+    if(!M.armed)return;
+    if(M.open){
+      if(e.code==='ArrowUp'){ kb.y=-1; stop(); } else if(e.code==='ArrowDown'){ kb.y=1; stop(); }
+      else if(e.code==='ArrowLeft'){ kb.x=-1; stop(); } else if(e.code==='ArrowRight'){ kb.x=1; stop(); }
+      else if(e.code==='Enter'||e.code==='NumpadEnter'){ kb.ok=true; stop(); }
+    }else if(e.code==='KeyV'){ stop(); press('B'); }
+  }
+  addEventListener('keydown',e=>onKeyVR(e),true);
   function player(base){
-    const S=st.sticks;
-    if(M.open||!M.armed)return {...base,device:'xr',throttle:0,yaw:0,pitch:0,roll:0};   // 選單開著／還沒準備好：飛機不動
-    if(getHand()==='1')return {...base,device:'xr',throttle:-S.ry,yaw:S.lx,pitch:-S.ly,roll:S.rx};   // 2026-10-10 日本手：左桿上下＝前後、右桿上下＝油門
-    return {...base,device:'xr',throttle:-S.ly,yaw:S.lx,pitch:-S.ry,roll:S.rx};
+    const S=st.sticks, isGp=base&&(base.device==='gamepad'||base.device==='keyboard');
+    if(isGp&&base.device==='gamepad'){ const be=i=>{ try{ return !!base.btnEdge(i); }catch{ return false; } };
+      const pv=Math.abs(base.pitch)>Math.abs(base.throttle)?base.pitch:base.throttle, hv=Math.abs(base.roll)>Math.abs(base.yaw)?base.roll:base.yaw;
+      const up=be(12), dn=be(13), lf=be(14), rt=be(15);
+      gpNav.y=dn?1:up?-1:-pv; gpNav.x=rt?1:lf?-1:hv; gpNav.dpad=up||dn||lf||rt; gpNav.a=be(0); gpNav.b=be(1);
+      gpNav.on=true; }
+    else gpNav.on=false;
+    if(base&&base.device==='keyboard'&&(kb.x||kb.y||kb.ok)){ gpNav.on=true; gpNav.x=kb.x; gpNav.y=kb.y; gpNav.dpad=!!(kb.x||kb.y); gpNav.a=kb.ok; gpNav.b=false; kb.x=kb.y=0; kb.ok=false; }
+    if(M.open||!M.armed)return {...base,device:isGp?base.device:'xr',throttle:0,yaw:0,pitch:0,roll:0};   // 選單開著／還沒準備好：飛機不動
+    const J=getHand()==='1', x={throttle:J?-S.ry:-S.ly,yaw:S.lx,pitch:J?-S.ly:-S.ry,roll:S.rx};
+    if(!isGp)return {...base,device:'xr',...x};
+    const pick=(a,b)=>Math.abs(a)>=Math.abs(b)?a:b, xrIdle=Math.max(Math.abs(S.lx),Math.abs(S.ly),Math.abs(S.rx),Math.abs(S.ry))<0.05;
+    return {...base,device:xrIdle?base.device:'xr',throttle:pick(x.throttle,base.throttle),yaw:pick(x.yaw,base.yaw),pitch:pick(x.pitch,base.pitch),roll:pick(x.roll,base.roll)};
   }
   /* 每幀：讀手把、跟機視角時把站位移到無人機後方 */
   function update(dt,drone){
     if(!st.active)return; poll();
     if(!M.armed){ if(dt>0)M.armT+=dt; if(M.armT>1.0&&M.seenRelease){ M.armed=true; M.key=''; } }   // 有畫面（迴圈在跑）＋放開過按鍵＋1 秒
-    if(M.open){ const e=st._edge||{edge:{}}; menuStep(st.sticks,dt,e.tEdge,e.edge&&e.edge.A); }
+    navStep(dt);
     if(guide.visible){ gT+=dt; gDraw+=dt; if(gDraw>1/15){ gDraw=0; drawGuide(gT); }
       if(opt.guide&&opt.guide.autoHide){ const S=st.sticks, mv=Math.max(Math.abs(S.lx),Math.abs(S.ly),Math.abs(S.rx),Math.abs(S.ry))>0.4;
         gMove=mv?gMove+dt:Math.max(0,gMove-dt*0.5);
@@ -283,7 +320,7 @@ export function createXR(engine,opt={}){
   }
   return {
     get active(){ return st.active; }, get menuOpen(){ return M.open; }, get armed(){ return M.armed; }, openMenu, closeMenu, get view(){ return st.view; }, setView(v){ if(VIEWS.includes(v)){ st.view=v; boardKey=''; if(st.active){ dolly.quaternion.identity(); applyView(); } } }, get selfLevel(){ return st.active&&st.trigger&&M.armed&&!M.open; },
-    _sim:{arm(){ M.armed=true; M.seenRelease=true; }, open:openMenu, step(S,trig,a){ menuStep({lx:0,ly:0,rx:0,ry:0,...S},0.5,trig,a); }, get M(){ return M; }},
+    _sim:{arm(){ M.armed=true; M.seenRelease=true; }, open:openMenu, nav:navStep, key:c=>onKeyVR({code:c,preventDefault(){},stopImmediatePropagation(){}},true), step(S,trig,a){ menuStep({lx:0,ly:0,rx:0,ry:0,...S},0.5,trig,a); }, get M(){ return M; }},
     player,update,setBoard,setBig,showGuide,get guideOn(){ return guide.visible; },enter,tryEnter,exit,dolly,_goggleRender:goggleRender,_fpvCam:fpvCam,_rt:rt
   };
 }
